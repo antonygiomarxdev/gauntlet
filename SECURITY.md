@@ -4,7 +4,7 @@ gauntlet runs shell commands from rule files inside your repository, and install
 
 ## Reporting a vulnerability
 
-Please do not open a public issue. Use GitHub's [private vulnerability reporting](https://github.com/antonygiomarx/gauntlet/security/advisories/new). You will get an answer within 7 days.
+Please do not open a public issue. Use GitHub's [private vulnerability reporting](https://github.com/antonygiomarxdev/gauntlet/security/advisories/new). You will get an answer within 7 days.
 
 ## Scope
 

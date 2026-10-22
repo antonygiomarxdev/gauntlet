@@ -17,7 +17,7 @@ No Node, Python or compiler is needed for gauntlet itself.
 Paste this into your agent (Claude Code, Codex, Command Code or any other):
 
 ```text
-Install gauntlet from https://github.com/antonygiomarx/gauntlet and onboard this repository.
+Install gauntlet from https://github.com/antonygiomarxdev/gauntlet and onboard this repository.
 ```
 
 The agent reads `skills/gauntlet/SKILL.md` (ships with v0.1) and does the rest.
@@ -25,7 +25,7 @@ The agent reads `skills/gauntlet/SKILL.md` (ships with v0.1) and does the rest.
 ### By hand
 
 ```sh
-git clone --depth 1 --branch v0.1.0 https://github.com/antonygiomarx/gauntlet ~/.gauntlet
+git clone --depth 1 --branch v0.1.0 https://github.com/antonygiomarxdev/gauntlet ~/.gauntlet
 cd your-repo
 ~/.gauntlet/bin/gauntlet install
 ```

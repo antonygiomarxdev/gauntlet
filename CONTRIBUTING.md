@@ -4,7 +4,7 @@ Thanks for helping. gauntlet is a small tool with strong opinions; this page sav
 
 ## Discussions first, then issues
 
-Nobody opens an issue directly. Everything starts as a [discussion](https://github.com/antonygiomarx/gauntlet/discussions); when it is confirmed and actionable, a maintainer turns it into an issue. Issues are the work queue, not the inbox.
+Nobody opens an issue directly. Everything starts as a [discussion](https://github.com/antonygiomarxdev/gauntlet/discussions); when it is confirmed and actionable, a maintainer turns it into an issue. Issues are the work queue, not the inbox.
 
 - **Bugs:** the *Bug reports* category.
 - **False positives:** the *False positives* category. This is the most important kind of bug: a gate that cries wolf gets disabled.

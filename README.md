@@ -110,13 +110,13 @@ Shipping did not slow down: merged PRs per week went *up* after the ratchets lan
 Ask your agent, in any harness:
 
 ```text
-Install gauntlet from https://github.com/antonygiomarx/gauntlet and onboard this repository.
+Install gauntlet from https://github.com/antonygiomarxdev/gauntlet and onboard this repository.
 ```
 
 Or by hand:
 
 ```sh
-git clone --depth 1 --branch v0.1.0 https://github.com/antonygiomarx/gauntlet ~/.gauntlet
+git clone --depth 1 --branch v0.1.0 https://github.com/antonygiomarxdev/gauntlet ~/.gauntlet
 ~/.gauntlet/bin/gauntlet install     # vendors the runner and the skill into this repo
 # then ask your agent to run the gauntlet `onboard` skill
 ```
@@ -156,7 +156,7 @@ gauntlet runs inside lefthook, prek or husky rather than replacing them. The [fu
 
 ## Contributing
 
-Start in [Discussions](https://github.com/antonygiomarx/gauntlet/discussions); maintainers open issues from confirmed discussions. Read [CONTRIBUTING.md](CONTRIBUTING.md) first. False positives have their own category, because a false positive is the fastest way to make people hate a gate.
+Start in [Discussions](https://github.com/antonygiomarxdev/gauntlet/discussions); maintainers open issues from confirmed discussions. Read [CONTRIBUTING.md](CONTRIBUTING.md) first. False positives have their own category, because a false positive is the fastest way to make people hate a gate.
 
 ## License
 
