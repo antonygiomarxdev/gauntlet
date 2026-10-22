@@ -21,6 +21,18 @@ Thanks for helping. gauntlet is a small tool with strong opinions; this page sav
 
 Use [Conventional Commits](https://www.conventionalcommits.org): `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`. Don't add attribution trailers.
 
+## Changelog entries
+
+A PR that changes what users see adds a [changie](https://github.com/miniscruff/changie) fragment:
+
+```sh
+changie new   # pick a kind (Added, Changed, Fixed, ...) and write one line
+```
+
+The fragment lands in `.changes/unreleased/`; commit it with the PR. Never edit `CHANGELOG.md` by hand. changie is a maintainer tool; the runner never needs it. Install it with `go install github.com/miniscruff/changie@latest` or a binary from its releases.
+
+Fragment files are named by kind and timestamp, so two `changie new` runs in the same second overwrite each other. Run them a second apart when scripting.
+
 ## Running the tests
 
 ```sh
@@ -30,4 +42,9 @@ test/run.sh fingerprint  # one group
 
 ## Releases
 
-The maintainer tags semver versions (`vX.Y.Z`) and publishes a GitHub Release with checksums. `CHANGELOG.md` is written by hand in [Keep a Changelog](https://keepachangelog.com) style.
+The maintainer tags semver versions (`vX.Y.Z`) and publishes a GitHub Release with checksums. The changelog is generated from the fragments:
+
+```sh
+changie batch auto   # folds .changes/unreleased/ into .changes/vX.Y.Z.md
+changie merge        # regenerates CHANGELOG.md
+```
