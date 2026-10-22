@@ -76,5 +76,5 @@ None blocking. The FRDs carry their own questions, each with a proposed default.
 | [FRD-04](frd/FRD-04-exceptions.md) Exceptions | Draft |
 | [FRD-05](frd/FRD-05-agent-integration.md) Agent integration | Draft |
 | [FRD-06](frd/FRD-06-rule-lifecycle.md) Rule lifecycle | Draft |
-| [TP-01](TP-01-gauntlet.md) Technical proposal | Draft |
+| [TP-01](../../architecture/TP-01-gauntlet.md) System technical proposal (parent; this initiative has no local proposal yet) | Draft |
 | [IS-01](specs/IS-01-runner-core.md) Runner core | Draft |

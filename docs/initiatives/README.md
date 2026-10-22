@@ -1,6 +1,6 @@
 # Initiatives
 
-An initiative is one outcome worth its own PRD. Each one lives in `I-NN-<name>/` with its PRD, FRDs, technical proposal and implementation specs. The [VISION](../VISION.md) and the [ADRs](../adr/README.md) are shared by all of them.
+An initiative is one outcome worth its own PRD. Each one lives in `I-NN-<name>/` with its PRD, FRDs and implementation specs, plus a `tp/` folder when it needs a technical proposal of its own. The [VISION](../VISION.md), the [system architecture](../architecture/TP-01-gauntlet.md) and the [ADRs](../adr/README.md) are shared by all of them.
 
 | ID | Initiative | Status | PRD |
 |---|---|---|---|

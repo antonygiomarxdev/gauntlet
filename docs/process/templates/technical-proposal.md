@@ -1,7 +1,9 @@
 # Technical Proposal — <topic>
 
 **Status:** Draft | Approved by <name> on <YYYY-MM-DD> | Superseded by <document>
-**PRD:** <link>
+**Scope:** system | I-NN
+**Parent:** <system proposal, for an initiative proposal; VISION, for a system proposal>
+**PRD:** <link; for a system proposal, every PRD it serves>
 **FRDs covered:** <links>
 **ADRs applied:** <links>
 

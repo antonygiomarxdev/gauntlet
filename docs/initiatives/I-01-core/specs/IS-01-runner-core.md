@@ -1,7 +1,7 @@
 # Implementation Spec — Runner core
 
 **Status:** Draft
-**Technical Proposal:** [TP-01 — gauntlet](../TP-01-gauntlet.md)
+**Technical Proposal:** [TP-01 — gauntlet](../../../architecture/TP-01-gauntlet.md)
 **FRD criteria covered:** see §FRD acceptance mapping below
 **ADRs applied:** [0001](../../../adr/0001-runner-is-bash-awk-git.md) · [0002](../../../adr/0002-fingerprints-not-line-numbers.md) · [0003](../../../adr/0003-baseline-is-derived.md) · [0004](../../../adr/0004-declarative-detectors-only.md) · [0005](../../../adr/0005-exceptions-are-human-only-rows.md) · [0006](../../../adr/0006-coexist-with-existing-hooks.md) · [0007](../../../adr/0007-commit-time-check-in-pre-commit.md) · [0008](../../../adr/0008-base-is-the-branch-target.md) · [0009](../../../adr/0009-shadow-first-manual-promotion.md)
 **Depends on:** none
@@ -22,7 +22,7 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
 
 ## Scope
 
-**Out of scope:** owned by IS-02 (skill and agent integration) and IS-03 (linter depth), per the [TP decomposition](../TP-01-gauntlet.md#15-implementation-spec-decomposition):
+**Out of scope:** owned by IS-02 (skill and agent integration) and IS-03 (linter depth), per the [TP decomposition](../../../architecture/TP-01-gauntlet.md#15-implementation-spec-decomposition):
 - the skill (`onboard`, the `status` trend, `propose-rule`, `add-rule`);
 - `HOW-TO-WRITE-A-RULE.md` and the `AGENTS.md` block;
 - the Claude Code adapter;

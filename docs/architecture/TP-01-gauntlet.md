@@ -1,9 +1,11 @@
 # Technical Proposal — gauntlet
 
 **Status:** Draft
-**PRD:** [PRD — gauntlet](PRD.md)
-**FRDs covered:** [FRD-01](frd/FRD-01-onboarding.md) · [FRD-02](frd/FRD-02-rules-and-detectors.md) · [FRD-03](frd/FRD-03-gates.md) · [FRD-04](frd/FRD-04-exceptions.md) · [FRD-05](frd/FRD-05-agent-integration.md) · [FRD-06](frd/FRD-06-rule-lifecycle.md)
-**ADRs applied:** [0001](../../adr/0001-runner-is-bash-awk-git.md)–[0011](../../adr/0011-changelog-fragments-with-changie.md)
+**Scope:** system. Every initiative builds on it; an initiative-local proposal names it as `Parent`.
+**Parent:** [VISION](../VISION.md)
+**PRD:** [I-01 Core](../initiatives/I-01-core/PRD.md)
+**FRDs covered:** [FRD-01](../initiatives/I-01-core/frd/FRD-01-onboarding.md) · [FRD-02](../initiatives/I-01-core/frd/FRD-02-rules-and-detectors.md) · [FRD-03](../initiatives/I-01-core/frd/FRD-03-gates.md) · [FRD-04](../initiatives/I-01-core/frd/FRD-04-exceptions.md) · [FRD-05](../initiatives/I-01-core/frd/FRD-05-agent-integration.md) · [FRD-06](../initiatives/I-01-core/frd/FRD-06-rule-lifecycle.md)
+**ADRs applied:** [0001](../adr/0001-runner-is-bash-awk-git.md)–[0011](../adr/0011-changelog-fragments-with-changie.md)
 
 ## 1. Engineering problem
 
@@ -16,9 +18,9 @@ One tool has to:
 
 ## 2. Goals and constraints
 
-- **Parity.** Push and CI run the same vendored runner against the same base ([ADR-0008](../../adr/0008-base-is-the-branch-target.md)).
+- **Parity.** Push and CI run the same vendored runner against the same base ([ADR-0008](../adr/0008-base-is-the-branch-target.md)).
 - **Commit-time check under 5 s.** Whole-program detectors run at push only.
-- **No runtime dependency beyond bash, awk and git** ([ADR-0001](../../adr/0001-runner-is-bash-awk-git.md)). Detector tools (`rg`, `ast-grep`, the project's linter) are needed only by the rules that use them.
+- **No runtime dependency beyond bash, awk and git** ([ADR-0001](../adr/0001-runner-is-bash-awk-git.md)). Detector tools (`rg`, `ast-grep`, the project's linter) are needed only by the rules that use them.
 - **Fail closed. Never skip silently.**
 - **Agent-proof by construction.** The runner is the enforcer. Harness adapters only make it bite earlier.
 
@@ -40,7 +42,7 @@ Criteria, declared up front:
 | Adopt cleat (Python) | Strong agent hooks | Needs Python. Gates are built in, not owner rules. | Rejected. |
 | Write the runner in Go or Rust | Fast; real data structures | A compile step, release binaries per OS and arch, and an install step for every teammate. A contributor without the toolchain cannot fix it. | Rejected for v0.1. Revisit if bash performance blocks the 5 s budget (see risks). |
 | Write it in Node | Familiar to the origin project | A `package.json` and Node in every consuming repo, whatever its language | Rejected. It breaks language neutrality. |
-| **bash + awk + git, vendored** | Runs wherever git runs, including Git Bash on Windows. Vendored, so a clone is protected. Readable by anyone who can read a hook. | Portability traps (bash 3.2, BWK awk). Text-only data. Slower than a binary on huge repos. | **Selected** ([ADR-0001](../../adr/0001-runner-is-bash-awk-git.md)) |
+| **bash + awk + git, vendored** | Runs wherever git runs, including Git Bash on Windows. Vendored, so a clone is protected. Readable by anyone who can read a hook. | Portability traps (bash 3.2, BWK awk). Text-only data. Slower than a binary on huge repos. | **Selected** ([ADR-0001](../adr/0001-runner-is-bash-awk-git.md)) |
 
 ## 5. Solution strategy
 
@@ -69,14 +71,14 @@ flowchart LR
 
 | Block | Responsibility | Spec |
 |---|---|---|
-| Runner (`.gauntlet/bin/gauntlet`, `.gauntlet/lib/`) | Rules, detectors, fingerprints, baseline, checks, exceptions, hooks install, status, doctor | [IS-01](specs/IS-01-runner-core.md) |
+| Runner (`.gauntlet/bin/gauntlet`, `.gauntlet/lib/`) | Rules, detectors, fingerprints, baseline, checks, exceptions, hooks install, status, doctor | [IS-01](../initiatives/I-01-core/specs/IS-01-runner-core.md) |
 | Skill (`.agents/skills/gauntlet/`) | `onboard`, `status`, `propose-rule`, `add-rule`; `HOW-TO-WRITE-A-RULE.md`; `AGENTS.md` block; CI job template | IS-02 (planned) |
 | Claude Code adapter | `SessionStart`, `PreToolUse` warnings and denials | IS-02 (planned) |
 | Linter depth | One shared linter run per gate; guards for graduated rules; `fix`; `update` | IS-03 (planned) |
 
 ## 8. Critical runtime flows
 
-1. **Commit** (`pre-commit` runs `check --staged`), [ADR-0007](../../adr/0007-commit-time-check-in-pre-commit.md):
+1. **Commit** (`pre-commit` runs `check --staged`), [ADR-0007](../adr/0007-commit-time-check-in-pre-commit.md):
    1. Measure the commit-stage rules on the staged files.
    2. Compare against `HEAD`'s baseline.
    3. Block on a new `block` fingerprint.
@@ -94,8 +96,8 @@ flowchart LR
 | State | Owner | Written by |
 |---|---|---|
 | `rules/*.md` and detector files | Owner | `add-rule` / `propose-rule` after the owner's yes, or a human |
-| `baseline.tsv` | Runner | `gauntlet baseline` and auto-tighten only ([ADR-0003](../../adr/0003-baseline-is-derived.md)) |
-| `exceptions.tsv` | Human | `gauntlet waive/loosen/remove` only ([ADR-0005](../../adr/0005-exceptions-are-human-only-rows.md)) |
+| `baseline.tsv` | Runner | `gauntlet baseline` and auto-tighten only ([ADR-0003](../adr/0003-baseline-is-derived.md)) |
+| `exceptions.tsv` | Human | `gauntlet waive/loosen/remove` only ([ADR-0005](../adr/0005-exceptions-are-human-only-rows.md)) |
 | `config` | Owner | Hand-edited, validated by `doctor` |
 | `STATUS.md` | Runner | `gauntlet status` (generated) |
 | `ONBOARDING.md`, `PROPOSALS.md` | Skill | `onboard` / `propose-rule` |
@@ -109,8 +111,8 @@ flowchart LR
   - `127`: missing tool;
   - anything else: broken.
 - **Runner exit codes:** `0` passes, `1` means the gate failed, `2` means the setup is broken or the usage is wrong.
-- **Rule frontmatter:** flat `key: value` pairs ([FRD-02](frd/FRD-02-rules-and-detectors.md)).
-- **Hook contract:** one marker line per hook (`… # gauntlet`), and `core.hooksPath` is never written ([ADR-0006](../../adr/0006-coexist-with-existing-hooks.md)).
+- **Rule frontmatter:** flat `key: value` pairs ([FRD-02](../initiatives/I-01-core/frd/FRD-02-rules-and-detectors.md)).
+- **Hook contract:** one marker line per hook (`… # gauntlet`), and `core.hooksPath` is never written ([ADR-0006](../adr/0006-coexist-with-existing-hooks.md)).
 
 ## 11. Cross-cutting matrix
 
@@ -125,7 +127,7 @@ flowchart LR
 | CC-OBS | Required | Every finding shows `path:line rule message`, then its fix line and the time taken | IS-01, Task 8 |
 | CC-MIG | Deferred | Formats are pre-1.0. A format change before v1 ships with a migration note. | Changelog |
 | CC-ROLL | Required | Shadow first; touched gate off by default; onboarding branch exempt | IS-01, Tasks 8 and 9 |
-| CC-DEPS | Required | None for the runner | [ADR-0001](../../adr/0001-runner-is-bash-awk-git.md) |
+| CC-DEPS | Required | None for the runner | [ADR-0001](../adr/0001-runner-is-bash-awk-git.md) |
 | CC-PRIV | Not required | No network calls except `git fetch` of the base, and no telemetry | — |
 
 ## 12. Migration, rollout, rollback
@@ -144,12 +146,12 @@ flowchart LR
 
 ## 14. ADRs created or superseded
 
-All of [ADR-0001](../../adr/0001-runner-is-bash-awk-git.md) to [ADR-0011](../../adr/0011-changelog-fragments-with-changie.md). [ADR-0007](../../adr/0007-commit-time-check-in-pre-commit.md) replaces the `commit-msg` choice from the design draft, on spike evidence.
+All of [ADR-0001](../adr/0001-runner-is-bash-awk-git.md) to [ADR-0011](../adr/0011-changelog-fragments-with-changie.md). [ADR-0007](../adr/0007-commit-time-check-in-pre-commit.md) replaces the `commit-msg` choice from the design draft, on spike evidence.
 
 ## 15. Implementation Spec decomposition
 
 | Spec | Slice | FRD coverage | Depends on |
 |---|---|---|---|
-| [IS-01](specs/IS-01-runner-core.md) | Runner core | RULE (except linter-owned rules), GATE (except the generated CI job and PR comments), EXC (except CI comments), LIFE (`status` without trend, `promote`, `doctor`) | — |
+| [IS-01](../initiatives/I-01-core/specs/IS-01-runner-core.md) | Runner core | RULE (except linter-owned rules), GATE (except the generated CI job and PR comments), EXC (except CI comments), LIFE (`status` without trend, `promote`, `doctor`) | — |
 | IS-02 (planned) | Skill and agent integration | ONB, AGENT, LIFE (`propose-rule`, `add-rule`, trend), GATE (CI job and PR comments), EXC (CI comments) | IS-01 |
 | IS-03 (planned) | Linter depth | RULE (shared linter run), LIFE (graduation and guards), `fix`, `update` | IS-01 |

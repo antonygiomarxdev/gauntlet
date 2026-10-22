@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-22
 - **Decision maker:** Owner (Antony Giomar Hernández)
-- **Related:** [ADR-0004](0004-declarative-detectors-only.md), [ADR-0011](0011-changelog-fragments-with-changie.md), [VISION](../VISION.md), [TP-01](../initiatives/I-01-core/TP-01-gauntlet.md)
+- **Related:** [ADR-0004](0004-declarative-detectors-only.md), [ADR-0011](0011-changelog-fragments-with-changie.md), [VISION](../VISION.md), [TP-01](../architecture/TP-01-gauntlet.md)
 
 ## Context
 

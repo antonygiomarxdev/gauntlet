@@ -11,7 +11,8 @@ PRD (one per initiative)  what outcome this initiative delivers, and how it is r
   ↓
 FRD (one per capability)  what one capability must do, as Given/When/Then
   ↓
-Technical Proposal      how the FRDs fit together as one architecture
+Technical Proposal      system: the architecture every initiative builds on
+  ↓                     initiative (optional child): how this PRD's FRDs fit that architecture
   ↓
 Implementation Spec     how one cohesive slice is built
   ↓
@@ -36,12 +37,17 @@ The links between levels are many-to-many where they need to be. One FRD may nee
 | Initiative index | `docs/initiatives/README.md` | — |
 | PRD | `docs/initiatives/I-NN-<name>/PRD.md` | [prd.md](templates/prd.md) |
 | FRDs | `docs/initiatives/I-NN-<name>/frd/FRD-NN-<capability>.md` | [frd.md](templates/frd.md) |
-| Technical Proposals | `docs/initiatives/I-NN-<name>/TP-NN-<topic>.md` | [technical-proposal.md](templates/technical-proposal.md) |
+| System Technical Proposals | `docs/architecture/TP-NN-<topic>.md` | [technical-proposal.md](templates/technical-proposal.md) |
+| Initiative Technical Proposals | `docs/initiatives/I-NN-<name>/tp/TP-NN-<topic>.md` | [technical-proposal.md](templates/technical-proposal.md) |
 | Implementation Specs | `docs/initiatives/I-NN-<name>/specs/IS-NN-<slice>.md` | [implementation-spec.md](templates/implementation-spec.md) |
 | Spikes | `docs/initiatives/I-NN-<name>/spikes/SP-NN-<question>.md` | [spike.md](templates/spike.md) |
 | ADRs | `docs/adr/NNNN-<slug>.md`, shared by all initiatives | [adr.md](templates/adr.md) |
 
 FRD, TP, IS and SP numbers are global across initiatives, so an ID never needs its folder to be unambiguous. Release criteria use the initiative's key (`CORE-PA1`).
+
+**System or initiative proposal.** A Technical Proposal is system-level when it sets contracts, state or decisions that more than one initiative builds on: it lives in `docs/architecture/`. Otherwise it belongs to one PRD and lives in that initiative's `tp/` folder, created only when the first one is written. System decisions flow down: an initiative proposal names its system proposal as `Parent` and may not contradict it; changing the parent comes first. This follows the arc42 advice for large systems, one common document plus per-subsystem documents linked downward ([arc42 FAQ J-1](https://faq.arc42.org/questions/J-1/)).
+
+**Links are explicit, never positional.** Every document names its upstream in its header (`Parent:`, `PRD:`, `FRDs covered:`, `Technical Proposal:`). A folder groups documents for reading; it is not the trace.
 | User guide | `docs/guide/` | — |
 | Briefs | GitHub issues, opened by a maintainer from a spec (see [CONTRIBUTING](../../CONTRIBUTING.md)) | — |
 
