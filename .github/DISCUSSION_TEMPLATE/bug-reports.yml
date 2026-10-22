@@ -1,5 +1,3 @@
-name: Bug
-description: The runner, a gate or the skill did the wrong thing.
 labels: [bug]
 body:
   - type: textarea

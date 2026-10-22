@@ -1,5 +1,17 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Bug report
+    url: https://github.com/antonygiomarx/gauntlet/discussions/new?category=bug-reports
+    about: Issues are opened by maintainers from a discussion. Start here.
+  - name: False positive
+    url: https://github.com/antonygiomarx/gauntlet/discussions/new?category=false-positives
+    about: A rule flagged code that does not violate it.
+  - name: Idea, stack or adapter
+    url: https://github.com/antonygiomarx/gauntlet/discussions/new?category=ideas
+    about: New language, linter, CI provider or agent harness, or a design change.
+  - name: Question
+    url: https://github.com/antonygiomarx/gauntlet/discussions/new?category=q-a
+    about: How do I...?
   - name: Security report
     url: https://github.com/antonygiomarx/gauntlet/security/advisories/new
     about: Report vulnerabilities privately.

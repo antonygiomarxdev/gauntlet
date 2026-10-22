@@ -156,7 +156,7 @@ gauntlet runs inside lefthook, prek or husky rather than replacing them. The [fu
 
 ## Contributing
 
-Issues and PRs are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first. False-positive reports have their own issue form, because a false positive is the fastest way to make people hate a gate.
+Start in [Discussions](https://github.com/antonygiomarx/gauntlet/discussions); maintainers open issues from confirmed discussions. Read [CONTRIBUTING.md](CONTRIBUTING.md) first. False positives have their own category, because a false positive is the fastest way to make people hate a gate.
 
 ## License
 

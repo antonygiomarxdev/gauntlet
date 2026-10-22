@@ -1,0 +1,10 @@
+labels: [enhancement]
+body:
+  - type: input
+    id: target
+    attributes: { label: "What should gauntlet support?", placeholder: "golangci-lint output, GitLab CI, Codex hooks" }
+    validations: { required: true }
+  - type: textarea
+    id: usecase
+    attributes: { label: The use case }
+    validations: { required: true }

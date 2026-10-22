@@ -2,15 +2,21 @@
 
 Thanks for helping. gauntlet is a small tool with strong opinions; this page saves us both time.
 
-## Before you open a PR
+## Discussions first, then issues
 
-- **Bugs and false positives:** open an issue with the matching form first. A false positive is the most important kind of bug: a gate that cries wolf gets disabled.
-- **New detector engines, adapters for other agent harnesses, recipes for a stack:** open an issue describing the use case before writing code.
-- **Changes to the design** ([docs/design.md](docs/design.md)): open an issue. The anti-goals in §4 are firm.
+Nobody opens an issue directly. Everything starts as a [discussion](https://github.com/antonygiomarx/gauntlet/discussions); when it is confirmed and actionable, a maintainer turns it into an issue. Issues are the work queue, not the inbox.
+
+- **Bugs:** the *Bug reports* category.
+- **False positives:** the *False positives* category. This is the most important kind of bug: a gate that cries wolf gets disabled.
+- **New detector engines, adapters for other agent harnesses, recipes for a stack, changes to the design** ([docs/design.md](docs/design.md)): the *Ideas* category, before writing code. The anti-goals in §4 are firm.
+- **Questions:** the *Q&A* category.
+- **Vulnerabilities:** never in public; see [SECURITY.md](SECURITY.md).
+
+A PR should reference the issue it implements.
 
 ## Ground rules
 
-- **The runner stays bash + awk + git.** No jq, no Node, no Python, no compile step. If something seems to need one, raise it in an issue.
+- **The runner stays bash + awk + git.** No jq, no Node, no Python, no compile step. If something seems to need one, raise it in a discussion.
 - **Tests first.** Every behaviour change starts with a failing fixture test under `test/`. The test is a small git repo the suite builds, plus the expected verdict.
 - **Fail closed.** Code paths that cannot decide must fail the gate loudly, never skip.
 - **Fingerprints, never line numbers.** Nothing may key a violation on its line number.
