@@ -3,14 +3,14 @@
 **Status:** Draft
 **Technical Proposal:** [TP-01 — gauntlet](../TP-01-gauntlet.md)
 **FRD criteria covered:** see §FRD acceptance mapping below
-**ADRs applied:** [0001](../../adr/0001-runner-is-bash-awk-git.md) · [0002](../../adr/0002-fingerprints-not-line-numbers.md) · [0003](../../adr/0003-baseline-is-derived.md) · [0004](../../adr/0004-declarative-detectors-only.md) · [0005](../../adr/0005-exceptions-are-human-only-rows.md) · [0006](../../adr/0006-coexist-with-existing-hooks.md) · [0007](../../adr/0007-commit-time-check-in-pre-commit.md) · [0008](../../adr/0008-base-is-the-branch-target.md) · [0009](../../adr/0009-shadow-first-manual-promotion.md)
+**ADRs applied:** [0001](../../../adr/0001-runner-is-bash-awk-git.md) · [0002](../../../adr/0002-fingerprints-not-line-numbers.md) · [0003](../../../adr/0003-baseline-is-derived.md) · [0004](../../../adr/0004-declarative-detectors-only.md) · [0005](../../../adr/0005-exceptions-are-human-only-rows.md) · [0006](../../../adr/0006-coexist-with-existing-hooks.md) · [0007](../../../adr/0007-commit-time-check-in-pre-commit.md) · [0008](../../../adr/0008-base-is-the-branch-target.md) · [0009](../../../adr/0009-shadow-first-manual-promotion.md)
 **Depends on:** none
 
 > **For agentic workers:** execute task by task, test first. Steps use checkboxes (`- [ ]`) for tracking. Each task becomes one GitHub issue (`Path: full`, naming this spec and its task number).
 
 ## Objective
 
-Ship the bash runner. It measures rules, keeps the baseline exact, and gates commits, pushes and CI, so a repository can adopt gauntlet by hand before the skill exists (release criteria GT-PA1 and GT-PA2).
+Ship the bash runner. It measures rules, keeps the baseline exact, and gates commits, pushes and CI, so a repository can adopt gauntlet by hand before the skill exists (release criteria CORE-PA1 and CORE-PA2).
 
 ## Design
 
@@ -33,12 +33,12 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
 
 ## Global Constraints
 
-- The runner uses only bash, awk, git and coreutils (`sed sort grep mktemp date cat cp mkdir rm`). No jq, Node, Python or compile step. Source: [ADR-0001](../../adr/0001-runner-is-bash-awk-git.md).
+- The runner uses only bash, awk, git and coreutils (`sed sort grep mktemp date cat cp mkdir rm`). No jq, Node, Python or compile step. Source: [ADR-0001](../../../adr/0001-runner-is-bash-awk-git.md).
 - Bash 3.2 compatible (macOS default): no associative arrays, `mapfile`, `readarray`, `${x,,}`, `declare -n` or `|&`.
 - POSIX awk (BWK awk on macOS): no `gensub`, `asort`, `strftime`, `systime`, `\s` or `{n}` intervals.
 - Every `sort` and `comm` runs under `LC_ALL=C`.
 - Exit codes: `0` passes, `1` means the gate failed, `2` means the setup is broken or the usage is wrong.
-- A fingerprint is `rule + path + normalized line text`. Line numbers are never stored. Source: [ADR-0002](../../adr/0002-fingerprints-not-line-numbers.md).
+- A fingerprint is `rule + path + normalized line text`. Line numbers are never stored. Source: [ADR-0002](../../../adr/0002-fingerprints-not-line-numbers.md).
 - Normalization strips `\r`, collapses runs of spaces and tabs to one space, and trims both ends.
 - The commit-time check runs in **`pre-commit`**, not `commit-msg`. A spike on git 2.43 showed that a baseline staged in `commit-msg` is left out of the commit. The docs were corrected in `d27c8c2`.
 - `shellcheck -x bin/gauntlet lib/*.sh test/*.sh` is clean.
@@ -59,7 +59,7 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
 5. **Waivers apply only on their own branch.** A `waive` row applies only when its `branch` column equals the current branch (`GITHUB_HEAD_REF` in CI, `git symbolic-ref --short HEAD` locally). Rows from merged branches are ignored, and `doctor` lists them as stale. Deleting them on merge is left for later.
 6. **Loosening needs a new exception row.** A `loosen` or `remove` row counts only if it is new since the merge-base: present in the current `exceptions.tsv` and absent from the base's. Otherwise one old row would permit every future loosening.
 7. **New rules, and the onboarding branch, are exempt from checks 1–3.**
-   - A rule whose file does not exist at the merge-base is exempt from new, global and touched ([GATE-AC12](../../product/frd/FRD-03-gates.md)).
+   - A rule whose file does not exist at the merge-base is exempt from new, global and touched ([GATE-AC12](../frd/FRD-03-gates.md)).
    - When the merge-base has no `.gauntlet/baseline.tsv`, checks 1–3 are skipped with the note `no baseline at base`.
 8. **Detector exit codes.**
    - `0` is fine.

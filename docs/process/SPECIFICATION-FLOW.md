@@ -5,7 +5,9 @@ How work on gauntlet is decided before it is built. Each document has one job, a
 ## The chain
 
 ```
-PRD                     why gauntlet exists, for whom, what outcome
+VISION                  why gauntlet exists, for whom; shared by every initiative
+  ↓
+PRD (one per initiative)  what outcome this initiative delivers, and how it is released
   ↓
 FRD (one per capability)  what one capability must do, as Given/When/Then
   ↓
@@ -30,12 +32,16 @@ The links between levels are many-to-many where they need to be. One FRD may nee
 
 | Artifact | Path | Template |
 |---|---|---|
-| PRD | `docs/product/PRD.md` | [prd.md](templates/prd.md) |
-| FRDs | `docs/product/frd/FRD-NN-<capability>.md` | [frd.md](templates/frd.md) |
-| Technical Proposals | `docs/technical/TP-NN-<topic>.md` | [technical-proposal.md](templates/technical-proposal.md) |
-| Implementation Specs | `docs/technical/specs/IS-NN-<slice>.md` | [implementation-spec.md](templates/implementation-spec.md) |
-| Spikes | `docs/technical/spikes/SP-NN-<question>.md` | [spike.md](templates/spike.md) |
-| ADRs | `docs/adr/NNNN-<slug>.md` | [adr.md](templates/adr.md) |
+| Vision | `docs/VISION.md` | — |
+| Initiative index | `docs/initiatives/README.md` | — |
+| PRD | `docs/initiatives/I-NN-<name>/PRD.md` | [prd.md](templates/prd.md) |
+| FRDs | `docs/initiatives/I-NN-<name>/frd/FRD-NN-<capability>.md` | [frd.md](templates/frd.md) |
+| Technical Proposals | `docs/initiatives/I-NN-<name>/TP-NN-<topic>.md` | [technical-proposal.md](templates/technical-proposal.md) |
+| Implementation Specs | `docs/initiatives/I-NN-<name>/specs/IS-NN-<slice>.md` | [implementation-spec.md](templates/implementation-spec.md) |
+| Spikes | `docs/initiatives/I-NN-<name>/spikes/SP-NN-<question>.md` | [spike.md](templates/spike.md) |
+| ADRs | `docs/adr/NNNN-<slug>.md`, shared by all initiatives | [adr.md](templates/adr.md) |
+
+FRD, TP, IS and SP numbers are global across initiatives, so an ID never needs its folder to be unambiguous. Release criteria use the initiative's key (`CORE-PA1`).
 | User guide | `docs/guide/` | — |
 | Briefs | GitHub issues, opened by a maintainer from a spec (see [CONTRIBUTING](../../CONTRIBUTING.md)) | — |
 
@@ -61,7 +67,7 @@ Who approves what:
 
 | Document | Approved by |
 |---|---|
-| PRD, FRDs | the owner |
+| Vision, PRD, FRDs | the owner |
 | Technical Proposal | the owner, once the alternatives and trade-offs are explicit |
 | Implementation Spec | the maintainer who will merge it. The owner also approves when the spec changes FRD-visible behaviour, an approved proposal or an ADR. |
 | ADR | the owner |

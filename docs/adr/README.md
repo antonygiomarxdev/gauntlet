@@ -1,6 +1,6 @@
 # Architecture decision records
 
-ADRs record durable decisions. The [PRD](../product/PRD.md), the FRDs, the [Technical Proposal](../technical/TP-01-gauntlet.md) and the Implementation Specs apply them. An ADR exists when a decision outlives one implementation slice or sets a rule other work must follow.
+ADRs record durable decisions. The [VISION](../VISION.md) and each [initiative](../initiatives/README.md)'s PRD, FRDs, technical proposal and implementation specs apply them. An ADR exists when a decision outlives one implementation slice or sets a rule other work must follow.
 
 ## Adding one
 

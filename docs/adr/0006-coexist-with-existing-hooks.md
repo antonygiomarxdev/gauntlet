@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-22
 - **Decision maker:** Owner (Antony Giomar Hernández)
-- **Related:** [ADR-0007](0007-commit-time-check-in-pre-commit.md), [PRD](../product/PRD.md)
+- **Related:** [ADR-0007](0007-commit-time-check-in-pre-commit.md), [VISION](../VISION.md)
 
 ## Context
 

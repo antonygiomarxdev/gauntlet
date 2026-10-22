@@ -4,7 +4,7 @@
 
 gauntlet studies your repository, agrees a set of rules with you, measures every existing violation, and from then on lets that number only go down. A new violation is caught when it is committed, when it is pushed, and in CI, whichever agent or human wrote it.
 
-> **Status: pre-release.** The specification is settled: [PRD, FRDs, technical proposal and ADRs](docs/README.md). The runner and the skill are being built. The process itself is not new: it ran by hand in a large production monorepo before it became gauntlet. See the [case study](docs/guide/case-study.md).
+> **Status: pre-release.** The specification is drafted: [vision, per-initiative PRD, FRDs and specs, and ADRs](docs/README.md). The runner and the skill are being built. The process itself is not new: it ran by hand in a large production monorepo before it became gauntlet. See the [case study](docs/guide/case-study.md).
 
 [Getting started](docs/guide/getting-started.md) · [Concepts](docs/guide/concepts.md) · [Rules & detectors](docs/guide/rules-and-detectors.md) · [Gates](docs/guide/gates.md) · [Exceptions](docs/guide/exceptions.md) · [Agents](docs/guide/agents.md) · [Comparison](docs/guide/comparison.md) · [FAQ](docs/guide/faq.md)
 

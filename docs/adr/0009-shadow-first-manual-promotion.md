@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-22
 - **Decision maker:** Owner (Antony Giomar Hernández)
-- **Related:** [ADR-0003](0003-baseline-is-derived.md), [ADR-0010](0010-a-rule-lives-in-one-place.md), [PRD](../product/PRD.md)
+- **Related:** [ADR-0003](0003-baseline-is-derived.md), [ADR-0010](0010-a-rule-lives-in-one-place.md), [VISION](../VISION.md)
 
 ## Context
 

@@ -34,7 +34,7 @@ The gate accepts today's debt as the floor, refuses any new violation, lets debt
    - **`pre-commit`** runs `stage: commit` rules on staged files, with a target under 5 s.
    - **`pre-push`** runs `gauntlet check --ci` plus every declared check.
    - **CI** runs `gauntlet check --ci`, plus the declared checks the Owner enabled for CI.
-2. **Why `pre-commit` and not `commit-msg`.** The commit-time check runs in `pre-commit`, because a baseline staged in `commit-msg` is left out of the commit. A spike on git 2.43 showed it ([ADR-0007](../../adr/0007-commit-time-check-in-pre-commit.md)).
+2. **Why `pre-commit` and not `commit-msg`.** The commit-time check runs in `pre-commit`, because a baseline staged in `commit-msg` is left out of the commit. A spike on git 2.43 showed it ([ADR-0007](../../../adr/0007-commit-time-check-in-pre-commit.md)).
 3. **What `check --ci` verifies:**
    1. **No new violations.** A `block` fingerprint absent from the base baseline fails, unless its path is waived.
    2. **Global.** A `block` rule's total must not rise.
