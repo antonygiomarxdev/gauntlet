@@ -1,5 +1,6 @@
 # Vision — gauntlet
 
+**Status:** Approved by Antony Giomar Hernández on 2026-10-22
 **Owner:** Antony Giomar Hernández
 
 This document does not change from one initiative to the next. Each [initiative](initiatives/README.md)'s PRD states how it serves the vision, and a PRD that drifts from it needs an explicit decision by the owner.
