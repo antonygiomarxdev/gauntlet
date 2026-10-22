@@ -1,0 +1,19 @@
+name: False positive
+description: A rule flagged code that does not violate it.
+labels: [false-positive]
+body:
+  - type: input
+    id: rule
+    attributes: { label: Rule id and engine, placeholder: "silent-catch (ast-grep)" }
+    validations: { required: true }
+  - type: textarea
+    id: code
+    attributes: { label: Smallest code that is wrongly flagged, render: text }
+    validations: { required: true }
+  - type: textarea
+    id: why
+    attributes: { label: Why it does not violate the rule }
+    validations: { required: true }
+  - type: input
+    id: version
+    attributes: { label: gauntlet version, placeholder: "gauntlet --version" }

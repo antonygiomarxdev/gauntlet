@@ -1,7 +1,7 @@
 # gauntlet — design
 
 Status: draft for owner approval (2026-10-22)
-Owner: Antony Giomar Hernández. This is a personal project; RUMAI is the first consumer, not the owner.
+Owner: Antony Giomar Hernández.
 
 ## 1. Intent
 
@@ -9,13 +9,13 @@ An agent that writes code in a repo must not be able to make that repo worse.
 
 gauntlet is a drop-in "gauntlet" for any repository. An agent installs it, studies the repo, agrees a set of rules with the owner, and measures every existing violation. From then on, debt can only go down. A new violation is caught at commit, at push and in CI.
 
-It extracts the process that works in RUMAI into one tool that is agnostic to language, agent harness and model. That process is per-rule ratchets, a diff gate, a touched-file gate, escape hatches and a pre-push gate.
+It extracts a process that was built by hand in a large production monorepo ("the origin project", see [case-study.md](case-study.md)) into one tool that is agnostic to language, agent harness and model. That process is per-rule ratchets, a diff gate, a touched-file gate, escape hatches and a pre-push gate.
 
 ### Why
 
 - **Rules in prose get forgotten.** A rule nobody counts gets violated, and nobody notices. A rule must bite at the moment the mistake is made.
-- **RUMAI's version is a pattern copied many times, not a system.** `scripts/` holds 47 check, ratchet and gate scripts. Each was written its own way, with its own baseline format, no shared registry and no guide for adding a rule. Many are rules disguised as scripts (`check-lucide-icons`, `check-elevation`, `check-transition-durations`, …).
-- **RUMAI's escape hatch became routine.** 127 of its last 400 commits carry a `Standards-waiver:` trailer. An escape an agent can write for itself gets used as a habit.
+- **The hand-built version is a pattern copied many times, not a system.** The origin project grew 41 bespoke check and ratchet scripts, each written its own way, with its own baseline format, no shared registry and no guide for adding a rule. Many are rules disguised as scripts.
+- **The hand-built escape hatch became routine.** Up to 17 % of a week's commits carried a waiver trailer. An escape an agent can write for itself gets used as a habit.
 - **The agent side is uncovered.** A 2026-10-22 survey of pawl, cleat, betterer, ESLint bulk suppressions, PHPStan/Psalm/detekt baselines, reviewdog and Trunk found that each covers part of the engine. None has a touched-file gate, rules as files with a rationale, onboarding that researches and proposes rules, or rules learned from an agent's repeated mistakes.
 
 ### Non-negotiable
@@ -30,16 +30,14 @@ It extracts the process that works in RUMAI into one tool that is agnostic to la
 4. Work in any language, any agent harness (Claude Code, Codex, Command Code, …) and any model.
 5. Learn: when the agent keeps making the same mistake, it proposes a new rule.
 6. Coexist with whatever the project already has. Never break an existing setup.
-7. Replace RUMAI's ratchet scripts and `prepush-gate.mjs` completely.
+7. Replace the origin project's hand-built ratchet scripts and pre-push gate completely.
 
 ## 3. Non-goals
 
 - Coordinator/worker agent orchestration (briefs, review loops, task DAGs). That is a separate project.
-- Moving RUMAI's non-rule scripts (deploy drift, heartbeat, design-file checks, …) into their own projects. The owner will do that separately.
 - Imposing standards, ADRs or an architecture. gauntlet enforces what the owner agrees to, nothing else.
 - A dashboard or HTML report. State lives as markdown in the repo.
-- Publishing to npm or any registry. Distribution is a git repo.
-- A public release. The repo stays private until it has run in RUMAI and a second repo.
+- Publishing to npm or any registry. Distribution is a public git repo.
 
 ## 4. Anti-goals
 
@@ -100,7 +98,7 @@ detector: .gauntlet/rules/silent-catch.yml
 paths: src/**
 exclude: **/*.test.ts
 fix: Log the error with context and rethrow, or handle it; never leave the catch empty.
-source: https://… (primary source) | ADR-0019 | pending
+source: https://… (primary source) | ADR-0007 | pending
 since: 2026-10-22              # when it entered shadow; drives the promotion reminder
 ---
 Why this rule exists, what to do instead, and the evidence found in this repo at onboarding.
@@ -112,7 +110,7 @@ Why this rule exists, what to do instead, and the evidence found in this repo at
 ## 8. Detectors
 
 - **Declarative only.** A detector is (1) a rule of the project's own linter, (2) an `ast-grep` YAML rule, for structural rules in any language, or (3) an `rg` pattern, for textual rules only, in that order of preference. A custom script needs an exception approved by the owner. It then lives in `.gauntlet/detectors/`, is built from a fixed template, and carries test cases.
-- **One run per tool.** Several rules backed by the same linter share one cached run per gate invocation. In RUMAI, ESLint runs three times per push today (≈140 s).
+- **One run per tool.** Several rules backed by the same linter share one cached run per gate invocation. In the origin project, ESLint ran three times per push (≈140 s).
 - **Input.** In the commit stage, the runner passes the staged files. In push and CI, it passes every file that matches `paths` minus `exclude`. The runner also filters the output to those files.
 - **Whole-program detectors** (type-check, dependency graph, duplicate definitions) set `stage: push`. They do not run at commit, but always run at push and in CI. They scan the whole repo, and the runner attributes each output line to its path. A violation that spans several locations prints one line per location.
 - **Fail closed.** A non-zero exit with no parseable output means the detector is broken, and the gate fails. A missing tool fails with the install command. Nothing is skipped silently.
@@ -140,18 +138,18 @@ The commit-time check runs in `commit-msg` rather than `pre-commit`, so the runn
   - Locally, it is `git config branch.<name>.gauntletBase`, which a stack tool or `gauntlet base <ref>` sets. It falls back to `origin/<default>`.
   - Using the target keeps stacked PRs from being charged with the whole stack.
 - The runner fetches the base and computes the merge-base.
-- CI checks out the full history. This comes from RUMAI: its diff gate passed locally and failed in CI because of a shallow checkout. Reproduce the condition, not just the command.
-- CI always runs the rules, which takes seconds and needs no opt-in label. Heavy checks (tests, build) run in CI only when the project's config says so; in RUMAI they stay behind `ci:full` because of the 3000-minute quota. Pre-push always runs everything.
+- CI checks out the full history. This comes from the origin project: its diff gate passed locally and failed in CI because of a shallow checkout. Reproduce the condition, not just the command.
+- CI always runs the rules, which takes seconds and needs no opt-in label. Heavy checks (tests, build) run in CI only when the project's config says so; CI minutes cost money. Pre-push always runs everything.
 
 ### What `check --ci` verifies
 
 1. **No new violations.** A `block` fingerprint that is absent from the merge-base baseline fails, unless it is waived. Fingerprints make the check immune to line shifts, moved code and reformatting.
 2. **Global.** A `block` rule's total must not rise.
-3. **Touched** (configurable, **off by default in an existing project**; RUMAI keeps it on):
+3. **Touched** (configurable, **off by default in an existing project**):
    - Every file the branch changed comes out with a strictly lower `block` total than it went in with. A file at 0 stays at 0.
    - Added files come out at 0.
    - Renames are followed, and pure renames are skipped.
-   - The total is summed across `block` rules: paying down one violation of any rule passes. This is the RUMAI decision of 2026-09-18.
+   - The total is summed across `block` rules: paying down one violation of any rule passes. This is what the origin project settled on.
    - `shadow` and `track` rules never count toward it.
 4. **Baseline is exact.** The runner re-measures, and the committed baseline must equal the measurement: higher is loose, lower means the code is above the baseline. Nobody edits the baseline by hand, agent or human.
 5. **No loosening.** Each of the following fails unless a matching exception exists:
@@ -201,7 +199,7 @@ Exceptions live in `.gauntlet/exceptions.tsv`. They are not commit trailers, bec
 
 ## 10. Linter-owned rules
 
-This follows the RUMAI criterion: `rules-of-hooks` stays at `error` in ESLint with no ratchet, while the `react-hooks/*` rules that carry debt are ratcheted.
+This follows the origin project's criterion: `rules-of-hooks` stays at `error` in ESLint with no ratchet, while the `react-hooks/*` rules that carry debt are ratcheted.
 
 - **A linter rule with zero violations** stays in the linter at `error`. gauntlet does not duplicate it.
 - **A linter rule with debt** becomes a gauntlet rule whose detector runs that linter rule.
@@ -217,7 +215,7 @@ The skill uses the Agent Skills format (`SKILL.md`). It is vendored into `.agent
 
 1. **Detect** the stack, the languages, the existing linters and their configs, the existing hooks and setup steps, the test and build commands, and the architecture and its patterns. In an empty repo, ask about the stack and architecture instead.
 2. **Research** best practices for the detected technologies from primary sources. Without web access, use the catalog and the repo evidence, and mark `source: pending`.
-3. **Ask before proposing anything from the catalog.** `catalog/` (in this repo) holds rule patterns generalized from RUMAI: silent catch, raw string comparison instead of enums, missing return type, layers importing the wrong way, and others. The catalog is inspiration only. A catalog rule is never activated without evidence in the repo and the owner's yes.
+3. **Ask before proposing anything from the catalog.** `catalog/` (in this repo) holds rule patterns generalized from the origin project: silent catch, raw string comparison instead of enums, missing return type, layers importing the wrong way, and others. The catalog is inspiration only. A catalog rule is never activated without evidence in the repo and the owner's yes.
 4. **Propose** each rule under a number, with:
    - why;
    - the source;
@@ -306,13 +304,8 @@ Claude Code does not read `AGENTS.md` natively (as pawl's docs state; verify thi
 ## 14. Rollout
 
 1. **Build gauntlet in this repo.** It is tested with fixture git repos driven from bash.
-2. **RUMAI:**
-   - **One ratchet per PR**, covering standards, depcruise, react-rules, mobile-lint, dup-defs, colour, typecheck, pen, and the check scripts that are really rules. Each PR converts one script into gauntlet rules with the same counts, and deletes the old script in the same PR.
-   - **The migration raises the bar.** Ratchets that only locked a global number gain the new-violation check and the touched check. Any PR that then fails is debt the owner delegates to an agent to fix. Each migration PR states which ratchet got stricter.
-   - **`Standards-waiver:` stops working.** Only `exceptions.tsv` remains.
-   - **The last PR** replaces `prepush-gate.mjs` with `gauntlet check --ci` plus the declared checks. The heavy CI jobs stay behind `ci:full`.
-3. **`rumai-edge`** (Python / edge AI) is the second repo. It proves the tool is language-agnostic.
-4. **Going public** is decided after steps 2 and 3.
+2. **The origin project.** It migrates one hand-built ratchet per PR into gauntlet rules with the same counts, deleting the old script in the same PR. Ratchets that only locked a global number gain the new-violation and touched checks; the debt this exposes is fixed, not waived. Its commit-trailer waivers stop working. The last PR replaces its pre-push gate with `gauntlet check --ci` plus declared checks.
+3. **A second repo in another language** (Python) proves language independence.
 
 ## 15. Decided by the builder (owner may override)
 
