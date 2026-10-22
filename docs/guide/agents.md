@@ -47,4 +47,4 @@ Adapters move the bite from push time to write time. Claude Code is the first:
 | `PreToolUse` on shell | denies `git commit` / `git push` with `--no-verify` or `-n` |
 | `PreToolUse` on file edits | denies edits to `baseline.tsv`, `exceptions.tsv` and active rules, except through `add-rule` after your yes |
 
-Adapters for other harnesses are welcome; see [CONTRIBUTING](../CONTRIBUTING.md).
+Adapters for other harnesses are welcome; see [CONTRIBUTING](../../CONTRIBUTING.md).

@@ -4,9 +4,9 @@
 
 gauntlet studies your repository, agrees a set of rules with you, measures every existing violation, and from then on lets that number only go down. A new violation is caught when it is committed, when it is pushed, and in CI, whichever agent or human wrote it.
 
-> **Status: pre-release.** The design is settled ([docs/design.md](docs/design.md)). The runner and the skill are being built. The process itself is not new: it ran by hand in a large production monorepo before it became gauntlet. See the [case study](docs/case-study.md).
+> **Status: pre-release.** The specification is settled: [PRD, FRDs, technical proposal and ADRs](docs/README.md). The runner and the skill are being built. The process itself is not new: it ran by hand in a large production monorepo before it became gauntlet. See the [case study](docs/guide/case-study.md).
 
-[Getting started](docs/getting-started.md) · [Concepts](docs/concepts.md) · [Rules & detectors](docs/rules-and-detectors.md) · [Gates](docs/gates.md) · [Exceptions](docs/exceptions.md) · [Agents](docs/agents.md) · [Comparison](docs/comparison.md) · [FAQ](docs/faq.md)
+[Getting started](docs/guide/getting-started.md) · [Concepts](docs/guide/concepts.md) · [Rules & detectors](docs/guide/rules-and-detectors.md) · [Gates](docs/guide/gates.md) · [Exceptions](docs/guide/exceptions.md) · [Agents](docs/guide/agents.md) · [Comparison](docs/guide/comparison.md) · [FAQ](docs/guide/faq.md)
 
 ---
 
@@ -73,7 +73,7 @@ flowchart LR
    - no rule was loosened.
 4. **Tighten.** When a commit lowers the debt, the new baseline travels in that same commit, so nobody has to remember to commit it.
 
-The [concepts page](docs/concepts.md) explains each piece.
+The [concepts page](docs/guide/concepts.md) explains each piece.
 
 ## Proven by hand first
 
@@ -101,7 +101,7 @@ xychart-beta
 
 Shipping did not slow down: merged PRs per week went *up* after the ratchets landed. The local gate stopped **71 of 519 pushes** (13.7 %) in its first logged week, before they reached CI.
 
-**Disclaimer.** These numbers come from the origin project's git history, under the hand-built version of the process. gauntlet itself has not produced them yet. The [case study](docs/case-study.md) covers the method, the caveats, where the hand-built version leaked, and how gauntlet's design answers each leak.
+**Disclaimer.** These numbers come from the origin project's git history, under the hand-built version of the process. gauntlet itself has not produced them yet. The [case study](docs/guide/case-study.md) covers the method, the caveats, where the hand-built version leaked, and how gauntlet's design answers each leak.
 
 ## Quick start
 
@@ -142,7 +142,7 @@ After onboarding:
 | [reviewdog](https://github.com/reviewdog/reviewdog) `-filter-mode=added` | any linter | none (diff only) | ✅ | ✅ added lines | — | — | — |
 | [lefthook](https://github.com/evilmartians/lefthook) / [prek](https://github.com/j178/prek) | — (hook runners) | — | ✅ | — | — | — | — |
 
-gauntlet runs inside lefthook, prek or husky rather than replacing them. The [full comparison](docs/comparison.md) has the details.
+gauntlet runs inside lefthook, prek or husky rather than replacing them. The [full comparison](docs/guide/comparison.md) has the details.
 
 ## Scope
 

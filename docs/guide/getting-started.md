@@ -1,6 +1,6 @@
 # Getting started
 
-> gauntlet is pre-release. This page describes the v0.1 interface. Track progress in the [changelog](../CHANGELOG.md).
+> gauntlet is pre-release. This page describes the v0.1 interface. Track progress in the [changelog](../../CHANGELOG.md).
 
 ## Requirements
 

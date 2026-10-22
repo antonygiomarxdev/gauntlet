@@ -1,25 +1,44 @@
-# Runner core (v0.1) Implementation Plan
+# Implementation Spec — Runner core
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+**Status:** Draft
+**Technical Proposal:** [TP-01 — gauntlet](../TP-01-gauntlet.md)
+**FRD criteria covered:** see §FRD acceptance mapping below
+**ADRs applied:** [0001](../../adr/0001-runner-is-bash-awk-git.md) · [0002](../../adr/0002-fingerprints-not-line-numbers.md) · [0003](../../adr/0003-baseline-is-derived.md) · [0004](../../adr/0004-declarative-detectors-only.md) · [0005](../../adr/0005-exceptions-are-human-only-rows.md) · [0006](../../adr/0006-coexist-with-existing-hooks.md) · [0007](../../adr/0007-commit-time-check-in-pre-commit.md) · [0008](../../adr/0008-base-is-the-branch-target.md) · [0009](../../adr/0009-shadow-first-manual-promotion.md)
+**Depends on:** none
 
-**Goal:** Ship the bash runner that measures rules, keeps the baseline exact, and gates commits, pushes and CI, so a repo can adopt gauntlet by hand before the skill exists.
+> **For agentic workers:** execute task by task, test first. Steps use checkboxes (`- [ ]`) for tracking. Each task becomes one GitHub issue (`Path: full`, naming this spec and its task number).
 
-**Architecture:** `bin/gauntlet` is a thin dispatcher that sources `lib/*.sh`. Each lib file owns one concern: config, rules, path selection, detectors, measurement, base resolution, checks, exceptions, hooks. Data moves between stages as TSV files in a per-run temp dir, and awk does every join. Tests build throwaway git repos and run the real binary.
+## Objective
 
-**Tech Stack:** bash (3.2-compatible), POSIX awk, git, `rg` and `ast-grep` as detector engines, shellcheck, GitHub Actions (ubuntu + macOS).
+Ship the bash runner. It measures rules, keeps the baseline exact, and gates commits, pushes and CI, so a repository can adopt gauntlet by hand before the skill exists (release criteria GT-PA1 and GT-PA2).
 
-**Spec:** [docs/design.md](../../design.md), plus the user docs in `docs/` (gates, exceptions, rules-and-detectors), which pin output and file formats.
+## Design
 
-**Out of scope (later plans):** the skill (`onboard`, `status` trend, `propose-rule`, `add-rule`), `HOW-TO-WRITE-A-RULE.md`, the `AGENTS.md` block, the Claude Code adapter, CI job generation and PR comments, the shared linter cache, guards and linter graduation, `fix`, `update`, the catalog, and the origin-project migration. Plan 2 covers the skill and agent integration. Plan 3 covers linter depth (cache, guards, `fix`). The origin-project migration is planned in that project's own repo.
+- `bin/gauntlet` is a thin dispatcher that sources `lib/*.sh`.
+- Each lib file owns one concern: config, rules, path selection, detectors, measurement, base resolution, checks, exceptions or hooks.
+- Data moves between stages as TSV files in a temp dir for each run, and awk does every join.
+- Tests build throwaway git repos and run the real binary.
+- Stack: bash (3.2-compatible), POSIX awk, git, `rg` and `ast-grep` as detector engines, shellcheck, and GitHub Actions on ubuntu and macOS.
+
+## Scope
+
+**Out of scope:** owned by IS-02 (skill and agent integration) and IS-03 (linter depth), per the [TP decomposition](../TP-01-gauntlet.md#15-implementation-spec-decomposition):
+- the skill (`onboard`, the `status` trend, `propose-rule`, `add-rule`);
+- `HOW-TO-WRITE-A-RULE.md` and the `AGENTS.md` block;
+- the Claude Code adapter;
+- CI job generation and PR comments;
+- the shared linter cache, guards and graduation;
+- `fix` and `update`;
+- the catalog.
 
 ## Global Constraints
 
-- The runner uses only bash, awk, git and coreutils (`sed sort grep mktemp date cat cp mkdir rm`). No jq, Node, Python or compile step. Source: design §13.
+- The runner uses only bash, awk, git and coreutils (`sed sort grep mktemp date cat cp mkdir rm`). No jq, Node, Python or compile step. Source: [ADR-0001](../../adr/0001-runner-is-bash-awk-git.md).
 - Bash 3.2 compatible (macOS default): no associative arrays, `mapfile`, `readarray`, `${x,,}`, `declare -n` or `|&`.
 - POSIX awk (BWK awk on macOS): no `gensub`, `asort`, `strftime`, `systime`, `\s` or `{n}` intervals.
 - Every `sort` and `comm` runs under `LC_ALL=C`.
 - Exit codes: `0` passes, `1` means the gate failed, `2` means the setup is broken or the usage is wrong.
-- A fingerprint is `rule + path + normalized line text`. Line numbers are never stored. Source: design §5.
+- A fingerprint is `rule + path + normalized line text`. Line numbers are never stored. Source: [ADR-0002](../../adr/0002-fingerprints-not-line-numbers.md).
 - Normalization strips `\r`, collapses runs of spaces and tabs to one space, and trims both ends.
 - The commit-time check runs in **`pre-commit`**, not `commit-msg`. A spike on git 2.43 showed that a baseline staged in `commit-msg` is left out of the commit. The docs were corrected in `d27c8c2`.
 - `shellcheck -x bin/gauntlet lib/*.sh test/*.sh` is clean.
@@ -35,12 +54,12 @@
 
 1. **The runner is split into `lib/` files and vendored as a folder.** Design §6 lists only `bin/gauntlet`; split files keep each concern small enough to review.
 2. **`check --ci` refuses a dirty tree.** It exits 2 when tracked files differ from `HEAD`, with the message `gauntlet checks what you push; commit or stash first`. Measuring the working tree while pushing `HEAD` would break parity. Untracked files do not count.
-3. **Partial staging (design §16).** The `pre-commit` check runs on the working tree. When a staged file also has unstaged changes, auto-tighten is skipped and a notice is printed. Push and CI still verify the exact baseline. The ceiling: a commit check can pass on code that is not what gets committed. The push gate catches it.
+3. **Partial staging** (open in the design draft; GATE-AC14). The `pre-commit` check runs on the working tree. When a staged file also has unstaged changes, auto-tighten is skipped and a notice is printed. Push and CI still verify the exact baseline. The ceiling: a commit check can pass on code that is not what gets committed. The push gate catches it.
 4. **lefthook and prek configs are YAML.** `install-hooks` prints the exact snippet for them and does not edit the file. `doctor` fails until the snippet is present. husky, a custom `core.hooksPath` and plain `.git/hooks` get the line added automatically.
 5. **Waivers apply only on their own branch.** A `waive` row applies only when its `branch` column equals the current branch (`GITHUB_HEAD_REF` in CI, `git symbolic-ref --short HEAD` locally). Rows from merged branches are ignored, and `doctor` lists them as stale. Deleting them on merge is left for later.
 6. **Loosening needs a new exception row.** A `loosen` or `remove` row counts only if it is new since the merge-base: present in the current `exceptions.tsv` and absent from the base's. Otherwise one old row would permit every future loosening.
 7. **New rules, and the onboarding branch, are exempt from checks 1–3.**
-   - A rule whose file does not exist at the merge-base is exempt from new, global and touched (design: "a new rule gets its own baseline entries").
+   - A rule whose file does not exist at the merge-base is exempt from new, global and touched ([GATE-AC12](../../product/frd/FRD-03-gates.md)).
    - When the merge-base has no `.gauntlet/baseline.tsv`, checks 1–3 are skipped with the note `no baseline at base`.
 8. **Detector exit codes.**
    - `0` is fine.
@@ -220,7 +239,7 @@
 
 - [ ] **Step 1: Failing tests:**
   - `test_fingerprint_ignores_line_shift`: insert 3 blank lines above a violation and re-measure; `measure.tsv` is byte-identical.
-  - `test_reformat_whole_file_same_fingerprints`: re-indent every line and turn spaces into tabs; the output is identical. This is design §8's required test.
+  - `test_reformat_whole_file_same_fingerprints`: re-indent every line and turn spaces into tabs; the output is identical. FRD-02 requires this test.
   - `test_crlf_equals_lf`: the same content saved with CRLF gives an identical `measure.tsv`.
   - `test_count_duplicates`: two identical violating lines in one file give `count` 2.
   - `test_baseline_command_writes_file`: `$G baseline`, then `.gauntlet/baseline.tsv` equals the expected TSV.
@@ -386,6 +405,7 @@
   - `test_widen_paths_is_not_loosening`: `paths=src/**` becomes `src/** lib/**`, and the status is 0.
   - `test_remove_rule_needs_remove_row`.
   - `test_empty_reason_rejected`: status 2.
+  - `test_trailer_not_a_waiver`: a commit message ending in `Standards-waiver: a.ts — x` waives nothing.
 - [ ] **Step 2:** Run `test/run.sh exceptions`. Expected: FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run `test/run.sh exceptions`. Expected: PASS.
@@ -551,6 +571,32 @@
 - [ ] **Step 3:** Update the docs for decisions 2–5 (the dirty tree, partial staging, YAML hook managers, waiver branch scope). Change the README status note to "runner usable by hand; skill in progress".
 - [ ] **Step 4:** Run `changie new` (Changed: "The commit-time check runs in `pre-commit`.").
 - [ ] **Step 5:** Commit: `test: end-to-end lifecycle; docs follow the runner`.
+
+## FRD acceptance mapping
+
+| FRD criteria | Task |
+|---|---|
+| RULE-AC1, AC2 | 2 |
+| RULE-AC3–AC7 | 4 |
+| RULE-AC8 | 12 |
+| RULE-AC9–AC12 | 6 |
+| RULE-AC13 | 11 |
+| RULE-AC14 | 8 |
+| GATE-AC1, AC2, AC14 | 12 |
+| GATE-AC3 | 5 and 8 |
+| GATE-AC4–AC6, AC10–AC13, AC16 | 8 |
+| GATE-AC7, AC8 | 9 |
+| GATE-AC9 | 7 |
+| GATE-AC15 | 11 |
+| GATE-AC17 | 13 |
+| EXC-AC1–AC10 | 10 |
+| EXC-AC11 | 14 |
+| LIFE-AC1–AC4, AC10, AC11 | 14 |
+
+Not covered here, and owned by later specs:
+- EXC-AC12 (CI comments) and LIFE-AC5–AC7, AC12 (agent proposals, trend) go to IS-02;
+- LIFE-AC8 and AC9 (guards) go to IS-03;
+- ONB and AGENT go to IS-02.
 
 ## Self-review notes
 

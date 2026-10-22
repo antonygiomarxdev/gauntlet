@@ -8,7 +8,7 @@ Nobody opens an issue directly. Everything starts as a [discussion](https://gith
 
 - **Bugs:** the *Bug reports* category.
 - **False positives:** the *False positives* category. This is the most important kind of bug: a gate that cries wolf gets disabled.
-- **New detector engines, adapters for other agent harnesses, recipes for a stack, changes to the design** ([docs/design.md](docs/design.md)): the *Ideas* category, before writing code. The anti-goals in §4 are firm.
+- **New detector engines, adapters for other agent harnesses, recipes for a stack, changes to the specification** ([docs/](docs/README.md)): the *Ideas* category, before writing code. The anti-goals in the [PRD](docs/product/PRD.md#6-anti-goals) are firm.
 - **Questions:** the *Q&A* category.
 - **Vulnerabilities:** never in public; see [SECURITY.md](SECURITY.md).
 
