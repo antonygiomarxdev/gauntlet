@@ -33,7 +33,7 @@ A blog post is not enough to block a commit. If onboarding ran without web acces
 
 ### `stage`
 
-- **`commit`** rules run in `commit-msg`, on staged files only, and must be fast.
+- **`commit`** rules run in `pre-commit`, on staged files only, and must be fast.
 - **`push`** is for whole-program detectors (type-check, dependency graph, duplicate definitions). These rules are skipped at commit, but always run at pre-push and in CI.
 
 ## Detectors
@@ -73,7 +73,7 @@ Use this for rules that really are textual.
 
 ```yaml
 engine: rg
-detector: rg --line-number --no-heading 'console\.log\(' {files}
+detector: rg --with-filename --line-number --no-heading 'console\.log\(' {files}
 ```
 
 ### Custom scripts

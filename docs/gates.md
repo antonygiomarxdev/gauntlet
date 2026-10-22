@@ -4,7 +4,7 @@
 
 | Where | Runs | Purpose |
 |---|---|---|
-| `commit-msg` hook | `stage: commit` rules on staged files | fast feedback, under 5 s |
+| `pre-commit` hook | `stage: commit` rules on staged files | fast feedback, under 5 s |
 | `pre-push` hook | `gauntlet check --ci`, plus your declared checks | your guarantee before sending |
 | CI | `gauntlet check --ci`, plus whichever declared checks you enable there | catches anyone who skipped the hooks |
 
@@ -47,7 +47,7 @@ CI must check out the full history. A shallow checkout computes a different diff
 
 ## Auto-tighten
 
-When a commit lowers the debt, `commit-msg` rewrites `baseline.tsv` and stages it into that same commit. The fix and its lower number always travel together.
+When a commit lowers the debt, `pre-commit` rewrites `baseline.tsv` and stages it into that same commit. The fix and its lower number always travel together.
 
 ## Hooks: coexist, never take over
 
@@ -55,7 +55,7 @@ When a commit lowers the debt, `commit-msg` rewrites `baseline.tsv` and stages i
 |---|---|
 | husky, lefthook, prek / pre-commit, custom hooks | adds **one line** calling gauntlet inside the existing hook |
 | `core.hooksPath` already set | leaves it alone |
-| no hooks at all | installs its own `commit-msg` and `pre-push` |
+| no hooks at all | installs its own `pre-commit` and `pre-push` |
 
 `core.hooksPath` does not travel with a clone. To cover that, onboarding wires `gauntlet install-hooks` into the setup step your project already has (`prepare`, `make setup`, …), so a teammate who clones is protected without remembering.
 

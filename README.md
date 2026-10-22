@@ -56,7 +56,7 @@ flowchart LR
   A[onboard<br/>infer stack · research · propose] -->|owner approves each rule| B[rules<br/>.gauntlet/rules/*.md]
   B --> C[measure<br/>baseline.tsv]
   C --> D{gates}
-  D --> E[commit-msg<br/>staged files · under 5 s]
+  D --> E[pre-commit<br/>staged files · under 5 s]
   D --> F[pre-push<br/>everything CI runs]
   D --> G[CI<br/>same command]
   E & F & G -->|debt fell| H[baseline lowered<br/>in the same commit]

@@ -125,11 +125,11 @@ The same runner runs in three places:
 
 | Where | What runs | Role |
 |---|---|---|
-| `commit-msg` hook | `stage: commit` rules on staged files: new-violation check, touched check if enabled, auto-tighten | fast feedback; target under 5 s |
+| `pre-commit` hook | `stage: commit` rules on staged files: new-violation check, touched check if enabled, auto-tighten | fast feedback; target under 5 s |
 | `pre-push` hook | `gauntlet check --ci` plus every declared check | the developer's guarantee before sending |
 | CI | `gauntlet check --ci` always; heavy checks per project config | catches anyone who skipped the hooks |
 
-The commit-time check runs in `commit-msg` rather than `pre-commit`, so the runner can tighten the baseline into the same commit.
+The commit-time check runs in `pre-commit`. Git re-reads the index after `pre-commit`, so a baseline the runner stages there lands in the same commit. It does not after `commit-msg`: a spike on git 2.43 showed the staged baseline left out of the commit and still staged afterwards.
 
 ### Parity
 
@@ -164,7 +164,7 @@ The commit-time check runs in `commit-msg` rather than `pre-commit`, so the runn
 
 - **No fail-fast.** Every check runs, and every violation is reported together as `path:line  rule  message`, followed by the rule's `fix` line. The agent fixes everything in one pass.
 - **Wall time** is printed per rule and per check.
-- **Auto-tighten.** When counts fall, `commit-msg` rewrites `baseline.tsv` and stages it into the same commit. A fix and its lowered number always travel together, and nobody has to remember.
+- **Auto-tighten.** When counts fall, `pre-commit` rewrites `baseline.tsv` and stages it into the same commit. A fix and its lowered number always travel together, and nobody has to remember.
 - **`shadow`** prints "would have failed" with the details and never fails. A shadow rule stays in shadow until the owner promotes it. After 7 days, `status` and the agent remind the owner to promote it, with how often it would have failed and any false positives reported. Promotion is never automatic.
 - **`track`** is counted and printed and never fails. When its count rises, the output says so with the delta, and the agent proposes promoting it.
 
@@ -313,7 +313,7 @@ Claude Code does not read `AGENTS.md` natively (as pawl's docs state; verify thi
 - The first CI template is GitHub Actions. Other CI providers come when a consumer needs them.
 - The tool's own tests are fixture repos plus a bash test script, with no test framework dependency.
 - `stage: commit | push` is set per rule, for whole-program detectors (§8).
-- The commit-time check runs in `commit-msg` (§9).
+- The commit-time check runs in `pre-commit` (§9).
 - The base ref is the branch's target, for stacked PRs (§9).
 - Rule cases may be single files, directories, in-project fixture paths, or config fixtures for guards (§8).
 - `doctor` checks the installation and `fix` fixes the code. They are separate commands.

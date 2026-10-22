@@ -57,7 +57,7 @@ Every new `block` rule starts as `shadow`, so a false positive is caught before 
 ## Gate
 
 The same runner runs at three points:
-- the `commit-msg` hook, which checks staged files and must finish in under 5 s;
+- the `pre-commit` hook, which checks staged files and must finish in under 5 s;
 - the `pre-push` hook, which runs everything CI runs;
 - CI itself.
 
