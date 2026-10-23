@@ -409,7 +409,7 @@ test_over_budget_warns_not_fails() {
   must git add a.ts
   run env GAUNTLET_COMMIT_BUDGET_MS=1 git commit -q -m "chore: tweak"
   assert_eq 0 "$STATUS" "commit status"
-  assert_contains "$OUT" "[slow] over the 5 s commit budget"
+  assert_contains "$OUT" "[slow] over the 1 ms commit budget"
 }
 
 test_normal_run_is_not_slow() {
@@ -727,4 +727,17 @@ test_two_renames_in_one_commit_commit() {
   assert_not_contains "$OUT" "[new]"
   assert_eq "$(printf 'todo\tb.ts\tTODO one\t1\ntodo\td.ts\tTODO two\t1')" "$(staged_committed_baseline)"
   staged_assert_exact
+}
+
+# The [slow] line names the budget that was set: 5 s for the default, else the
+# milliseconds. A line that always said 5 s was wrong under GAUNTLET_COMMIT_BUDGET_MS.
+test_budget_label_names_the_real_budget() {
+  # shellcheck source=lib/core.sh
+  . "$ROOT/lib/core.sh"
+  # shellcheck source=lib/check.sh
+  . "$ROOT/lib/check.sh"
+  assert_eq "5 s" "$(budget_label 5000)" "the default"
+  assert_eq "1 ms" "$(budget_label 1)" "a short budget"
+  assert_eq "5001 ms" "$(budget_label 5001)" "a neighbour of the default"
+  assert_eq "300 ms" "$(budget_label 300)" "a budget below a second"
 }

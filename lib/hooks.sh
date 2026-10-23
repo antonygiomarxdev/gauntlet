@@ -107,53 +107,52 @@ recover_interrupted_install() {
       mv ".gauntlet/.$name.old" ".gauntlet/$name" || die "cannot restore .gauntlet/$name from .gauntlet/.$name.old"
     fi
   done
-  discard_dirs .gauntlet/.bin.new .gauntlet/.lib.new .gauntlet/.bin.old .gauntlet/.lib.old
+  discard_dirs .gauntlet/.bin.new .gauntlet/.lib.new
 }
 
 # swap_runner: move the old runner aside and the new one in, bin then lib. A failed
 # move rolls back what was moved. The new copies are dropped only once the old runner
 # is back; the old copies are dropped only after every move succeeded.
 swap_runner() {
-  local bin_aside=0 bin_in=0 lib_aside=0 lib_in=0
+  local bin_aside=0 bin_in=0 lib_aside=0
   if [ -e .gauntlet/bin ]; then
     if ! mv .gauntlet/bin .gauntlet/.bin.old; then
-      swap_failed "$bin_aside" "$bin_in" "$lib_aside" "$lib_in" "cannot move the old runner aside"
+      swap_failed "$bin_aside" "$bin_in" "$lib_aside" "cannot move the old runner aside"
     fi
     bin_aside=1
   fi
   if ! mv .gauntlet/.bin.new .gauntlet/bin; then
-    swap_failed "$bin_aside" "$bin_in" "$lib_aside" "$lib_in" "cannot move the new runner into .gauntlet/bin"
+    swap_failed "$bin_aside" "$bin_in" "$lib_aside" "cannot move the new runner into .gauntlet/bin"
   fi
   bin_in=1
   if [ -e .gauntlet/lib ]; then
     if ! mv .gauntlet/lib .gauntlet/.lib.old; then
-      swap_failed "$bin_aside" "$bin_in" "$lib_aside" "$lib_in" "cannot move the old runner aside"
+      swap_failed "$bin_aside" "$bin_in" "$lib_aside" "cannot move the old runner aside"
     fi
     lib_aside=1
   fi
   if ! mv .gauntlet/.lib.new .gauntlet/lib; then
-    swap_failed "$bin_aside" "$bin_in" "$lib_aside" "$lib_in" "cannot move the new runner into .gauntlet/lib"
+    swap_failed "$bin_aside" "$bin_in" "$lib_aside" "cannot move the new runner into .gauntlet/lib"
   fi
-  lib_in=1
   discard_dirs .gauntlet/.bin.old .gauntlet/.lib.old
 }
 
-# swap_failed <bin-aside> <bin-in> <lib-aside> <lib-in> <message>: undo the moves that
-# were made, in reverse, then fail. The new copies are dropped only when the old
+# swap_failed <bin-aside> <bin-in> <lib-aside> <message>: undo the moves that were
+# made, in reverse, then fail. The new lib is never in place when a move fails, so
+# only the old lib needs to come back. The new copies are dropped only when the old
 # runner is back; otherwise they stay, and the message names the old copies that exist.
 swap_failed() {
   local ok=0 old=""
-  if [ "$4" = 1 ]; then mv .gauntlet/lib .gauntlet/.lib.new || ok=1; fi
   if [ "$3" = 1 ]; then mv .gauntlet/.lib.old .gauntlet/lib || ok=1; fi
   if [ "$2" = 1 ]; then mv .gauntlet/bin .gauntlet/.bin.new || ok=1; fi
   if [ "$1" = 1 ]; then mv .gauntlet/.bin.old .gauntlet/bin || ok=1; fi
   if [ "$ok" -ne 0 ]; then
     if [ "$1" = 1 ]; then old=" .gauntlet/.bin.old"; fi
     if [ "$3" = 1 ]; then old="$old .gauntlet/.lib.old"; fi
-    die "$5; the rollback failed, so the old runner is in$old"
+    die "$4; the rollback failed, so the old runner is in$old"
   fi
   discard_dirs .gauntlet/.bin.new .gauntlet/.lib.new
-  die "$5; the old runner is back"
+  die "$4; the old runner is back"
 }
 
 # discard_dirs <dir>...: remove directories this install made. Their modes are made

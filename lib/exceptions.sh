@@ -89,12 +89,6 @@ waived_paths() {
   GL_BRANCH=$branch awk -F "$DETECT_TAB" '$1 == "waive" && $5 == ENVIRON["GL_BRANCH"] { print $2 }' "$file"
 }
 
-# is_waived <path>: true when the current branch waives the path. The gate
-# filters whole sets with waived_paths; this is for single lookups.
-is_waived() {
-  waived_paths | GL_PATH=$1 awk '$0 == ENVIRON["GL_PATH"] { found = 1 } END { exit !found }'
-}
-
 # exc_has_script <rule-id>: succeed when exceptions.tsv in the working tree has a
 # script row for the rule (RULE-AC2). Only the row's presence is asked for. Fails
 # when the file is missing or unreadable.

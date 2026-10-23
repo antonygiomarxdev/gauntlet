@@ -2,8 +2,8 @@
 # The gates: check --ci compares the branch with its merge-base, and check
 # --staged is the commit gate (the index against HEAD, run from pre-commit).
 # Sourced, never executed. Bash 3.2 compatible; awk, sort, cmp, diff and git only.
-# Needs core.sh, rules.sh, measure.sh, base.sh, detect.sh and exceptions.sh
-# sourced first.
+# Needs core.sh, rules.sh, paths.sh, detect.sh, measure.sh, cases.sh, base.sh and
+# exceptions.sh sourced first.
 
 # check_ci [--ci] [--base <ref>]: the CI gate, against the merge-base of HEAD and
 # the base ref. Prints the report and returns 0 (ok), 1 (problems) or 2 (setup
@@ -523,8 +523,10 @@ cmp_touched() {
 # the work of cmp_touched, with intermediate files kept in <scratch>.
 cmp_touched_in() {
   local diff=$1 base=$2 now=$3 rules=$4 waived=$5 scratch=$6
-  # R100 (pure rename) and D are skipped: judged anyway, their verdict would be the
-  # same. diff_entries drops `.gauntlet/` (R15) and parses the -z tokens.
+  # R100 (a pure rename) and D are skipped. A pure rename keeps its content, so its
+  # debt cannot go down and "must go down" would fail it for nothing; a deleted file
+  # has nothing left to judge. diff_entries drops `.gauntlet/` (R15) and parses the
+  # -z tokens.
   diff_entries "$diff" > "$scratch/entries" || return 2
   awk -F '\t' '
     $1 == "A" || $1 == "M" { printf "%s\t%s\t%s\n", $1, $2, $2; next }
@@ -612,7 +614,7 @@ cmp_loosened_in() {
       continue
     fi
 
-    loosen_changes "$mb" "$scratch" "$id" "$scratch/base.md" "$root/$name" > "$scratch/changes" || return 2
+    loosen_changes "$mb" "$scratch" "$scratch/base.md" "$root/$name" > "$scratch/changes" || return 2
     if [ -s "$scratch/changes" ] &&
       ! GL_ID=$id awk 'index($0, ENVIRON["GL_ID"] ":") == 1 { found = 1 } END { exit !found }' "$scratch/new.loosen"; then
       GL_ID=$id awk '{ printf "%s\t%s\n", ENVIRON["GL_ID"], $0 }' "$scratch/changes" >> "$scratch/out" || return 2
@@ -621,14 +623,12 @@ cmp_loosened_in() {
   cat "$scratch/out"
 }
 
-# loosen_changes <merge-base> <scratch> <rule-id> <base-rule> <current-rule>:
-# print one line per way the rule was loosened since the merge-base. Raising a
-# severity, widening paths, narrowing exclude and a format that stays the same
-# are not loosening.
+# loosen_changes <merge-base> <scratch> <base-rule> <current-rule>: print one line
+# per way the rule was loosened since the merge-base. Raising a severity, widening
+# paths, narrowing exclude and a format that stays the same are not loosening.
 loosen_changes() {
-  local mb=$1 scratch=$2 id=$3 brule=$4 crule=$5
-  local root bsev csev rb rc bp cp be ce beng ceng bdet cdet bfe cfe bfmt cfmt gp has
-  root=$(repo_root) || return 2
+  local mb=$1 scratch=$2 brule=$3 crule=$4
+  local bsev csev rb rc bp cp be ce beng ceng bdet cdet bfe cfe bfmt cfmt gp has
   bsev=$(rule_get "$brule" severity) || return 2
   csev=$(rule_get "$crule" severity) || return 2
   rb=$(severity_rank "$bsev") || rb=0
@@ -742,6 +742,15 @@ commit_budget() {
   printf '%s\n' "$budget"
 }
 
+# budget_label <ms>: print the commit budget as the [slow] line names it: "5 s" for
+# the default 5000 ms, else "<n> ms".
+budget_label() {
+  case "$1" in
+    5000) printf '5 s\n' ;;
+    *) printf '%s ms\n' "$1" ;;
+  esac
+}
+
 # commit_times_path <root>: print the absolute path of the file the commit gate keeps
 # its per-rule times in: gauntlet-time.tsv in the git dir of this worktree, so it is
 # never in the work tree and never committed. status reads the same path.
@@ -827,9 +836,9 @@ check_staged_run() {
     : > "$scratch/now/time.tsv" || return 2
   fi
 
-  # The per-rule times of this run are kept for status; a failure to keep them never
-  # changes the gate's result.
-  record_commit_times "$root" "$scratch/now/time.tsv" || true
+  # The per-rule times of this run are kept for status; record_commit_times returns
+  # 0 whatever happens, so a failure to keep them never changes the gate's result.
+  record_commit_times "$root" "$scratch/now/time.tsv"
 
   # staged.diff: HEAD against the index, renames followed. staged.paths: every
   # path it names, both sides of a rename and deletions included.
@@ -840,7 +849,7 @@ check_staged_run() {
     { print; need-- }
   ' "$scratch/staged.diff" > "$scratch/staged.paths" || return 2
 
-  # Partial staging (decision 4): a staged path that also has unstaged changes.
+  # Partial staging (decision 3): a staged path that also has unstaged changes.
   # The baseline is left out: this hook is the one that writes it.
   git_nul_lines -c core.quotepath=off diff --name-only --no-renames -z > "$scratch/unstaged" || return 2
   partial=$(GL_STAGED="$scratch/staged.paths" GL_BASELINE=.gauntlet/baseline.tsv awk '
@@ -947,7 +956,7 @@ check_staged_run() {
     elif [ "$unstaged_base" -eq 1 ]; then
       printf 'note: baseline.tsv has unstaged changes; run gauntlet baseline before pushing\n' >> "$body"
     fi
-    # Auto-tighten runs only on a pass (decision 5), and only when nothing above skipped it.
+    # Auto-tighten runs only on a pass, and only when nothing above skipped it.
     if [ "$problems" -eq 0 ] && [ "$by_path" -eq 0 ] && [ "$partial" -eq 0 ] \
       && [ "$has_index" -eq 1 ] && [ "$unstaged_base" -eq 0 ]; then
       tighten_baseline "$root" "$scratch" >> "$body" || return 2
@@ -957,7 +966,7 @@ check_staged_run() {
   end=$(now_ms)
   ms=$((end - start))
   if GL_MS=$ms GL_BUDGET=$budget awk 'BEGIN { exit !(ENVIRON["GL_MS"] + 0 > ENVIRON["GL_BUDGET"] + 0) }'; then
-    printf '[slow] over the 5 s commit budget\n' >> "$body"
+    printf '[slow] over the %s commit budget\n' "$(budget_label "$budget")" >> "$body"
   fi
   printf '[time]\n' >> "$body"
   awk -F '\t' '{ printf "  %s  %s ms\n", $1, $2 }' "$scratch/now/time.tsv" >> "$body" || return 2
