@@ -14,9 +14,20 @@ set -eu
 . "$(dirname "$0")/../lib/measure.sh"
 # shellcheck source=lib/cases.sh
 . "$(dirname "$0")/../lib/cases.sh"
+# shellcheck source=lib/base.sh
+. "$(dirname "$0")/../lib/base.sh"
 
 case "${1:-}" in
   --version) printf 'gauntlet %s\n' "$GAUNTLET_VERSION" ;;
+  base)
+    # Outside a repo, repo_root exits 2 before any lookup can fall back to main.
+    repo_root >/dev/null
+    if [ -n "${2:-}" ]; then
+      git config "branch.$(current_branch).gauntletBase" "$2"
+    else
+      resolve_base ""
+    fi
+    ;;
   baseline)
     root=$(repo_root) || exit 2
     scratch=$(mktemp -d) || exit 2
