@@ -142,7 +142,9 @@ check_run() {
   base_has "$sha" .gauntlet/rules || rc=$?
   case "$rc" in
     0)
-      cmp_loosened "$sha" > "$scratch/loosened.rows" || return 2
+      cmp_loosened "$sha" "$scratch/loosened.covered" > "$scratch/loosened.rows" || return 2
+      # Covered loosenings pass; the report names each one with its row's reason, here and in CI.
+      awk -F '\t' '{ printf "note: loosened %s: %s; covered by \"%s\"\n", $1, $2, $3 }' "$scratch/loosened.covered" >> "$body" || return 2
       if [ -s "$scratch/loosened.rows" ]; then
         printf '[loosened]\n' >> "$body"
         awk -F '\t' '{ printf "  %s  %s\n", $1, $2 }' "$scratch/loosened.rows" >> "$body"
@@ -587,27 +589,33 @@ cmp_touched_in() {
   cat "$scratch/touched"
 }
 
-# cmp_loosened <merge-base>: the no-loosening check (decision 6, EXC-AC5..AC8).
-# Compares each rule file at the merge-base with the working tree and prints a
-# tab row (rule, what changed) for each loosening that no new exceptions.tsv
-# row covers. Prints nothing when nothing was loosened.
+# cmp_loosened <merge-base> [<covered-file>]: the no-loosening check (decision 6,
+# EXC-AC5..AC8). Compares each rule file at the merge-base with the working tree and prints
+# a tab row (rule, what changed) for each loosening that no new exceptions.tsv row covers.
+# Prints nothing when nothing was loosened. A loosening that a row covers is not printed;
+# when <covered-file> is given it gets a row (rule, what changed, the row's reason) for
+# each of them, so the report can say what was relaxed and why.
 cmp_loosened() {
-  local mb=$1 scratch status=0
+  local mb=$1 covered=${2:-} scratch status=0
   scratch=$(tmp_new -d) || return 2
   cmp_loosened_in "$mb" "$scratch" || status=$?
+  if [ "$status" -eq 0 ] && [ -n "$covered" ]; then cp "$scratch/covered" "$covered" || status=2; fi
   rm -rf "$scratch"
   return "$status"
 }
 
 # cmp_loosened_in <merge-base> <scratch>: the work of cmp_loosened, with
-# intermediate files kept in <scratch>. Only rules that exist at the base are
-# judged; a rule added on the branch is never loosened.
+# intermediate files kept in <scratch>; the covered rows are left in <scratch>/covered.
+# Only rules that exist at the base are judged; a rule added on the branch is never
+# loosened.
 cmp_loosened_in() {
-  local mb=$1 scratch=$2 root name rest id
+  local mb=$1 scratch=$2 root name rest id reason
   root=$(repo_root) || return 2
   exc_new_rows "$mb" "$scratch/exc.new" || return 2
-  awk -F "$DETECT_TAB" '$1 == "loosen" { print $2 }' "$scratch/exc.new" > "$scratch/new.loosen" || return 2
-  awk -F "$DETECT_TAB" '$1 == "remove" { print $2 }' "$scratch/exc.new" > "$scratch/new.remove" || return 2
+  # The new rows' targets and reasons: "<rule>: <what>" with its reason, and the removed rule.
+  awk -F "$DETECT_TAB" '$1 == "loosen" { print $2 "\t" $3 }' "$scratch/exc.new" > "$scratch/new.loosen" || return 2
+  awk -F "$DETECT_TAB" '$1 == "remove" { print $2 "\t" $3 }' "$scratch/exc.new" > "$scratch/new.remove" || return 2
+  : > "$scratch/covered"
   git_nul_diff_lines -c core.quotepath=off ls-tree --full-tree -r --name-only -z "$mb" -- .gauntlet/rules > "$scratch/base.rules" || return 2
 
   : > "$scratch/out"
@@ -621,19 +629,31 @@ cmp_loosened_in() {
     at_base "$mb" "$name" > "$scratch/base.md" || return 2
 
     if [ ! -f "$root/$name" ]; then
-      if ! GL_ID=$id awk '$0 == ENVIRON["GL_ID"] { found = 1 } END { exit !found }' "$scratch/new.remove"; then
-        printf '%s\trule file removed\n' "$id" >> "$scratch/out"
-      fi
+      printf 'rule file removed\n' > "$scratch/changes"
+      reason=$(GL_ID=$id awk -F "$DETECT_TAB" '$1 == ENVIRON["GL_ID"] { print "x" $2; exit }' "$scratch/new.remove") || return 2
+      loosen_row "$id" "$reason" "$scratch" || return 2
       continue
     fi
 
     loosen_changes "$mb" "$scratch" "$scratch/base.md" "$root/$name" > "$scratch/changes" || return 2
-    if [ -s "$scratch/changes" ] &&
-      ! GL_ID=$id awk 'index($0, ENVIRON["GL_ID"] ":") == 1 { found = 1 } END { exit !found }' "$scratch/new.loosen"; then
-      GL_ID=$id awk '{ printf "%s\t%s\n", ENVIRON["GL_ID"], $0 }' "$scratch/changes" >> "$scratch/out" || return 2
-    fi
+    reason=$(GL_ID=$id awk -F "$DETECT_TAB" 'index($1, ENVIRON["GL_ID"] ":") == 1 { print "x" $2; exit }' "$scratch/new.loosen") || return 2
+    loosen_row "$id" "$reason" "$scratch" || return 2
   done < "$scratch/base.rules"
   cat "$scratch/out"
+}
+
+# loosen_row <id> <row> <scratch>: file the changes in <scratch>/changes, one per line,
+# under <id>. <row> is empty when no new row covers the rule, else "x" and the first
+# covering row's reason (the "x" keeps a row with an empty reason, which a hand edit can
+# make, from reading as no row). Uncovered changes go to <scratch>/out as (id, what);
+# covered ones to <scratch>/covered as (id, what, reason).
+loosen_row() {
+  if [ ! -s "$3/changes" ]; then return 0; fi
+  if [ -z "$2" ]; then
+    GL_ID=$1 awk '{ printf "%s\t%s\n", ENVIRON["GL_ID"], $0 }' "$3/changes" >> "$3/out" || return 2
+  else
+    GL_ID=$1 GL_REASON=${2#x} awk '{ printf "%s\t%s\t%s\n", ENVIRON["GL_ID"], $0, ENVIRON["GL_REASON"] }' "$3/changes" >> "$3/covered" || return 2
+  fi
 }
 
 # loosen_changes <merge-base> <scratch> <base-rule> <current-rule>: print one line

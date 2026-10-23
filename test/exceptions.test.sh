@@ -973,3 +973,105 @@ test_exception_commands_without_a_gauntlet_directory() {
   done
   [ ! -e .gauntlet ] || fail "a .gauntlet directory appeared"
 }
+
+# A loosening that a new row covers passes, and says so: a reviewer reading the CI log sees
+# what was relaxed and why. One note per covered item; the exit code is not touched.
+test_a_covered_loosening_prints_a_note_and_passes() {
+  exc_setup 'ok'
+  rule todo paths='**/*.ts' severity=shadow
+  run "$G" loosen todo "severity to shadow" "generated code"
+  assert_eq 0 "$STATUS" "loosen status"
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" 'note: loosened todo: severity block → shadow; covered by "generated code"'
+  assert_contains "$OUT" "gauntlet: ok"
+  assert_not_contains "$OUT" "[loosened]"
+}
+
+test_each_covered_item_gets_its_own_note() {
+  mkrepo
+  mkdir -p src lib
+  printf 'ok\n' > src/a.ts
+  rule todo paths='src/** lib/**'
+  cases_of todo 'TODO FIXME x'
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  rule todo paths='src/**' severity=shadow
+  run "$G" loosen todo "narrower and shadow" "legacy tree"
+  assert_eq 0 "$STATUS" "loosen status"
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" 'note: loosened todo: severity block → shadow; covered by "legacy tree"'
+  assert_contains "$OUT" 'note: loosened todo: paths narrowed: lib/**; covered by "legacy tree"'
+  assert_eq 2 "$(printf '%s\n' "$OUT" | grep -c '^note: loosened ')" "one note per item"
+}
+
+test_a_covered_rule_removal_prints_a_note() {
+  exc_setup 'ok'
+  must git rm -q .gauntlet/rules/todo.md
+  run "$G" remove todo "rule retired"
+  assert_eq 0 "$STATUS" "remove status"
+  exc_rebase
+  exc_commit drop-rule
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" 'note: loosened todo: rule file removed; covered by "rule retired"'
+}
+
+# Only what a row covers is noted; what it does not cover keeps failing, in the old words.
+test_an_uncovered_loosening_prints_no_note_and_still_fails() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule a paths='**/*.ts'
+  rule ab paths='**/*.ts'
+  cases_of a 'TODO x'
+  cases_of ab 'TODO x'
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  rule a paths='**/*.ts' severity=shadow
+  rule ab paths='**/*.ts' severity=shadow
+  run "$G" loosen ab "severity to shadow" "reason ab"
+  assert_eq 0 "$STATUS" "loosen status"
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "[loosened]"
+  assert_contains "$OUT" "  a  severity block → shadow"
+  assert_contains "$OUT" 'note: loosened ab: severity block → shadow; covered by "reason ab"'
+  assert_not_contains "$OUT" "note: loosened a:"
+  assert_contains "$OUT" "FAIL (1 problem)"
+}
+
+# The note is the same on a laptop and in CI: the owner's rule is that the two never differ.
+test_the_covered_note_is_the_same_in_ci() {
+  exc_setup 'ok'
+  rule todo paths='**/*.ts' severity=shadow
+  run "$G" loosen todo "severity to shadow" "generated code"
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "local: $OUT"
+  want=$(exc_untimed "$OUT")
+  CI=true exc_gate
+  assert_eq 0 "$STATUS" "CI: $OUT"
+  assert_eq "$want" "$(exc_untimed "$OUT")" "same report with CI=true"
+}
+
+# A row edited by hand may lack its reason; it still covers, and the note shows the empty one.
+test_a_row_with_an_empty_reason_still_covers() {
+  exc_setup 'ok'
+  rule todo paths='**/*.ts' severity=shadow
+  printf 'loosen\ttodo: severity to shadow\t\t2026-10-22\t-\n' >> .gauntlet/exceptions.tsv
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" 'note: loosened todo: severity block → shadow; covered by ""'
+}
