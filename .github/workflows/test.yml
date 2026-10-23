@@ -28,5 +28,12 @@ jobs:
       - name: Shellcheck
         run: shellcheck -x bin/gauntlet lib/*.sh test/*.sh
 
-      - name: Test
+      - name: Test (Ubuntu)
+        if: runner.os == 'Linux'
         run: bash test/run.sh
+
+      # Homebrew bash 5 may shadow bash 3.2 on PATH; the system /bin/bash is the
+      # compatibility target macOS users run.
+      - name: Test (macOS, system bash 3.2)
+        if: runner.os == 'macOS'
+        run: /bin/bash test/run.sh

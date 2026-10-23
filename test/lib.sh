@@ -9,23 +9,28 @@ G="$ROOT/bin/gauntlet"
 # Test repos must not inherit the developer's global hooks or signing.
 export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_NOSYSTEM=1
+# Hooks export these; a suite run from inside a hook must not reach the real repo.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR
 
 # mkrepo: create $TMP/repo on branch main with a gauntlet skeleton and one
 # commit, then cd into it.
 mkrepo() {
-  mkdir -p "$TMP/repo" || return 1
-  cd "$TMP/repo" || return 1
-  git init -q . || return 1
-  git symbolic-ref HEAD refs/heads/main
-  git config user.name "Test User"
-  git config user.email "test@example.com"
-  git config commit.gpgsign false
-  mkdir -p .gauntlet/rules
-  : > .gauntlet/config
-  : > .gauntlet/baseline.tsv
-  : > .gauntlet/exceptions.tsv
-  git add -A
-  git commit -q -m "init"
+  must mkdir -p "$TMP/repo"
+  must cd "$TMP/repo"
+  must git init -q .
+  must git symbolic-ref HEAD refs/heads/main
+  must git config user.name "Test User"
+  must git config user.email "test@example.com"
+  must git config commit.gpgsign false
+  must mkdir -p .gauntlet/rules
+  must touch .gauntlet/config .gauntlet/baseline.tsv .gauntlet/exceptions.tsv
+  must git add -A
+  must git commit -q -m "init"
+}
+
+# must <cmd...>: run a command; abort the test if it fails.
+must() {
+  "$@" || fail "command failed: $*"
 }
 
 # rule <id> [key=value ...]: write .gauntlet/rules/<id>.md (flat front matter).
@@ -47,10 +52,10 @@ rule() {
       fix=*) fix=${kv#fix=} ;;
       source=*) source=${kv#source=} ;;
       since=*) since=${kv#since=} ;;
-      *) echo "rule: unknown key in $kv" >&2; return 2 ;;
+      *) fail "rule: unknown key in $kv" ;;
     esac
   done
-  mkdir -p .gauntlet/rules || return 1
+  must mkdir -p .gauntlet/rules
   {
     echo "---"
     echo "id: $id"
@@ -65,7 +70,7 @@ rule() {
     echo "since: $since"
     echo "---"
     echo "Fixture rule $id."
-  } > ".gauntlet/rules/$id.md"
+  } > ".gauntlet/rules/$id.md" || fail "cannot write rule $id"
 }
 
 # run <cmd...>: run a command, capturing combined output in $OUT and status in $STATUS.
