@@ -11,6 +11,8 @@ export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_NOSYSTEM=1
 # Hooks export these; a suite run from inside a hook must not reach the real repo.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR
+# A CI runner's CI=true must not change which declared checks run in a test.
+unset CI
 
 # mkrepo: create $TMP/repo on branch main with a gauntlet skeleton and one
 # commit, then cd into it.
@@ -31,6 +33,14 @@ mkrepo() {
 # must <cmd...>: run a command; abort the test if it fails.
 must() {
   "$@" || fail "command failed: $*"
+}
+
+# cases_of <id> <bad line>: a bad case that the rule must flag and a good case it
+# must not. Rule tests run only when a rule or format changes (R5), so a rule
+# added on a branch needs its cases on that branch.
+cases_of() {
+  printf '%s\n' "$2" > ".gauntlet/rules/$1.bad.txt"
+  printf 'ok\n' > ".gauntlet/rules/$1.good.txt"
 }
 
 # rule <id> [key=value ...]: write .gauntlet/rules/<id>.md (flat front matter).

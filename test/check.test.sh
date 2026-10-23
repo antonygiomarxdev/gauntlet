@@ -12,13 +12,14 @@ commit_all() {
 }
 
 # gate_setup <a.ts content> [rule options...]: a main branch with one todo rule
-# over **/*.ts and a committed baseline, then a feat branch.
+# over **/*.ts, its cases and a committed baseline, then a feat branch.
 gate_setup() {
   local content=$1
   shift
   mkrepo
   printf '%s\n' "$content" > a.ts
   rule todo paths='**/*.ts' "$@"
+  cases_of todo 'TODO x'
   rebaseline
   assert_eq 0 "$STATUS" "main baseline"
   commit_all main
@@ -144,6 +145,7 @@ test_new_rule_exempt() {
   commit_all main-debt
   must git checkout -q -b feat6
   rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
   rebaseline
   assert_eq 0 "$STATUS" "feat baseline"
   commit_all feat
@@ -418,6 +420,7 @@ test_rule_added_here_not_counted() {
   touched_on
   printf 'ok\nFIXME one\nFIXME two\n' > a.ts
   rule fixme paths='**/*.ts' detector="rg --with-filename --line-number --no-heading 'FIXME' {files}"
+  cases_of fixme 'FIXME x'
   rebaseline
   commit_all feat
   gate
@@ -508,4 +511,186 @@ test_base_zero_file_gaining_debt_must_stay_zero() {
   assert_contains "$OUT" "[touched]"
   assert_contains "$OUT" "  a.ts  0 → 1  (must stay 0)"
   assert_contains "$OUT" "FAIL (1 problems)"
+}
+
+test_rule_change_runs_cases() {
+  mkrepo
+  printf 'x\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  rebaseline
+  commit_all main
+  must git checkout -q -b feat
+  rule todo paths='**/*.ts' detector="rg --with-filename --line-number --no-heading 'TODO|ok' {files}"
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "[rule-tests]"
+  assert_contains "$OUT" "todo.good.txt  good case flagged"
+}
+
+test_formats_change_runs_rule_tests() {
+  mkrepo
+  printf 'x\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  rebaseline
+  commit_all main
+  must git checkout -q -b feat
+  mkdir -p .gauntlet/formats
+  printf 'no cases\n' > .gauntlet/formats/bare.md
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "[rule-tests]"
+  assert_contains "$OUT" "  bare  sample  no cases"
+  assert_contains "$(section_of "[time]" "$OUT")" "  rule-tests  "
+}
+
+test_rule_tests_silent_without_rule_change() {
+  mkrepo
+  printf 'x\n' > a.ts
+  rule todo paths='**/*.ts'
+  mkdir -p .gauntlet/formats
+  printf 'no cases\n' > .gauntlet/formats/bare.md
+  rebaseline
+  commit_all main
+  must git checkout -q -b feat
+  printf 'ok\n' > b.txt
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[rule-tests]"
+}
+
+test_each_failed_check_and_rule_test_line_counts() {
+  mkrepo
+  printf 'x\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  rebaseline
+  commit_all main
+  must git checkout -q -b feat
+  mkdir -p .gauntlet/formats
+  printf 'no cases\n' > .gauntlet/formats/bare.md
+  printf 'check.t=false\n' > .gauntlet/config
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "FAIL (3 problems)"
+}
+
+test_declared_check_runs_on_scope() {
+  gate_setup 'x'
+  printf 'check.t=false\ncheck.t.paths=src/\n' > .gauntlet/config
+  mkdir -p src
+  printf 'y\n' > src/a
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "[checks]"
+  assert_contains "$OUT" "  t  exit 1"
+  assert_contains "$OUT" "FAIL (1 problems)"
+}
+
+test_declared_check_skipped_off_scope() {
+  gate_setup 'x'
+  printf 'check.t=false\ncheck.t.paths=src/\n' > .gauntlet/config
+  mkdir -p docs
+  printf 'y\n' > docs/x
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[checks]"
+}
+
+test_scope_prefix_matches_path_with_space() {
+  gate_setup 'x'
+  printf 'check.t=false\ncheck.t.paths=src/\n' > .gauntlet/config
+  mkdir -p src
+  printf 'y\n' > "src/a b"
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  t  exit 1"
+}
+
+test_ci_env_runs_only_ci_on() {
+  gate_setup 'x'
+  printf 'check.t=false\ncheck.t.paths=src/\n' > .gauntlet/config
+  mkdir -p src
+  printf 'y\n' > src/a
+  commit_all feat
+  run env CI=true "$G" check --ci --base main
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[checks]"
+}
+
+test_ci_env_runs_ci_on() {
+  gate_setup 'x'
+  printf 'check.t=false\ncheck.t.paths=src/\ncheck.t.ci=on\n' > .gauntlet/config
+  mkdir -p src
+  printf 'y\n' > src/a
+  commit_all feat
+  run env CI=true "$G" check --ci --base main
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  t  exit 1"
+}
+
+test_failed_check_prints_last_20_lines() {
+  gate_setup 'x'
+  printf 'check.t=seq 1 25; exit 3\n' > .gauntlet/config
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  t  exit 3"
+  assert_eq 1 "$(printf '%s\n' "$OUT" | grep -c -x '    6')" "line 6 shown"
+  assert_eq 1 "$(printf '%s\n' "$OUT" | grep -c -x '    25')" "line 25 shown"
+  assert_eq 0 "$(printf '%s\n' "$OUT" | grep -c -x '    5')" "line 5 hidden"
+}
+
+test_check_time_listed() {
+  gate_setup 'x'
+  printf 'check.t=true\n' > .gauntlet/config
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status"
+  assert_contains "$(section_of "[time]" "$OUT")" "  check:t  "
+}
+
+test_check_runs_from_repo_root() {
+  gate_setup 'x'
+  printf 'check.t=test -f marker\n' > .gauntlet/config
+  printf 'm\n' > marker
+  commit_all feat
+  mkdir -p sub
+  cd sub || fail "cannot enter sub"
+  gate
+  assert_eq 0 "$STATUS" "status"
+}
+
+test_bad_check_key_exits_2() {
+  gate_setup 'x'
+  printf 'check.t.x=true\n' > .gauntlet/config
+  commit_all feat
+  gate
+  assert_eq 2 "$STATUS" "status"
+  assert_contains "$OUT" "bad check key check.t.x"
+}
+
+test_checks_run_on_onboarding_branch() {
+  mkrepo
+  printf 'x\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  must git rm -q .gauntlet/baseline.tsv
+  commit_all main-no-baseline
+  must git checkout -q -b feat
+  printf 'check.t=false\n' > .gauntlet/config
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "no baseline at base"
+  assert_contains "$OUT" "  t  exit 1"
 }

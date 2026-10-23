@@ -43,11 +43,13 @@ check_ci() {
 check_run() {
   local scratch=$1 base_ref=$2 start=$3 root base sha id rf sev fix atb
   local known=0 n_rules ms end n body new_n=0 global_n=0 touched_n=0 baseline_n=0 mode
-  local loosened_n=0
+  local loosened_n=0 rt_n=0 rt_rc=0 checks_n=0 broken=0 t0 t1
   root=$(repo_root) || return 2
   mode=$(touched_mode) || return 2
   base=$(resolve_base "$base_ref") || return 2
   sha=$(merge_base "$base") || return 2
+  # Every file the branch changes, deletions included: the scope of declared checks.
+  git_nul_lines -c core.quotepath=off diff --name-only -z "$sha" HEAD > "$scratch/changed" || return 2
   measure all "$scratch/now" || return 2
   rule_ids > "$scratch/ids" || return 2
   n_rules=$(awk 'END { print NR }' "$scratch/ids") || return 2
@@ -141,6 +143,30 @@ check_run() {
     loosened_n=$(awk 'END { print NR }' "$scratch/loosened.rows") || return 2
   fi
 
+  # Rule tests and declared checks run on the onboarding branch too: only the
+  # baseline comparisons above need a baseline at base.
+  : > "$scratch/check.time"
+  check_table "$root" "$scratch" || return 2
+  if rule_tests_due "$scratch/changed"; then
+    t0=$(now_ms)
+    run_rule_tests "$root" > "$scratch/rule-tests.out" && rt_rc=0 || rt_rc=$?
+    t1=$(now_ms)
+    printf 'rule-tests\t%s\n' "$((t1 - t0))" >> "$scratch/check.time"
+    # A setup that cannot run the tests still prints what it found, then exits 2.
+    if [ "$rt_rc" -gt 1 ]; then broken=1; fi
+    rt_n=$(awk 'END { print NR }' "$scratch/rule-tests.out") || return 2
+    if [ -s "$scratch/rule-tests.out" ]; then
+      printf '[rule-tests]\n' >> "$body"
+      cat "$scratch/rule-tests.out" >> "$body" || return 2
+    fi
+  fi
+  run_declared_checks "$root" "$scratch" || return 2
+  checks_n=$(awk 'END { print NR }' "$scratch/checks.failed") || return 2
+  if [ -s "$scratch/checks.failed" ]; then
+    printf '[checks]\n' >> "$body"
+    cat "$scratch/checks.body" >> "$body" || return 2
+  fi
+
   if [ "$known" -eq 1 ]; then
     new_rows shadow "$scratch" > "$scratch/shadow.rows" || return 2
     if [ -s "$scratch/shadow.rows" ]; then
@@ -156,23 +182,134 @@ check_run() {
   fi
 
   printf '[time]\n' >> "$body"
-  awk -F '\t' '{ printf "  %s  %s ms\n", $1, $2 }' "$scratch/now/time.tsv" >> "$body"
+  awk -F '\t' '{ printf "  %s  %s ms\n", $1, $2 }' "$scratch/now/time.tsv" "$scratch/check.time" >> "$body"
 
   # R18: one problem per [new] line, one per [global] rule whose rise its [new]
   # lines do not account for, one per [touched] line, one for [baseline], one
-  # per [loosened] line. Shadow and track count nothing.
-  n=$((new_n + global_n + touched_n + baseline_n + loosened_n))
+  # per [loosened] line, one per [rule-tests] line, one per failed check. Shadow
+  # and track count nothing.
+  n=$((new_n + global_n + touched_n + baseline_n + loosened_n + rt_n + checks_n))
 
   end=$(now_ms)
   ms=$((end - start))
   printf 'gauntlet  ci · %s rules · %s.%s s\n' "$n_rules" "$((ms / 1000))" "$(((ms % 1000) / 100))"
   cat "$body"
+  if [ "$broken" -eq 1 ]; then
+    printf 'gauntlet: rule tests could not run\n' >&2
+    return 2
+  fi
   if [ "$n" -eq 0 ]; then
     printf 'gauntlet: ok\n'
     return 0
   fi
   printf 'gauntlet: FAIL (%s problems)\n' "$n"
   return 1
+}
+
+# rule_tests_due <changed>: succeed when a file under .gauntlet/rules/ or
+# .gauntlet/formats/ is in the changed list (R5). <changed> is one path per line.
+rule_tests_due() {
+  awk '
+    index($0, ".gauntlet/rules/") == 1 || index($0, ".gauntlet/formats/") == 1 { hit = 1 }
+    END { exit !hit }
+  ' "$1"
+}
+
+# check_table <root> <scratch>: read the declared checks from .gauntlet/config
+# into <scratch>/checks.raw, one "<name>\t<ci>\t<paths>\t<command>" row per
+# check, sorted by name. Keys are check.<name>, check.<name>.paths and
+# check.<name>.ci, names matching ^[A-Za-z0-9_-]+$. Any other check. key, an
+# attribute with no command, an empty command, or a ci that is not on or off
+# is a bad key: the table is refused and the key is named on stderr (exit 2).
+check_table() {
+  local root=$1 scratch=$2 bad
+  : > "$scratch/checks.all"
+  if [ -f "$root/.gauntlet/config" ]; then
+    awk '
+    /^[[:space:]]*#/ { next }
+    {
+      eq = index($0, "=")
+      if (eq == 0) next
+      key = substr($0, 1, eq - 1)
+      gsub(/^[ \t]+|[ \t]+$/, "", key)
+      if (substr(key, 1, 6) != "check.") next
+      val = substr($0, eq + 1)
+      gsub(/^[ \t]+|[ \t]+$/, "", val)
+      rest = substr(key, 7)
+      if (rest ~ /^[A-Za-z0-9_-]+$/) { cmd[rest] = val; declared[rest] = key }
+      else if (rest ~ /^[A-Za-z0-9_-]+\.(paths|ci)$/) {
+        name = substr(rest, 1, index(rest, ".") - 1)
+        attr_key[name] = key
+        if (rest ~ /\.paths$/) paths[name] = val
+        else ci[name] = val
+      }
+      else bad[key] = 1
+    }
+    END {
+      for (name in attr_key) if (!(name in declared)) print "BAD\t" attr_key[name]
+      for (name in declared) {
+        if (cmd[name] == "") { print "BAD\t" declared[name]; continue }
+        c = (name in ci) ? ci[name] : "off"
+        if (c != "on" && c != "off") { print "BAD\t" declared[name] ".ci"; continue }
+        printf "%s\t%s\t%s\t%s\n", name, c, paths[name], cmd[name]
+      }
+      for (key in bad) print "BAD\t" key
+    }
+    ' "$root/.gauntlet/config" > "$scratch/checks.all" || return 2
+  fi
+  bad=$(awk -F '\t' '$1 == "BAD" { print $2; exit }' "$scratch/checks.all") || return 2
+  if [ -n "$bad" ]; then
+    printf 'gauntlet: bad check key %s\n' "$bad" >&2
+    return 2
+  fi
+  LC_ALL=C sort "$scratch/checks.all" > "$scratch/checks.raw" || return 2
+}
+
+# run_declared_checks <root> <scratch>: run each check of <scratch>/checks.raw
+# that is in scope and, under CI=true, has ci=on. Each runs as bash -c from the
+# repo root; output goes to a temp file. A failure appends "  <name>  exit <code>"
+# and the last 20 output lines (indented) to <scratch>/checks.body and a line to
+# <scratch>/checks.failed. Every check that runs adds its time to check.time.
+run_declared_checks() {
+  local root=$1 scratch=$2 row name ci paths cmd code out kept t0 t1
+  out="$scratch/check.out"
+  kept="$scratch/check.kept"
+  : > "$scratch/checks.body"
+  : > "$scratch/checks.failed"
+  while IFS= read -r row; do
+    name=${row%%"$DETECT_TAB"*}
+    row=${row#*"$DETECT_TAB"}
+    ci=${row%%"$DETECT_TAB"*}
+    row=${row#*"$DETECT_TAB"}
+    paths=${row%%"$DETECT_TAB"*}
+    cmd=${row#*"$DETECT_TAB"}
+    if [ "${CI:-}" = true ] && [ "$ci" != on ]; then continue; fi
+    if ! check_in_scope "$paths" "$scratch/changed"; then continue; fi
+
+    t0=$(now_ms)
+    (cd "$root" && bash -c "$cmd") < /dev/null > "$out" 2>&1 && code=0 || code=$?
+    t1=$(now_ms)
+    printf 'check:%s\t%s\n' "$name" "$((t1 - t0))" >> "$scratch/check.time"
+    if [ "$code" -ne 0 ]; then
+      printf 'x\n' >> "$scratch/checks.failed"
+      printf '  %s  exit %s\n' "$name" "$code" >> "$scratch/checks.body"
+      tail -n 20 "$out" > "$kept" || return 2
+      awk '{ printf "    %s\n", $0 }' "$kept" >> "$scratch/checks.body" || return 2
+    fi
+    rm -f "$out" "$kept"
+  done < "$scratch/checks.raw"
+}
+
+# check_in_scope <paths> <changed>: succeed when the check has no paths (always)
+# or when a changed path starts with one of the space-separated prefixes.
+check_in_scope() {
+  local paths=$1 changed=$2
+  if [ -z "$paths" ]; then return 0; fi
+  GL_PATHS=$paths awk '
+    BEGIN { n = split(ENVIRON["GL_PATHS"], p, " ") }
+    { for (i = 1; i <= n; i++) if (index($0, p[i]) == 1) hit = 1 }
+    END { exit !hit }
+  ' "$changed"
 }
 
 # new_rows <severity> <scratch>: print one row per new occurrence of a rule of

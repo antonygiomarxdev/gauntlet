@@ -18,6 +18,9 @@ exc_setup() {
   mkrepo
   printf '%s\n' "$content" > a.ts
   rule todo paths='**/*.ts' "$@"
+  # Both words: the bad case is flagged by the todo and the fixme detector, so
+  # a test that swaps the detector still has its case passing.
+  cases_of todo 'TODO FIXME x'
   exc_rebase
   assert_eq 0 "$STATUS" "main baseline"
   exc_commit main
@@ -226,6 +229,7 @@ test_widen_paths_is_not_loosening() {
   mkdir -p src
   printf 'ok\n' > src/a.ts
   rule todo paths='src/**'
+  cases_of todo 'TODO FIXME x'
   exc_rebase
   exc_commit main
   must git checkout -q -b feat
@@ -269,6 +273,7 @@ test_default_format_written_out_is_not_a_change() {
 test_new_rule_never_loosened() {
   exc_setup 'ok'
   rule fixme paths='**/*.ts' severity=track detector="rg --with-filename --line-number --no-heading 'FIXME' {files}"
+  cases_of fixme 'FIXME x'
   exc_rebase
   exc_commit feat
   exc_gate
@@ -331,6 +336,7 @@ test_narrow_paths_and_widen_exclude_are_loosening() {
   mkdir -p src lib
   printf 'ok\n' > src/a.ts
   rule todo paths='src/** lib/**'
+  cases_of todo 'TODO FIXME x'
   exc_rebase
   exc_commit main
   must git checkout -q -b feat
@@ -421,6 +427,7 @@ test_reordered_paths_and_exclude_are_not_loosening() {
   mkdir -p src lib
   printf 'ok\n' > src/a.ts
   rule todo paths='src/** lib/**' exclude='x/** y/**'
+  cases_of todo 'TODO FIXME x'
   exc_rebase
   exc_commit main
   must git checkout -q -b feat

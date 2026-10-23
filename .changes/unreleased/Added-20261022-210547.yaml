@@ -1,0 +1,3 @@
+kind: Added
+body: 'gauntlet check --ci: rule cases run when a rule or format changes; declared checks (check.<name>) run in scope, with ci=on under CI.'
+time: 2026-10-22T21:05:47.312314083-06:00
