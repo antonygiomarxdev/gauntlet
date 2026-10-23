@@ -10,7 +10,7 @@ It adds one line to each existing shell hook, placed first, right after the sheb
 No. Violations are identified by fingerprint (rule + file + normalized line text), not by line number. gauntlet's own test suite checks that reformatting a whole file keeps the fingerprints the same.
 
 **Can the agent just raise the baseline?**
-No. The baseline is derived: CI re-measures and requires an exact match. Loosening a rule needs an exception row that a human wrote, and the runner checks for it in every harness, not only in harnesses with an adapter.
+No. The baseline is derived: CI re-measures and requires an exact match, so a raised baseline fails `check --ci`. A loosened rule fails the gate unless an exception row exists, and the gate checks that in every harness, not only in harnesses with an adapter. The runner cannot tell who wrote a row. Keeping agents from writing rows is the job of the skill and the Claude Code adapter, both planned (IS-02).
 
 **What if the agent really needs an exception and I'm asleep?**
 The runner does not decide what an agent does. The gate stays red until a person runs `gauntlet waive …` on that branch (see [Exceptions](exceptions.md)). The agent's stop-and-notify behaviour is part of the skill, which is planned (IS-02).
@@ -22,7 +22,7 @@ They need only git, bash and awk, so there is no toolchain to install, and the r
 If your project has one linter and no agents, that may be enough. gauntlet adds:
 - one ratchet across all your linters and structural rules;
 - the new-violation and touched-file checks;
-- human-only exceptions;
+- exception rows, which show in the diff;
 - the agent onboarding (planned).
 
 **Does it work for an empty repo?**

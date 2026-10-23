@@ -22,7 +22,7 @@ A detector is a declarative way to find violations:
 2. an [`ast-grep`](https://ast-grep.github.io) YAML rule, for structural rules in any language,
 3. an `rg` pattern, for textual rules only.
 
-That order is the order of preference. A custom script detector needs a `script` row in `exceptions.tsv`, which a human writes. [Rules & detectors](rules-and-detectors.md) covers the details.
+That order is the order of preference. A custom script detector needs a `script` row in `exceptions.tsv`, which you add by hand. [Rules & detectors](rules-and-detectors.md) covers the details.
 
 ## Fingerprint
 
@@ -38,9 +38,9 @@ raw-status	src/orders/list.tsx	if (o.status === "paid")	1
 ```
 
 The baseline is **derived**:
-- Only the runner writes it.
-- CI re-measures and requires the committed baseline to equal the measurement exactly.
-- Nobody edits it, agent or human.
+- The runner writes it: `gauntlet baseline`, and the commit gate when it tightens.
+- A hand edit is caught, not prevented: CI re-measures and requires the committed baseline to equal the measurement exactly.
+- Edit it only through the runner.
 
 When debt falls, the lowered baseline is staged into the same commit that paid it.
 
@@ -80,7 +80,7 @@ An exception is a row in `.gauntlet/exceptions.tsv`. There are four kinds:
 - `remove` a rule;
 - `script`: approve a custom detector.
 
-Only a human creates an exception, with `gauntlet waive …` and its siblings. There are no commit trailers. [Exceptions](exceptions.md) covers the details.
+Exceptions are rows in `exceptions.tsv`, written by `gauntlet waive …` and its siblings. The gate fails a loosening that has no row. The runner cannot tell who wrote a row, so review the diff. There are no commit trailers. [Exceptions](exceptions.md) covers the details.
 
 ## Guard
 

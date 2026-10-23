@@ -1,6 +1,6 @@
 # Exceptions
 
-Some debt can't be paid in this branch. gauntlet lets a human say so, in writing, in one place.
+Some debt can't be paid in this branch. gauntlet records that decision in one place: a row in `.gauntlet/exceptions.tsv`, written by a command.
 
 ## The file
 
@@ -21,7 +21,7 @@ loosen	raw-status: exclude += src/generated/**	generated code, regenerated on bu
 
 A path waiver exempts that path from the new-violation and touched-file checks. The rule's total still applies, so a waiver cannot hide a rise in the rule's total. A waived file that adds a violation still fails `[global]`.
 
-## Only humans create exceptions
+## Written by command
 
 ```sh
 gauntlet waive  <path> "<reason>"
@@ -31,7 +31,7 @@ gauntlet remove <rule> "<reason>"
 
 - Each command appends one row, dated today. Commit the file on the branch: `check --ci` refuses a dirty tree, and a `loosen` or `remove` row counts only once it is in the base-to-HEAD history.
 - The runner does not check who wrote a row. A row written by hand works the same way, so review the diff of `exceptions.tsv` like any other change.
-- The agent may **propose** the exact command, with its reason. Keeping agents from writing the file themselves is the skill's job and the Claude Code adapter's, both planned (IS-02).
+- An agent may **propose** the exact command, with its reason. The runner cannot stop an agent from writing a row. Keeping agents from writing rows is the skill's job and the Claude Code adapter's, and the PR diff and a CI comment on each new row are planned (IS-02; FRD-04 §4, rule 10).
 
 ## What counts as a loosening
 
@@ -43,7 +43,7 @@ When `check --ci` finds one of these since the merge-base, the rule needs a `loo
 
 A `loosen` row must be new on the branch. A row already in the merge-base does not count. One row covers every loosening of its rule found since the merge-base, not only the one its text describes. The text is a note for reviewers.
 
-**Not detected yet:** changes to `.gauntlet/config` (`base=`, `touched=`), and `stage:` changes in a rule file (for example `commit` to `push`). These need no exception row today. The owner has not decided how they should be handled. A detector file that is named inside quotes with spaces is not recognised as changed either.
+**Not detected yet, and not decided.** Changes to `.gauntlet/config` are not judged as loosening. Today a branch can set `touched=off`, or change `base=` so that the checks compare against another base. The new, global and touched checks then stop judging it, and no exception row is needed. A `stage:` change in a rule file is not flagged either: changing `commit` to `push` takes the rule out of the commit gate. A detector file that is named inside quotes with spaces is not recognised as changed. The owner needs to decide how config and `stage:` changes should be judged.
 
 ## Waivers
 

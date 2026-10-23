@@ -18,10 +18,10 @@ The agent skill (`skills/gauntlet/SKILL.md`) is planned for IS-02. It does not e
 
 ### By hand
 
-The clone must be a checkout that has `bin/gauntlet`. The runner is not on `main` until it is merged, so clone the branch that has it.
+The clone must have `bin/gauntlet`. Until IS-01 merges, `main` has no runner, so clone the branch that has it. This `--branch` is temporary: drop it once the runner is on `main`.
 
 ```sh
-git clone --depth 1 https://github.com/antonygiomarxdev/gauntlet ~/.gauntlet
+git clone --depth 1 --branch feat/is-01-runner-core https://github.com/antonygiomarxdev/gauntlet ~/.gauntlet
 cd your-repo
 ~/.gauntlet/bin/gauntlet install
 ```
@@ -34,7 +34,7 @@ It then creates what is missing (`.gauntlet/rules/`, an empty `baseline.tsv`, `e
 
 You can also link the script onto your `PATH` (`ln -s ~/.gauntlet/bin/gauntlet ~/bin/gauntlet`) and run `gauntlet install` from your repo. The link is followed back to the checkout.
 
-Commit `.gauntlet/`, so teammates and CI run the same runner. The hooks that `install` writes into `.git/hooks` are not shared by a clone. If teammates need them, add `gauntlet install-hooks` to the setup step your project already has (`prepare`, `make setup`, …). See [hooks](gates.md#hooks-coexist-never-take-over).
+Commit `.gauntlet/`, except `.gauntlet/STATUS.md`, so teammates and CI run the same runner. Put `.gauntlet/STATUS.md` in `.gitignore`: a tracked copy makes `check --ci` exit 2 after the next `status`. The hooks that `install` writes into `.git/hooks` are not shared by a clone. If teammates need them, add `gauntlet install-hooks` to the setup step your project already has (`prepare`, `make setup`, …). See [hooks](gates.md#hooks-coexist-never-take-over).
 
 ## 2. Onboard
 
@@ -77,7 +77,7 @@ gauntlet promote <id>    # shadow → block
 gauntlet doctor          # tools present, hooks wired, baseline exact, config valid
 ```
 
-When the gate blocks you, the output names the file, the line, the rule and the fix. If the debt really cannot be paid in this branch, a human runs:
+When the gate blocks you, the output names the file, the line, the rule and the fix. If the debt really cannot be paid in this branch, run:
 
 ```sh
 gauntlet waive src/legacy/report.ts "rewrite scheduled in #123; this PR only renames"

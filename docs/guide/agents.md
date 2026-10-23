@@ -2,7 +2,7 @@
 
 gauntlet assumes most of your code is written by agents and holds them to the rules without trusting them to follow prose.
 
-> **Planned (IS-02).** The agent skill, the `AGENTS.md` block and the Claude Code adapter are not built yet, so this page describes what is planned. What works today is in the runner. Exceptions are written only by the `waive`, `loosen` and `remove` commands. The baseline must equal the measurement. Loosening a rule needs an exception row. An agent can run the same commands a human runs, and the runner does not know who ran them.
+> **Planned (IS-02).** The agent skill, the `AGENTS.md` block and the Claude Code adapter are not built yet, so this page describes what is planned. What works today is in the runner. Exception rows are written by the `waive`, `loosen` and `remove` commands. The baseline must equal the measurement, and a loosened rule fails the gate unless an exception row exists. The runner cannot tell who wrote a row: an agent can run the same commands a person runs, or write a row by hand, and the gate treats it the same.
 
 ## The skill (planned)
 
@@ -34,11 +34,11 @@ A proposal without a detector and a count is not a proposal. Nothing is added wi
   - never edit `baseline.tsv`, `exceptions.tsv` or an active rule;
   - when blocked, stop and notify.
 
-The runner enforces two of these prohibitions in CI, whatever harness wrote the code:
+The gate checks two of these in CI, whatever harness wrote the code:
 - a baseline that does not equal the measurement fails;
 - loosening without an exception fails.
 
-The others are not enforced by the runner. A commit made with `--no-verify` is caught by the push gate and by CI, once the CI job is set up.
+The runner does not check the others. A commit made with `--no-verify` is caught by the push gate and by CI, once the CI job is set up.
 
 ## Adapters: biting earlier (planned)
 

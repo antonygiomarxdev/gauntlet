@@ -97,12 +97,12 @@ Every rise in every baseline was inspected, commit by commit:
 |---|---:|---|---|
 | New rule or wider measurement | 7 | A new rule or a newly counted folder entered with its existing debt. Not new debt, but indistinguishable from it in a single total. | A new rule gets its own baseline entries. It is never mixed into an existing rule's total. |
 | Tool bug | 1 | The diff gate overwrote the repo-wide lock with the diff's own count. Main was already 7 above the lock and nobody saw it. | The baseline is derived: only the runner writes it, and CI requires it to equal what the code measures. |
-| New debt with a reason | 2 | +1 colour literal each, one explained in the commit ("a shared constant used by nine tokens, raised on purpose"). | Allowed only as a human-written `loosen` exception with its reason. |
-| New debt without a reason | 3 | +7 duplicate definitions in the first week ("raise baseline to 120"), before the diff gate covered that ratchet. | Impossible without a human-written exception. |
+| New debt with a reason | 2 | +1 colour literal each, one explained in the commit ("a shared constant used by nine tokens, raised on purpose"). | Passes only with a `loosen` row that states the reason. |
+| New debt without a reason | 3 | +7 duplicate definitions in the first week ("raise baseline to 120"), before the diff gate covered that ratchet. | Fails the gate without an exception row. |
 
 ### 2. The escape hatch became routine
 
-The trailer exception appeared in **38 commits** (136 waiver lines), between 7 % and 17 % of a week's commits. The agents could write it themselves, so they did. In gauntlet, exceptions live in `.gauntlet/exceptions.tsv`, only a human creates one, and a path waiver applies only on its own branch.
+The trailer exception appeared in **38 commits** (136 waiver lines), between 7 % and 17 % of a week's commits. The agents could write it themselves, so they did. In gauntlet, exceptions live in `.gauntlet/exceptions.tsv`, written by command and not inside commit messages, and a path waiver applies only on its own branch. The gate fails a loosening without a row, and the rows show in the diff.
 
 ### 3. Lowered baselines depended on memory
 

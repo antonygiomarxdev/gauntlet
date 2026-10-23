@@ -23,7 +23,7 @@ A **ratchet** does neither. It accepts today's debt as the floor and refuses to 
 
 - **It onboards itself** (planned). An agent will infer your stack, research each technology's own guidance, and propose rules one at a time for you to accept or reject. It never imposes a standard.
 - **Every rule has a detector.** A rule that cannot be counted is not admitted. Detectors are declarative: a linter rule, an `ast-grep` rule or an `rg` pattern. No one writes a bespoke script "their own way".
-- **The agent cannot loosen it.** The baseline is derived and only the runner writes it. Exceptions are human-only. Loosening a rule fails CI unless a person wrote an exception for it.
+- **Loosening fails the gate.** The baseline is derived: the runner writes it, and a hand edit that does not match the measurement fails CI. A loosened rule fails `check --ci` unless an exception row exists for it. The runner cannot tell who wrote a row. Keeping agents from writing rows is the job of the agent skill and the Claude Code adapter, both planned.
 - **It coexists.** gauntlet adds one line to each shell hook you already have, placed first, and never takes them over.
 - **It is agnostic** to language, agent harness and model. The runner is bash + awk + git.
 
@@ -59,11 +59,11 @@ flowchart LR
   D --> E[pre-commit<br/>staged files · under 5 s]
   D --> F[pre-push<br/>everything CI runs]
   D --> G[CI<br/>same command]
-  E & F & G -->|debt fell| H[baseline lowered<br/>in the same commit]
+  E -->|debt fell| H[baseline lowered<br/>in the same commit]
   E & F & G -->|new violation| I[blocked<br/>with the fix]
 ```
 
-1. **Onboard** (planned). An agent skill will run once per repository, existing or empty, and propose each rule with its rationale, a primary source, the current count, the worst files, a detector and a fix hint, for you to accept, adjust or reject. Today you write the rule files yourself. New rules start in **shadow**: they report "would have failed" until you promote them.
+1. **Onboard** (planned). An agent skill will run once per repository, existing or empty, and propose each rule with its rationale, a primary source, the current count, the worst files, a detector and a fix hint, for you to accept, adjust or reject. Today you write the rule files yourself. Write new rules as **shadow** first: they report "would have failed" until you promote them. Nothing enforces this; only `block` rules fail the gate.
 2. **Measure.** Every violation gets a **fingerprint** (rule + file + normalized line text), so moving or reformatting code changes nothing.
 3. **Gate.** In order of what is checked:
    - no new `block` fingerprint;
@@ -107,10 +107,10 @@ Shipping did not slow down: merged PRs per week went *up* after the ratchets lan
 
 > The runner works by hand today. The agent skill and the v0.1 release are planned; follow the [changelog](CHANGELOG.md).
 
-From a checkout of gauntlet that has `bin/gauntlet` (the runner is not on `main` until it is merged), in your repo:
+From a checkout of gauntlet that has `bin/gauntlet`, in your repo. Until IS-01 merges, `main` has no runner, so clone the branch that has it. This `--branch` is temporary: drop it once the runner is on `main`.
 
 ```sh
-git clone --depth 1 https://github.com/antonygiomarxdev/gauntlet ~/.gauntlet
+git clone --depth 1 --branch feat/is-01-runner-core https://github.com/antonygiomarxdev/gauntlet ~/.gauntlet
 cd your-repo
 ~/.gauntlet/bin/gauntlet install     # copies the runner into .gauntlet/ and wires the hooks
 ```
@@ -128,9 +128,9 @@ Onboarding by an agent (`ask your agent to onboard this repository`) is planned.
 
 ## Compared with
 
-| | Rules from | Baseline | Language-agnostic | New-violation check | Touched-file check | Agent onboarding | Agent can't loosen |
+| | Rules from | Baseline | Language-agnostic | New-violation check | Touched-file check | Agent onboarding | Loosening guard |
 |---|---|---|---|---|---|---|---|
-| **gauntlet** | owner-approved | fingerprints, in repo | ✅ | ✅ fingerprint | ✅ | planned | ✅ runner-enforced |
+| **gauntlet** | owner-approved | fingerprints, in repo | ✅ | ✅ fingerprint | ✅ | planned | ✅ exception row needed |
 | [pawl](https://github.com/tiangong-dev/pawl) | any command | counts, in repo | ✅ | ✅ added lines | — | — | trailer + guard |
 | [cleat](https://github.com/svetdev/cleat) | built-in gates | findings, in repo | ✅ | partial | — | partial | hook-enforced |
 | [betterer](https://github.com/phenomnomnominal/betterer) | JS test files | results file | JS/TS | — | — | — | — |

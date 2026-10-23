@@ -67,10 +67,11 @@ It does not check that the baseline is exact, loosening, rule totals or declared
 
 When a commit lowers the debt, `pre-commit` rewrites `baseline.tsv` and stages it into that same commit. The fix and its lower number always travel together. It starts from the baseline as the index holds it, and it runs only when the commit passes.
 
-It is skipped, with a note, in three cases:
+It is skipped, with a note, in four cases:
 - a staged file also has unstaged changes: `note: partially staged; run gauntlet baseline before pushing`;
 - the working-tree `baseline.tsv` has unstaged changes: `note: baseline.tsv has unstaged changes; run gauntlet baseline before pushing`;
-- the commit is `git commit <path>`: `note: partial commit by path; run gauntlet baseline before pushing`.
+- the commit is `git commit <path>`: `note: partial commit by path; run gauntlet baseline before pushing`;
+- `baseline.tsv` is not in the index, for example because it was removed from it: `note: baseline.tsv is not in the index; nothing tightened`.
 
 A skipped tighten does not skip the check: new violations still block the commit. Run `gauntlet baseline`, commit the result, and then push.
 

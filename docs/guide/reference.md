@@ -50,8 +50,8 @@ A check name uses only letters, digits, `_` and `-`. A malformed `check.` key (a
 | Variable | Default | Meaning |
 |---|---|---|
 | `CI` | unset | `true` makes `check --ci` run only the declared checks with `ci=on`. CI hosts such as GitHub Actions set it. |
-| `GITHUB_HEAD_REF` | unset | The branch name when HEAD is detached. CI sets it on pull requests. Waivers and the branch's base use it. |
-| `GAUNTLET_COMMIT_BUDGET_MS` | `5000` | The commit budget, in milliseconds. `status` lists the commit rules at or over it, and the commit gate prints `[slow]`. It only warns. |
+| `GITHUB_HEAD_REF` | unset | When it is set, it is the current branch name, even on an attached HEAD. Waivers and the branch's base use it. CI sets it on pull requests, where HEAD is detached (FRD-04 §4, rule 5). |
+| `GAUNTLET_COMMIT_BUDGET_MS` | `5000` | The commit budget, in milliseconds. A value that is not a whole number makes the commit gate and `status` exit 2. Over budget, `status` lists the commit rules at or over it and the commit gate prints `[slow]`. That only warns and never changes the exit code. |
 | `GAUNTLET_TODAY` | today | The day `status` measures shadow rules against, as `YYYY-MM-DD`. Mostly for tests. |
 | `GAUNTLET_LIB` | the runner's own `lib/` | Where the built-in output formats are read from. Leave it unset. |
 
@@ -104,7 +104,7 @@ slow: todo 51 ms (consider stage: push)
 
 `gauntlet doctor` prints one line per check: `ok <thing>`, or `FAIL <thing>: <how to fix>`. It exits 1 on any FAIL, and 2 when it cannot run (not in a git repo, or no `.gauntlet/` directory). It runs six groups of checks, in this order:
 
-1. **Tools.** Each rule's tool must be on `PATH`. For an `ast-grep` rule the tool is `ast-grep`. For `rg`, `linter` and `script` rules it is the first word of the detector. A first word with quotes, `$`, `=` or `~` is not checked.
+1. **Tools.** Each rule's tool must be on `PATH`. For an `ast-grep` rule the tool is `ast-grep`. For `rg`, `linter` and `script` rules it is the first word of the detector. A first word with a quote, `$`, `=`, `~` or a backtick is not checked. `doctor` prints `ok tool <id>: cannot check (<word>)` for it.
    - `FAIL tool <tool> for rule <id> is missing: <install hint>`, or `install it or fix the detector in .gauntlet/rules/<id>.md` when there is no hint.
 2. **Runner, formats and hooks.** The vendored runner must run `--version`. Each rule's format must be built in or in `.gauntlet/formats/`. Each hook must hold the gate line, in either form, or the lefthook or prek config must hold both commands.
    - `FAIL .gauntlet/bin or .gauntlet/lib is broken or missing: run gauntlet install from a gauntlet checkout …`
@@ -130,7 +130,7 @@ Limits:
 ## Known limits
 
 These are known and not handled yet:
-- A path with a tab or a newline in its name is not measured, and nothing reports it. See [Contract](rules-and-detectors.md#contract).
+- A path with a tab or a newline in its name is not handled. A tab loses that file's rows with no message. A newline makes the detector fail, or skips the file. See [Contract](rules-and-detectors.md#contract).
 - A config saved with CRLF line endings makes `check` exit 2 with `touched must be on or off, got [off]`. Save it with LF line endings.
 - A check named `BAD` is refused with exit 2, `bad check key off`. Rename it.
 - A declared check has no timeout, so a hanging check holds the gate.

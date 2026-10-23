@@ -22,7 +22,7 @@ Why this rule exists, what to do instead, and the evidence found in this repo.
 
 The frontmatter is flat `key: value` pairs, so it parses with awk.
 
-- **Required:** `id` (it must equal the file name), `severity`, `engine`, `detector`, `fix`, `source` and `since` (a real date, `YYYY-MM-DD`). `source` only has to be non-empty; see below.
+- **Required:** `id` (it must equal the file name), `severity`, `engine`, `detector`, `fix`, `source` and `since` (`YYYY-MM-DD`; only the shape is checked, so `2026-02-30` passes). `source` only has to be non-empty; see below.
 - **Optional:** `stage` (default `commit`), `paths` (default: every file), `exclude`, and `format` (default: `path-line`, or `github` for `ast-grep`).
 - `gauntlet doctor` checks every rule against this list.
 - A rule's `id` must not end in `.bad` or `.good`, and must not contain `.bad.` or `.good.`. Those names are for case files (see [Test cases](#test-cases)).
@@ -88,38 +88,49 @@ detector: rg --with-filename --line-number --no-heading 'console\.log\(' {files}
 
 ### Custom scripts
 
-`engine: script` runs the command in `detector` as written, like `rg`. A script is allowed only by exception: the rule needs a `script` row in `.gauntlet/exceptions.tsv`, and a human adds that row by hand. No command writes it yet. The exception keeps the detectors uniform, because a project that lets everyone write detectors "their own way" ends up with dozens of incompatible scripts. A fixed template for detector scripts is planned; the runner does not require one.
+`engine: script` runs the command in `detector` as written, like `rg`. A script is allowed only by exception: the rule needs a `script` row in `.gauntlet/exceptions.tsv`, and you add that row by hand. No command writes it yet. A `script` rule with no `script` row: only `doctor` flags it today; `baseline`, `check --ci` and `check --staged` run the rule anyway. The exception keeps the detectors uniform, because a project that lets everyone write detectors "their own way" ends up with dozens of incompatible scripts. A fixed template for detector scripts is planned; the runner does not require one.
 
 ## Contract
 
-- **Input.** At commit, `{files}` is the staged files that exist on disk. At push and in CI, it is every tracked file that matches `paths` minus `exclude`. Untracked files are not seen. Files under `.gauntlet/` are never measured, whatever `paths` says, because a rule file contains the pattern it detects.
+- **Input.** At commit, `{files}` is the staged files that exist on disk and match `paths` minus `exclude`. At push and in CI, it is every tracked file that matches `paths` minus `exclude`. Untracked files are not seen. Files under `.gauntlet/` are never measured, whatever `paths` says, because a rule file contains the pattern it detects.
 - **Output.** One violation per line, read through the rule's output format. Rows about files the detector was not given are dropped. A detector without `{files}` runs once, and its rows are filtered by `paths` and `exclude`.
 - **Multi-location violations** print one line per location.
 - **Exit codes.** `0` and `1` are normal (`rg` exits 1 when nothing matches), but with `1` the output must still parse. `127` means the tool is missing: the message names the install command for `rg` and `ast-grep`. Any other code means a broken detector. A detector's stderr is kept, and its first 5 lines appear with the message.
 - **Long file lists** are split into batches, so each command stays under about 100 KB. A batch that fails with exit 2 or more makes the detector broken.
-- **Fail closed.** An output line that the format can neither read nor ignore means a broken detector, and the gate fails. Nothing is skipped silently.
-- **Unsupported paths.** A path with a tab or a newline in its name cannot be carried by the runner's tables. It is not measured, and nothing reports that. Rename such files.
+- **Fail closed.** An output line that the format can neither read nor ignore means a broken detector, and the gate fails. Output is not skipped silently, except for the unsupported paths below.
+- **Unsupported paths.** A path with a tab or a newline in its name is not handled. A tab splits the detector's output rows, so that file's rows are dropped with no message: `baseline` and `check --ci` print ok, and the file has no baseline row. A newline splits the file list, and the second part of the name reaches the detector with its first two characters missing. Under `rg`, `baseline` and `check --ci` exit 2 with `broken detector`, and `doctor` exits 1 with `FAIL baseline cannot be checked`. Under an awk linter the wrong name matches nothing, so the file is skipped with no message. A staged file with a newline in its name is not measured at commit, and the commit passes. Rename such files.
 
 ## Output formats
 
-Supporting another linter means describing its output, not changing gauntlet. A format is a small file with a pattern and the positions of the path, the line and the message:
+Supporting another linter means describing its output, not changing gauntlet. A format is a small file: frontmatter with the pattern and the positions of the path, the line and the message, then a description and two fenced blocks. `sample` is real output, and `expected` is the rows it must produce, tab-separated. Without both blocks, `gauntlet test-rules` fails with `sample  no cases`. Here is a complete format file:
 
-```markdown
+````markdown
 ---
-match: ^(.+)\(([0-9]+),[0-9]+\): (error|warning) (.*)$
+match: ^([^|]+)\|([0-9]+)\|(.*)$
 path: 1
 line: 2
-message: 4
-ignore: ^Found [0-9]+ errors?
+message: 3
 ---
+Output of a linter that prints `path|line|message`, one finding per line.
+
+```sample
+src/a.ts|12|unused variable
+src/b.ts|3|missing return type
 ```
+
+```expected
+src/a.ts	12	unused variable
+src/b.ts	3	missing return type
+```
+````
+
 
 gauntlet ships three formats:
 - `path-line` (`path:line[:col][: message]`), the default for `linter`, `rg` and `script` rules. It reads any linter that prints one such line per finding.
 - `github` (GitHub annotation lines), the default for `ast-grep`.
 - `tsc`.
 
-Add your own in `.gauntlet/formats/<name>.md`, and name it in the rule with `format: <name>`. A project format with the same name as a built-in one replaces it. Each format carries a sample of real output and the rows it must produce, and `gauntlet test-rules` checks them. Changing a format that a `block` rule reads through counts as loosening that rule, so it needs a human's `loosen` row.
+Add your own in `.gauntlet/formats/<name>.md`, and name it in the rule with `format: <name>`. A project format with the same name as a built-in one replaces it. Each format carries a sample of real output and the rows it must produce, and `gauntlet test-rules` checks them. Changing a format that a `block` rule reads through counts as loosening that rule, so it needs a `loosen` row.
 
 ## Test cases
 
