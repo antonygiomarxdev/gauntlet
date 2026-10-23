@@ -16,6 +16,8 @@ set -eu
 . "$(dirname "$0")/../lib/cases.sh"
 # shellcheck source=lib/base.sh
 . "$(dirname "$0")/../lib/base.sh"
+# shellcheck source=lib/exceptions.sh
+. "$(dirname "$0")/../lib/exceptions.sh"
 # shellcheck source=lib/check.sh
 . "$(dirname "$0")/../lib/check.sh"
 
@@ -47,6 +49,24 @@ case "${1:-}" in
     root=$(repo_root) || exit 2
     status=0
     run_rule_tests "$root" || status=$?
+    exit "$status"
+    ;;
+  waive)
+    shift
+    status=0
+    exc_waive "$@" || status=$?
+    exit "$status"
+    ;;
+  loosen)
+    shift
+    status=0
+    exc_loosen "$@" || status=$?
+    exit "$status"
+    ;;
+  remove)
+    shift
+    status=0
+    exc_remove "$@" || status=$?
     exit "$status"
     ;;
   check)

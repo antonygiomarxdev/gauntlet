@@ -1,13 +1,8 @@
 # shellcheck shell=bash
 # The CI gate: check --ci compares the branch with its merge-base. Sourced,
 # never executed. Bash 3.2 compatible; awk, sort, cmp, diff and git only.
-# Needs core.sh, rules.sh, measure.sh and base.sh sourced first.
-
-# is_waived <rule> <path>: true when a waiver covers the violation. Waivers
-# arrive in a later task; until then nothing is waived.
-is_waived() {
-  return 1
-}
+# Needs core.sh, rules.sh, measure.sh, base.sh, detect.sh and exceptions.sh
+# sourced first.
 
 # check_ci [--ci] [--base <ref>]: the CI gate, against the merge-base of HEAD and
 # the base ref. Prints the report and returns 0 (ok), 1 (problems) or 2 (setup
@@ -48,6 +43,7 @@ check_ci() {
 check_run() {
   local scratch=$1 base_ref=$2 start=$3 root base sha id rf sev fix atb
   local known=0 n_rules ms end n body new_n=0 global_n=0 touched_n=0 baseline_n=0 mode
+  local loosened_n=0
   root=$(repo_root) || return 2
   mode=$(touched_mode) || return 2
   base=$(resolve_base "$base_ref") || return 2
@@ -55,6 +51,8 @@ check_run() {
   measure all "$scratch/now" || return 2
   rule_ids > "$scratch/ids" || return 2
   n_rules=$(awk 'END { print NR }' "$scratch/ids") || return 2
+  # The branch's waived paths, read once; every filter below reads this file.
+  waived_paths > "$scratch/waived" || return 2
 
   # rules.tsv: id, severity, 1 when the rule file exists at base, fix. Severity
   # and fix come from the current rule file; only the existence is read at base.
@@ -103,7 +101,7 @@ check_run() {
     fi
     global_n=$(count_global_extra "$scratch/new.rows" "$scratch/global.rows") || return 2
     cmp_touched "$sha" "$scratch/base.tsv" "$scratch/now/measure.tsv" "$scratch/rules.tsv" \
-      > "$scratch/touched.rows" || return 2
+      "$scratch/waived" > "$scratch/touched.rows" || return 2
     if [ -s "$scratch/touched.rows" ]; then
       printf '[touched]\n' >> "$body"
       awk -F '\t' '{ printf "  %s  %s → %s  (%s)\n", $1, $2, $3, $4 }' "$scratch/touched.rows" >> "$body"
@@ -132,6 +130,17 @@ check_run() {
     baseline_n=1
   fi
 
+  # Loosening runs even on the onboarding branch; it is skipped only when the
+  # base has no rules to compare with at all.
+  if git cat-file -e "$sha:.gauntlet/rules" 2>/dev/null; then
+    cmp_loosened "$sha" > "$scratch/loosened.rows" || return 2
+    if [ -s "$scratch/loosened.rows" ]; then
+      printf '[loosened]\n' >> "$body"
+      awk -F '\t' '{ printf "  %s  %s\n", $1, $2 }' "$scratch/loosened.rows" >> "$body"
+    fi
+    loosened_n=$(awk 'END { print NR }' "$scratch/loosened.rows") || return 2
+  fi
+
   if [ "$known" -eq 1 ]; then
     new_rows shadow "$scratch" > "$scratch/shadow.rows" || return 2
     if [ -s "$scratch/shadow.rows" ]; then
@@ -150,9 +159,9 @@ check_run() {
   awk -F '\t' '{ printf "  %s  %s ms\n", $1, $2 }' "$scratch/now/time.tsv" >> "$body"
 
   # R18: one problem per [new] line, one per [global] rule whose rise its [new]
-  # lines do not account for, one per [touched] line, one for [baseline].
-  # Shadow and track count nothing.
-  n=$((new_n + global_n + touched_n + baseline_n))
+  # lines do not account for, one per [touched] line, one for [baseline], one
+  # per [loosened] line. Shadow and track count nothing.
+  n=$((new_n + global_n + touched_n + baseline_n + loosened_n))
 
   end=$(now_ms)
   ms=$((end - start))
@@ -171,7 +180,7 @@ check_run() {
 # occurrence is new when its fingerprint count rose; the last occurrences in
 # line order are the new ones. Waived rows are dropped.
 new_rows() {
-  local sev=$1 scratch=$2 row rule rest path
+  local sev=$1 scratch=$2
   GL_SEV=$sev GL_RULES="$scratch/rules.tsv" GL_BASE="$scratch/base.tsv" \
     GL_NOW="$scratch/now/measure.tsv" GL_LOC="$scratch/located.byline" awk -F '\t' '
     FILENAME == ENVIRON["GL_RULES"] { sev[$1] = $2; atb[$1] = $3; fix[$1] = $4; next }
@@ -192,16 +201,11 @@ new_rows() {
     }
   ' "$scratch/rules.tsv" "$scratch/base.tsv" "$scratch/now/measure.tsv" "$scratch/located.byline" > "$scratch/new.raw" || return 2
   LC_ALL=C sort -t "$DETECT_TAB" -k1,1 -k2,2 -k3,3n "$scratch/new.raw" > "$scratch/new.sorted" || return 2
-  : > "$scratch/new.kept"
-  while IFS= read -r row; do
-    rule=${row%%"$DETECT_TAB"*}
-    rest=${row#*"$DETECT_TAB"}
-    path=${rest%%"$DETECT_TAB"*}
-    if ! is_waived "$rule" "$path"; then
-      printf '%s\n' "$row" >> "$scratch/new.kept"
-    fi
-  done < "$scratch/new.sorted"
-  cat "$scratch/new.kept"
+  # A waived path drops its rows; one awk pass over the waived set, not a fork per row.
+  GL_WAIVED="$scratch/waived" awk -F '\t' '
+    FILENAME == ENVIRON["GL_WAIVED"] { waived[$0] = 1; next }
+    !($2 in waived)
+  ' "$scratch/waived" "$scratch/new.sorted" || return 2
 }
 
 # global_rows <severity> <scratch>: print rule, base total, current total for
@@ -257,26 +261,26 @@ touched_mode() {
   esac
 }
 
-# cmp_touched <merge-base> <base.tsv> <measure.tsv> <rules.tsv>: the touched
-# gate (opt-in via config touched=on). Each file the branch changes must come
-# out with less block debt than it had at the merge-base. Prints one tab row
-# per file that breaks that rule (path, base, now, reason) and returns 0;
+# cmp_touched <merge-base> <base.tsv> <measure.tsv> <rules.tsv> <waived>: the
+# touched gate (opt-in via config touched=on). Each file the branch changes must
+# come out with less block debt than it had at the merge-base. Prints one tab
+# row per file that breaks that rule (path, base, now, reason) and returns 0;
 # prints nothing when the gate is off. Debt counts only block rules that exist
-# at base, and waived rows are skipped.
+# at base; rows of waived paths are skipped.
 cmp_touched() {
-  local mb=$1 base=$2 now=$3 rules=$4 mode scratch status=0
+  local mb=$1 base=$2 now=$3 rules=$4 waived=$5 mode scratch status=0
   mode=$(touched_mode) || return 2
   [ "$mode" = on ] || return 0
   scratch=$(mktemp -d) || return 2
-  cmp_touched_in "$mb" "$base" "$now" "$rules" "$scratch" || status=$?
+  cmp_touched_in "$mb" "$base" "$now" "$rules" "$waived" "$scratch" || status=$?
   rm -rf "$scratch"
   return "$status"
 }
 
-# cmp_touched_in <merge-base> <base.tsv> <measure.tsv> <rules.tsv> <scratch>:
+# cmp_touched_in <merge-base> <base.tsv> <measure.tsv> <rules.tsv> <waived> <scratch>:
 # the work of cmp_touched, with intermediate files kept in <scratch>.
 cmp_touched_in() {
-  local mb=$1 base=$2 now=$3 rules=$4 scratch=$5
+  local mb=$1 base=$2 now=$3 rules=$4 waived=$5 scratch=$6
   # R15: `.gauntlet/` is never judged. R100 (pure rename) and D are skipped.
   # Both are early-outs: judged anyway, their verdict would be the same.
   # -z output is one token per line: a status, then one path (two for R or C).
@@ -305,18 +309,12 @@ cmp_touched_in() {
     FILENAME == ENVIRON["GL_NOW"] { if (($2 in nw) && ($1 in blk)) print "N\t" $1 "\t" $2 "\t" $4 }
   ' "$scratch/changes" "$rules" "$base" "$now" > "$scratch/sums" || return 2
 
-  # Waivers drop a row from the totals (is_waived is a stub until waivers land).
-  : > "$scratch/kept"
-  local row rest rule path
-  while IFS= read -r row; do
-    rest=${row#*"$DETECT_TAB"}
-    rule=${rest%%"$DETECT_TAB"*}
-    rest=${rest#*"$DETECT_TAB"}
-    path=${rest%%"$DETECT_TAB"*}
-    if ! is_waived "$rule" "$path"; then
-      printf '%s\n' "$row" >> "$scratch/kept"
-    fi
-  done < "$scratch/sums"
+  # Waivers drop a path's rows from the totals. Sum rows are B or N, rule, path,
+  # count: the path is field 3.
+  GL_WAIVED="$waived" awk -F '\t' '
+    FILENAME == ENVIRON["GL_WAIVED"] { waived[$0] = 1; next }
+    !($3 in waived)
+  ' "$waived" "$scratch/sums" > "$scratch/kept" || return 2
 
   GL_CH="$scratch/changes" GL_KEPT="$scratch/kept" awk -F '\t' '
     FILENAME == ENVIRON["GL_CH"] { st[++n] = $1; old[n] = $2; nw[n] = $3; next }
@@ -340,4 +338,124 @@ cmp_touched_in() {
     }
   ' "$scratch/changes" "$scratch/kept" > "$scratch/touched" || return 2
   cat "$scratch/touched"
+}
+
+# cmp_loosened <merge-base>: the no-loosening check (decision 6, EXC-AC5..AC8).
+# Compares each rule file at the merge-base with the working tree and prints a
+# tab row (rule, what changed) for each loosening that no new exceptions.tsv
+# row covers. Prints nothing when nothing was loosened.
+cmp_loosened() {
+  local mb=$1 scratch status=0
+  scratch=$(mktemp -d) || return 2
+  cmp_loosened_in "$mb" "$scratch" || status=$?
+  rm -rf "$scratch"
+  return "$status"
+}
+
+# cmp_loosened_in <merge-base> <scratch>: the work of cmp_loosened, with
+# intermediate files kept in <scratch>. Only rules that exist at the base are
+# judged; a rule added on the branch is never loosened.
+cmp_loosened_in() {
+  local mb=$1 scratch=$2 root name rest id
+  root=$(repo_root) || return 2
+  exc_new_rows "$mb" "$scratch/exc.new" || return 2
+  awk -F "$DETECT_TAB" '$1 == "loosen" { print $2 }' "$scratch/exc.new" > "$scratch/new.loosen" || return 2
+  awk -F "$DETECT_TAB" '$1 == "remove" { print $2 }' "$scratch/exc.new" > "$scratch/new.remove" || return 2
+  git_nul_lines -c core.quotepath=off ls-tree -r --name-only -z "$mb" .gauntlet/rules > "$scratch/base.rules" || return 2
+
+  : > "$scratch/out"
+  while IFS= read -r name; do
+    case "$name" in .gauntlet/rules/*.md) ;; *) continue ;; esac
+    rest=${name#.gauntlet/rules/}
+    case "$rest" in */*) continue ;; esac
+    id=${rest%.md}
+    # The same case files rule_ids skips.
+    case "$id" in *.bad|*.bad.*|*.good|*.good.*) continue ;; esac
+    at_base "$mb" "$name" > "$scratch/base.md" || return 2
+
+    if [ ! -f "$root/$name" ]; then
+      if ! GL_ID=$id awk '$0 == ENVIRON["GL_ID"] { found = 1 } END { exit !found }' "$scratch/new.remove"; then
+        printf '%s\trule file removed\n' "$id" >> "$scratch/out"
+      fi
+      continue
+    fi
+
+    loosen_changes "$mb" "$scratch" "$id" "$scratch/base.md" "$root/$name" > "$scratch/changes" || return 2
+    if [ -s "$scratch/changes" ] &&
+      ! GL_ID=$id awk 'index($0, ENVIRON["GL_ID"] ":") == 1 { found = 1 } END { exit !found }' "$scratch/new.loosen"; then
+      GL_ID=$id awk '{ printf "%s\t%s\n", ENVIRON["GL_ID"], $0 }' "$scratch/changes" >> "$scratch/out" || return 2
+    fi
+  done < "$scratch/base.rules"
+  cat "$scratch/out"
+}
+
+# loosen_changes <merge-base> <scratch> <rule-id> <base-rule> <current-rule>:
+# print one line per way the rule was loosened since the merge-base. Raising a
+# severity, widening paths, narrowing exclude and a format that stays the same
+# are not loosening.
+loosen_changes() {
+  local mb=$1 scratch=$2 id=$3 brule=$4 crule=$5
+  local root bsev csev rb rc bp cp be ce beng ceng bdet cdet bfe cfe bfmt cfmt gp
+  root=$(repo_root) || return 2
+  bsev=$(rule_get "$brule" severity) || return 2
+  csev=$(rule_get "$crule" severity) || return 2
+  rb=$(severity_rank "$bsev") || rb=0
+  rc=$(severity_rank "$csev") || rc=0
+  if [ "$rb" -gt "$rc" ]; then printf 'severity %s → %s\n' "$bsev" "$csev"; fi
+
+  bp=$(rule_get "$brule" paths) || return 2
+  cp=$(rule_get "$crule" paths) || return 2
+  be=$(rule_get "$brule" exclude) || return 2
+  ce=$(rule_get "$crule" exclude) || return 2
+  [ -n "$bp" ] || bp='**'
+  [ -n "$cp" ] || cp='**'
+  list_missing "paths narrowed:" "$bp" "$cp"
+  list_missing "exclude widened:" "$ce" "$be"
+
+  beng=$(rule_get "$brule" engine) || return 2
+  ceng=$(rule_get "$crule" engine) || return 2
+  if [ "$beng" != "$ceng" ]; then printf 'engine %s → %s\n' "$beng" "$ceng"; fi
+  bdet=$(rule_get "$brule" detector) || return 2
+  cdet=$(rule_get "$crule" detector) || return 2
+  if [ "$bdet" != "$cdet" ]; then printf 'detector changed\n'; fi
+  # A detector that names a file is judged by that file's content, when the
+  # string itself did not change (a changed string is reported above).
+  if [ "$bdet" = "$cdet" ] && [ -n "$cdet" ] && [ -f "$root/$cdet" ]; then
+    gp=${cdet#./}
+    if ! git cat-file -e "$mb:$gp" 2>/dev/null; then
+      printf 'detector file %s changed\n' "$gp"
+    else
+      at_base "$mb" "$gp" > "$scratch/det" || return 2
+      if ! cmp -s "$scratch/det" "$root/$cdet"; then printf 'detector file %s changed\n' "$gp"; fi
+    fi
+  fi
+
+  # A format decides which output lines count, so it is judged for block rules.
+  bfe=$(rule_get "$brule" format) || return 2
+  cfe=$(rule_get "$crule" format) || return 2
+  bfmt=$(effective_format "$beng" "$bfe") || return 2
+  cfmt=$(effective_format "$ceng" "$cfe") || return 2
+  if [ "$csev" = block ]; then
+    if [ "$bfmt" != "$cfmt" ]; then printf 'format %s → %s\n' "$bfmt" "$cfmt"; fi
+    gp=.gauntlet/formats/$cfmt.md
+    if [ -f "$root/$gp" ]; then
+      if ! git cat-file -e "$mb:$gp" 2>/dev/null; then
+        printf 'format file %s added\n' "$gp"
+      else
+        at_base "$mb" "$gp" > "$scratch/fmt" || return 2
+        if ! cmp -s "$scratch/fmt" "$root/$gp"; then printf 'format file %s changed\n' "$gp"; fi
+      fi
+    fi
+  fi
+}
+
+# list_missing <label> <list> <other>: print "<label> <glob>" for each word of
+# <list> that <other> lacks. Words are space-separated globs.
+list_missing() {
+  GL_LABEL=$1 GL_LIST=$2 GL_OTHER=$3 awk 'BEGIN {
+    n = split(ENVIRON["GL_OTHER"], o, " ")
+    for (i = 1; i <= n; i++) have[o[i]] = 1
+    m = split(ENVIRON["GL_LIST"], l, " ")
+    for (i = 1; i <= m; i++) if (!(l[i] in have)) print ENVIRON["GL_LABEL"], l[i]
+  }'
 }

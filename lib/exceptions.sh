@@ -1,0 +1,104 @@
+# shellcheck shell=bash
+# Human-only exceptions: the rows of .gauntlet/exceptions.tsv that waive a path,
+# loosen a rule or remove one; the commands that write them; and the lookups the
+# gate makes. Sourced, never executed. Bash 3.2 compatible; awk, git, date and
+# coreutils only. Needs core.sh, base.sh and detect.sh (DETECT_TAB) sourced first.
+
+EXC_NL='
+'
+
+# exc_file: print the path of .gauntlet/exceptions.tsv in the working tree.
+exc_file() {
+  local root
+  root=$(repo_root) || return 2
+  printf '%s/.gauntlet/exceptions.tsv\n' "$root"
+}
+
+# exc_text_check <label> <text>: exit 2 when text is empty or holds a tab or a
+# newline, which would break its TSV row (R21).
+exc_text_check() {
+  [ -n "$2" ] || die "$1 must not be empty"
+  case "$2" in
+    *"$DETECT_TAB"*|*"$EXC_NL"*) die "$1 must not contain a tab or newline" ;;
+  esac
+}
+
+# exc_append <type> <target> <reason> <branch>: append one row, dated today, to
+# exceptions.tsv. The file gets its header when it is missing or empty.
+exc_append() {
+  local file today
+  file=$(exc_file) || return 2
+  if [ ! -s "$file" ]; then
+    printf 'type\ttarget\treason\tdate\tbranch\n' > "$file" || return 2
+  fi
+  today=$(date +%Y-%m-%d) || return 2
+  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$today" "$4" >> "$file" || return 2
+}
+
+# exc_waive <path> <reason>: waive a path on the current branch. The path is
+# relative to the repo root and must exist in git or in the working tree.
+exc_waive() {
+  local path=$1 reason=$2 root branch
+  [ "$#" -eq 2 ] || die "usage: gauntlet waive <path> <reason>"
+  exc_text_check path "$path"
+  exc_text_check reason "$reason"
+  root=$(repo_root) || return 2
+  branch=$(current_branch) || return 2
+  [ "$branch" != HEAD ] || die "detached HEAD: check out a branch first"
+  if ! (cd "$root" && { [ -e "$path" ] || [ -n "$(git ls-files -- "$path")" ]; }); then
+    die "not a path in git or the working tree: $path"
+  fi
+  exc_append waive "$path" "$reason" "$branch" || return 2
+}
+
+# exc_loosen <rule> <what> <reason>: record a loosening of a rule. It covers
+# every loosening of that rule that the gate finds since the merge-base.
+exc_loosen() {
+  [ "$#" -eq 3 ] || die "usage: gauntlet loosen <rule> <what> <reason>"
+  exc_text_check rule "$1"
+  exc_text_check what "$2"
+  exc_text_check reason "$3"
+  exc_append loosen "$1: $2" "$3" - || return 2
+}
+
+# exc_remove <rule> <reason>: record the removal of a rule.
+exc_remove() {
+  [ "$#" -eq 2 ] || die "usage: gauntlet remove <rule> <reason>"
+  exc_text_check rule "$1"
+  exc_text_check reason "$2"
+  exc_append remove "$1" "$2" - || return 2
+}
+
+# waived_paths: print the paths waived on the current branch (decision 5). A
+# waive row from another branch exempts nothing. Prints nothing without a file.
+waived_paths() {
+  local file branch
+  file=$(exc_file) || return 2
+  [ -f "$file" ] || return 0
+  branch=$(current_branch) || return 2
+  GL_BRANCH=$branch awk -F "$DETECT_TAB" '$1 == "waive" && $5 == ENVIRON["GL_BRANCH"] { print $2 }' "$file"
+}
+
+# is_waived <path>: true when the current branch waives the path. The gate
+# filters whole sets with waived_paths; this is for single lookups.
+is_waived() {
+  waived_paths | GL_PATH=$1 awk '$0 == ENVIRON["GL_PATH"] { found = 1 } END { exit !found }'
+}
+
+# exc_new_rows <merge-base> <out>: write the exceptions.tsv rows that are absent
+# from the merge-base's file (decision 6). The rows are written as they are; a
+# row that was already there at the base never counts as new.
+exc_new_rows() {
+  local mb=$1 out=$2 root base
+  root=$(repo_root) || return 2
+  base="$out.base"
+  at_base "$mb" .gauntlet/exceptions.tsv > "$base" || return 2
+  if [ ! -f "$root/.gauntlet/exceptions.tsv" ]; then
+    : > "$out" || return 2
+    return 0
+  fi
+  GL_BASE=$base awk '
+    FILENAME == ENVIRON["GL_BASE"] { seen[$0] = 1; next }
+    !($0 in seen)
+  ' "$base" "$root/.gauntlet/exceptions.tsv" > "$out" || return 2
+}

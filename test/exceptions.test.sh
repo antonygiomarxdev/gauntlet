@@ -1,0 +1,356 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2153 # ROOT, G and STATUS are set by test/lib.sh
+# Tests for human-only exceptions: the waive, loosen and remove commands, the
+# waiver filter in check --ci, and the no-loosening check. Helpers are prefixed
+# exc_ because run.sh sources every group into one shell.
+
+# exc_commit <msg>: stage and commit everything, untracked files included.
+exc_commit() {
+  must git add -A
+  must git commit -q -m "$1"
+}
+
+# exc_setup <a.ts content> [rule options...]: main with one todo rule over
+# **/*.ts and a committed baseline, then a feat branch.
+exc_setup() {
+  local content=$1
+  shift
+  mkrepo
+  printf '%s\n' "$content" > a.ts
+  rule todo paths='**/*.ts' "$@"
+  exc_rebase
+  assert_eq 0 "$STATUS" "main baseline"
+  exc_commit main
+  must git checkout -q -b feat
+}
+
+# exc_rebase: stage everything, then regenerate the baseline.
+exc_rebase() {
+  must git add -A
+  run "$G" baseline
+}
+
+# exc_gate: run check --ci against main; result in $OUT and $STATUS.
+exc_gate() {
+  run "$G" check --ci --base main
+}
+
+test_waive_exempts_new_on_branch() {
+  exc_setup 'ok'
+  printf 'TODO fix\n' > a.ts
+  run "$G" waive a.ts "rewrite scheduled"
+  assert_eq 0 "$STATUS" "waive status"
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status"
+  assert_not_contains "$OUT" "[new]"
+  assert_contains "$OUT" "[global]"
+  assert_contains "$OUT" "FAIL (1 problems)"
+}
+
+test_waived_global_rise_counts_once() {
+  exc_setup 'ok'
+  printf 'TODO 1\nTODO 2\n' > a.ts
+  run "$G" waive a.ts "rewrite scheduled"
+  assert_eq 0 "$STATUS" "waive status"
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "[global]"
+  assert_contains "$OUT" "todo  0 → 2"
+  assert_contains "$OUT" "FAIL (1 problems)"
+}
+
+test_waive_other_branch_ignored() {
+  exc_setup 'ok'
+  printf 'type\ttarget\treason\tdate\tbranch\nwaive\ta.ts\told\t2026-10-22\tg\n' > .gauntlet/exceptions.tsv
+  exc_commit other-branch-row
+  printf 'TODO fix\n' > a.ts
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "[new]"
+  assert_contains "$OUT" "a.ts:1"
+}
+
+test_waive_detached_ci() {
+  exc_setup 'ok'
+  printf 'TODO fix\n' > a.ts
+  run "$G" waive a.ts "rewrite scheduled"
+  assert_eq 0 "$STATUS" "waive status"
+  exc_rebase
+  exc_commit feat
+  must git checkout -q --detach
+  export GITHUB_HEAD_REF=feat
+  exc_gate
+  assert_not_contains "$OUT" "[new]"
+  unset GITHUB_HEAD_REF
+  exc_gate
+  assert_contains "$OUT" "[new]"
+}
+
+test_waive_path_with_space() {
+  exc_setup 'ok'
+  mkdir -p "my dir"
+  printf 'TODO fix\n' > "my dir/ä b.ts"
+  run "$G" waive "my dir/ä b.ts" "rewrite scheduled"
+  assert_eq 0 "$STATUS" "waive status"
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_not_contains "$OUT" "[new]"
+  assert_contains "$(cat .gauntlet/exceptions.tsv)" "my dir/ä b.ts"
+}
+
+test_waive_exempts_touched_path() {
+  exc_setup 'TODO here'
+  touched_on_exc
+  printf 'TODO here\nok\n' > a.ts
+  run "$G" waive a.ts "rewrite scheduled"
+  assert_eq 0 "$STATUS" "waive status"
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[touched]"
+}
+
+# touched_on_exc: turn the touched gate on for the branch under test.
+touched_on_exc() {
+  printf 'touched=on\n' > .gauntlet/config
+}
+
+test_waive_missing_path_rejected() {
+  exc_setup 'ok'
+  run "$G" waive nope.ts "reason"
+  assert_eq 2 "$STATUS" "status"
+  assert_contains "$OUT" "not a path in git or the working tree: nope.ts"
+  assert_eq "" "$(cat .gauntlet/exceptions.tsv)" "exceptions file"
+}
+
+test_exception_rows_are_written() {
+  exc_setup 'ok'
+  rm -f .gauntlet/exceptions.tsv
+  run "$G" waive a.ts "rewrite scheduled"
+  assert_eq 0 "$STATUS" "waive status"
+  run "$G" loosen todo "severity to shadow" "generated code"
+  assert_eq 0 "$STATUS" "loosen status"
+  run "$G" remove todo "rule retired"
+  assert_eq 0 "$STATUS" "remove status"
+  today=$(date +%Y-%m-%d)
+  header=$(printf 'type\ttarget\treason\tdate\tbranch')
+  expected=$(printf '%s\nwaive\ta.ts\trewrite scheduled\t%s\tfeat\nloosen\ttodo: severity to shadow\tgenerated code\t%s\t-\nremove\ttodo\trule retired\t%s\t-' \
+    "$header" "$today" "$today" "$today")
+  assert_eq "$expected" "$(cat .gauntlet/exceptions.tsv)" "rows"
+}
+
+test_empty_reason_rejected() {
+  exc_setup 'ok'
+  run "$G" waive a.ts ""
+  assert_eq 2 "$STATUS" "waive status"
+  run "$G" loosen todo "what" ""
+  assert_eq 2 "$STATUS" "loosen status"
+  run "$G" remove todo ""
+  assert_eq 2 "$STATUS" "remove status"
+  assert_eq "" "$(cat .gauntlet/exceptions.tsv)" "exceptions file"
+}
+
+test_tab_or_newline_in_text_rejected() {
+  exc_setup 'ok'
+  run "$G" waive a.ts "$(printf 'a\tb')"
+  assert_eq 2 "$STATUS" "waive tab status"
+  run "$G" loosen todo "$(printf 'x\ny')" "reason"
+  assert_eq 2 "$STATUS" "loosen newline status"
+  run "$G" remove todo "$(printf 'a\tb')"
+  assert_eq 2 "$STATUS" "remove tab status"
+  assert_eq "" "$(cat .gauntlet/exceptions.tsv)" "exceptions file"
+}
+
+test_trailer_not_a_waiver() {
+  exc_setup 'ok'
+  printf 'TODO fix\n' > a.ts
+  exc_rebase
+  must git add -A
+  must git commit -q -m "$(printf 'feat\n\nStandards-waiver: a.ts — x')"
+  exc_gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "[new]"
+  assert_contains "$OUT" "a.ts:1"
+}
+
+test_lower_severity_fails_without_row() {
+  exc_setup 'ok'
+  rule todo paths='**/*.ts' severity=shadow
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "[loosened]"
+  assert_contains "$OUT" "  todo  severity block → shadow"
+  assert_contains "$OUT" "FAIL (1 problems)"
+}
+
+test_lower_severity_passes_with_new_row() {
+  exc_setup 'ok'
+  rule todo paths='**/*.ts' severity=shadow
+  run "$G" loosen todo "severity to shadow" "generated code"
+  assert_eq 0 "$STATUS" "loosen status"
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[loosened]"
+}
+
+test_old_loosen_row_does_not_cover_new_loosening() {
+  exc_setup 'ok'
+  must git checkout -q main
+  run "$G" loosen todo "earlier change" "reason"
+  assert_eq 0 "$STATUS" "loosen status"
+  exc_rebase
+  exc_commit main-row
+  must git checkout -q -b feat2
+  rule todo paths='**/*.ts' severity=shadow
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  todo  severity block → shadow"
+}
+
+test_widen_paths_is_not_loosening() {
+  mkrepo
+  mkdir -p src
+  printf 'ok\n' > src/a.ts
+  rule todo paths='src/**'
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  rule todo paths='src/** lib/**'
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[loosened]"
+}
+
+test_format_change_is_loosening() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  rule fixme paths='**/*.ts' detector="rg --with-filename --line-number --no-heading 'FIXME' {files}"
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  mkdir -p .gauntlet/formats
+  printf -- '---\nmatch: ^([^:]+):([0-9]+)(:[0-9]+)?(: ?(.*))?$\npath: 1\nline: 2\nmessage: 5\nignore: .*\n---\n' \
+    > .gauntlet/formats/path-line.md
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  todo  format file .gauntlet/formats/path-line.md added"
+  assert_contains "$OUT" "  fixme  format file .gauntlet/formats/path-line.md added"
+}
+
+test_default_format_written_out_is_not_a_change() {
+  exc_setup 'ok'
+  rule todo paths='**/*.ts' format=path-line
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[loosened]"
+}
+
+test_new_rule_never_loosened() {
+  exc_setup 'ok'
+  rule fixme paths='**/*.ts' severity=track detector="rg --with-filename --line-number --no-heading 'FIXME' {files}"
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[loosened]"
+}
+
+test_remove_rule_needs_remove_row() {
+  exc_setup 'ok'
+  must git rm -q .gauntlet/rules/todo.md
+  exc_rebase
+  exc_commit drop-rule
+  exc_gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  todo  rule file removed"
+  run "$G" remove todo "rule retired"
+  assert_eq 0 "$STATUS" "remove status"
+  exc_rebase
+  exc_commit remove-row
+  exc_gate
+  assert_eq 0 "$STATUS" "status with remove row"
+  assert_not_contains "$OUT" "[loosened]"
+}
+
+test_loosen_runs_on_onboarding_branch() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  must git rm -q .gauntlet/baseline.tsv
+  exc_commit main-no-baseline
+  must git checkout -q -b feat
+  rule todo paths='**/*.ts' severity=shadow
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "no baseline at base"
+  assert_contains "$OUT" "  todo  severity block → shadow"
+}
+
+test_detector_file_change_is_loosening() {
+  mkrepo
+  mkdir -p tools
+  printf '#!/bin/sh\nrg --with-filename --line-number --no-heading TODO "$@"\n' > tools/find.sh
+  chmod +x tools/find.sh
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script detector=tools/find.sh
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf '#!/bin/sh\nrg --with-filename --line-number --no-heading "TO" "$@" | rg -v "x"\n' > tools/find.sh
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
+}
+
+test_narrow_paths_and_widen_exclude_are_loosening() {
+  mkrepo
+  mkdir -p src lib
+  printf 'ok\n' > src/a.ts
+  rule todo paths='src/** lib/**'
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  rule todo paths='src/**' exclude='src/gen/**'
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  todo  paths narrowed: lib/**"
+  assert_contains "$OUT" "  todo  exclude widened: src/gen/**"
+  assert_contains "$OUT" "FAIL (2 problems)"
+}
+
+test_engine_and_detector_change_are_loosening() {
+  exc_setup 'ok'
+  rule todo paths='**/*.ts' detector="rg --with-filename --line-number --no-heading 'FIXME' {files}"
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  todo  detector changed"
+  assert_contains "$OUT" "FAIL (1 problems)"
+}

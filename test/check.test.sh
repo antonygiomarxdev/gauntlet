@@ -261,6 +261,8 @@ test_stacked_branch_judged_on_own_changes() {
 test_deleted_rule_passes() {
   gate_setup 'TODO here'
   must git rm -q .gauntlet/rules/todo.md
+  run "$G" remove todo "rule retired"
+  assert_eq 0 "$STATUS" "remove status"
   rebaseline
   commit_all drop-rule
   gate

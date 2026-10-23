@@ -38,6 +38,19 @@ format_file() {
   return 2
 }
 
+# effective_format <engine> <format>: print the format a rule reads. An empty
+# format field means the engine's default: github for ast-grep, path-line for
+# every other engine.
+effective_format() {
+  if [ -n "$2" ]; then
+    printf '%s\n' "$2"
+  elif [ "$1" = ast-grep ]; then
+    printf 'github\n'
+  else
+    printf 'path-line\n'
+  fi
+}
+
 # load_format <name>: read the format file into FMT_MATCH, FMT_PATH, FMT_LINE,
 # FMT_MESSAGE and FMT_IGNORE. Returns 2 for an unknown or malformed format.
 load_format() {
@@ -180,12 +193,7 @@ detect_rule() {
   paths=$(rule_get "$rule" paths) || return 2
   exclude=$(rule_get "$rule" exclude) || return 2
   format=$(rule_get "$rule" format) || return 2
-  if [ -z "$format" ]; then
-    case "$engine" in
-      ast-grep) format=github ;;
-      *) format=path-line ;;
-    esac
-  fi
+  format=$(effective_format "$engine" "$format") || return 2
   load_format "$format" || return 2
   root=$(repo_root) || return 2
 
