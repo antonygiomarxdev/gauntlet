@@ -205,7 +205,7 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
     - Each output line is tried against `ignore`, then rewritten with `sed -E` using `match` and the group numbers into `path<TAB>line<TAB>message`. Use a control character as the `s` delimiter so patterns may contain `/`, and build the tab with `printf`, because BSD sed does not expand `\t`.
     - A non-empty line that matches neither pattern makes the detector broken (exit 2, `broken detector: <rule>: unparsed line: <line>`), whatever the detector's exit code.
     - Built-in formats:
-      - `path-line`: `^(.+):([0-9]+)(:[0-9]+)?(: ?(.*))?$`, path 1, line 2, message 5. The `.+` is greedy, so a path containing `:<digits>` is a known ceiling; `rg --with-filename` paths from the repo never hit it in practice.
+      - `path-line`: `^([^:]+):([0-9]+)(:[0-9]+)?(: ?(.*))?$`, path 1, line 2, message 5. The path cannot contain `:`, a known ceiling; `rg --with-filename` paths from the repo never hit it in practice.
       - `github`: `^::(error|warning|notice) file=([^,]+),line=([0-9]+)[^:]*::(.*)$`, path 2, line 3, message 4.
       - `tsc`: `^(.+)\(([0-9]+),[0-9]+\): (error|warning) (.*)$`, path 1, line 2, message 4; `ignore: ^Found [0-9]+ errors?`.
     - Each built-in format file carries its cases in its body: a fenced `sample` block and a fenced `expected` block of rows. `test-rules` runs them (Task 6).

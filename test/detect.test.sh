@@ -172,3 +172,112 @@ test_whole_program_filtered_by_paths() {
   assert_eq 0 "$STATUS" "status"
   assert_eq "$(printf 'r\tsrc/a.ts\t1\tx')" "$(cat "$TMP/out.tsv")" "rows"
 }
+
+test_column_output_keeps_message() {
+  mkrepo
+  detect_lib
+  rule r engine=linter "detector=printf 'a.ts:7:3: msg\\n'"
+  run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 0 "$STATUS" "status"
+  assert_eq "$(printf 'r\ta.ts\t7\tmsg')" "$(cat "$TMP/out.tsv")" "rows"
+}
+
+test_no_match_survives_set_e() {
+  mkrepo
+  detect_lib
+  printf 'ok\n' > a.ts
+  printf 'a.ts\n' > "$TMP/files.txt"
+  rule todo
+  # A fresh bash, not a subshell: bash ignores errexit inside a subshell
+  # started from a conditional context, and the test runner is one.
+  OUT=$(bash -c '
+    set -eu
+    . "$1/core.sh"; . "$1/rules.sh"; . "$1/paths.sh"; . "$1/detect.sh"
+    run_detector .gauntlet/rules/todo.md "$2" "$3"
+    echo reached
+  ' _ "$ROOT/lib" "$TMP/files.txt" "$TMP/out.tsv") || true
+  assert_eq "reached" "$OUT" "continues after a clean run under set -e"
+  assert_eq "" "$(cat "$TMP/out.tsv")" "rows"
+}
+
+test_large_file_list_is_batched() {
+  mkrepo
+  detect_lib
+  mkdir -p src/gen
+  : > "$TMP/files.txt"
+  local i name
+  for i in $(seq 1 4000); do
+    name=$(printf 'src/gen/file_%04d_abcdefghijklmnopqrstuv.ts' "$i")
+    printf 'TODO\n' > "$name"
+    printf '%s\n' "$name" >> "$TMP/files.txt"
+  done
+  rule todo
+  run run_detector .gauntlet/rules/todo.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 0 "$STATUS" "status"
+  assert_eq 4000 "$(wc -l < "$TMP/out.tsv" | tr -d ' ')" "rows"
+}
+
+test_detector_stderr_is_reported() {
+  mkrepo
+  detect_lib
+  printf 'a.ts\n' > "$TMP/files.txt"
+  rule r "detector=rg '[' {files}"
+  run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 2 "$STATUS" "status"
+  assert_contains "$OUT" "regex parse error"
+}
+
+test_ast_grep_command_line() {
+  mkrepo
+  detect_lib
+  mkdir -p "$TMP/bin"
+  printf '#!/bin/sh\necho "$*" > "%s/args"\n' "$TMP" > "$TMP/bin/ast-grep"
+  must chmod +x "$TMP/bin/ast-grep"
+  PATH="$TMP/bin:$PATH"
+  export PATH
+  printf 'x.ts\n' > "$TMP/files.txt"
+  rule silent-catch engine=ast-grep detector=.gauntlet/rules/silent-catch.yml
+  run run_detector .gauntlet/rules/silent-catch.md "$TMP/files.txt" "$TMP/out.tsv"
+  local args
+  args=$(cat "$TMP/args")
+  assert_contains "$args" "scan --rule"
+  assert_contains "$args" "--format github"
+  assert_contains "$args" "x.ts"
+}
+
+test_missing_rg_prints_install_hint() {
+  mkrepo
+  detect_lib
+  mkdir -p "$TMP/bin"
+  printf '#!/bin/sh\nexit 127\n' > "$TMP/bin/rg"
+  must chmod +x "$TMP/bin/rg"
+  PATH="$TMP/bin:$PATH"
+  export PATH
+  printf 'a.ts\n' > "$TMP/files.txt"
+  rule todo
+  run run_detector .gauntlet/rules/todo.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 2 "$STATUS" "status"
+  assert_contains "$OUT" "missing tool rg"
+  assert_contains "$OUT" "brew install ripgrep ast-grep"
+}
+
+test_unknown_engine_is_broken() {
+  mkrepo
+  detect_lib
+  printf 'a.ts\n' > "$TMP/files.txt"
+  rule r engine=bogus detector=true
+  run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 2 "$STATUS" "status"
+  assert_contains "$OUT" "unknown engine bogus"
+}
+
+test_uncompilable_format_is_broken() {
+  mkrepo
+  detect_lib
+  mkdir -p .gauntlet/formats
+  printf -- '---\nmatch: (\npath: 1\nline: 1\n---\n' > .gauntlet/formats/bad.md
+  rule r engine=linter format=bad "detector=printf 'a:1\\n'"
+  run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 2 "$STATUS" "status"
+  assert_contains "$OUT" "does not compile"
+}
