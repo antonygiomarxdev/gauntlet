@@ -13,7 +13,7 @@ measure() {
   shift 2
   root=$(repo_root) || return 2
   mkdir -p "$work" || return 2
-  scratch=$(mktemp -d) || return 2
+  scratch=$(tmp_new -d) || return 2
   measure_in "$mode" "$work" "$root" "$scratch" "$@" || status=$?
   rm -rf "$scratch"
   return "$status"

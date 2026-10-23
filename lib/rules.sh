@@ -112,7 +112,7 @@ rule_validate() {
 validate_rules() {
   local root scratch id file line bad=0
   root=$(repo_root) || return 2
-  scratch=$(mktemp -d) || return 2
+  scratch=$(tmp_new -d) || return 2
   if ! rule_ids > "$scratch/ids"; then
     rm -rf "$scratch"
     return 2

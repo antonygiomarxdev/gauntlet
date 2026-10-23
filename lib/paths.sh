@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Path selection: which files a rule sees. Sourced, never executed.
-# Bash 3.2 compatible; awk, git and coreutils only.
+# Bash 3.2 compatible; awk, git and coreutils only. Needs core.sh sourced first (tmp_new).
 
 # select_files <paths> <exclude>: read paths on stdin, print those matching any
 # glob in <paths> (space-separated; empty means **) and no glob in <exclude>.
@@ -75,7 +75,7 @@ git_nul_lines() {
   for arg in "$@"; do
     if [ "$arg" = -t ]; then tagged=1; fi
   done
-  tmp=$(mktemp) || return 2
+  tmp=$(tmp_new) || return 2
   git "$@" > "$tmp" || rc=2
   if [ "$rc" -eq 0 ]; then odd_paths_refuse "$tmp" "$tagged" || rc=2; fi
   if [ "$rc" -eq 0 ]; then tr '\0' '\n' < "$tmp" || rc=2; fi

@@ -287,7 +287,7 @@ add_hook_line() {
     warn_if_not_executable "$file"
     return 0
   fi
-  tmp=$(mktemp "${TMPDIR:-/tmp}/gauntlet-hook.XXXXXX") || die "cannot create a temp file"
+  tmp=$(tmp_new) || die "cannot create a temp file"
   if ! insert_gate_first "$file" "$gate" > "$tmp"; then
     rm -f "$tmp"
     die "cannot read $file"

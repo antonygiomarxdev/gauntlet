@@ -12,7 +12,7 @@
 # 1 when any fails, 2 when the setup is broken.
 run_rule_tests() {
   local scratch rc=0
-  scratch=$(mktemp -d) || return 2
+  scratch=$(tmp_new -d) || return 2
   cases_check "$scratch" "${1:-all}" || rc=$?
   rm -rf "$scratch"
   return "$rc"

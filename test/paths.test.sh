@@ -1,8 +1,12 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2153 # ROOT and STATUS are set by test/lib.sh
 # Tests for lib/paths.sh: glob matching of rule paths and exclude lists.
 
 # paths_lib: source the library under test into the current test subshell.
 paths_lib() {
+  # git_nul_lines makes its temp file with tmp_new, from core.sh.
+  # shellcheck source=lib/core.sh
+  . "$ROOT/lib/core.sh"
   # shellcheck source=lib/paths.sh
   . "$ROOT/lib/paths.sh"
 }

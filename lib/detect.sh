@@ -312,7 +312,7 @@ detect_rule() {
 # with a message on stderr for a missing tool, a broken detector or format.
 run_detector() {
   local scratch st=0
-  scratch=$(mktemp -d) || return 2
+  scratch=$(tmp_new -d) || return 2
   detect_rule "$scratch" "$@" || st=$?
   rm -rf "$scratch"
   return "$st"

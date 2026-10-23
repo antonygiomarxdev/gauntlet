@@ -11,6 +11,32 @@ die() {
   exit "${2:-2}"
 }
 
+# tmp_new [-d]: create a temp file, or a directory with -d, and print its path. Under
+# the run root GAUNTLET_TMP when bin/gauntlet made one (its trap removes the root on
+# every exit and on INT, TERM and HUP, R33); under TMPDIR when a library is used alone.
+tmp_new() {
+  mktemp ${1+"$1"} "${GAUNTLET_TMP:-${TMPDIR:-/tmp}}/gauntlet.XXXXXX"
+}
+
+# gauntlet_cleanup: remove what the run made outside its own scratch and then the run
+# root, GAUNTLET_TMP. bin/gauntlet runs it from its EXIT trap. It removes the root it
+# was given and the one partial file registered, nothing else.
+gauntlet_cleanup() {
+  if [ -n "${GAUNTLET_PARTIAL:-}" ]; then rm -f "$GAUNTLET_PARTIAL"; fi
+  if [ -n "${GAUNTLET_TMP:-}" ]; then rm -rf "$GAUNTLET_TMP"; fi
+}
+
+# partial_begin <path> / partial_end: name the one file a command writes next to its
+# destination before it renames it into place, so gauntlet_cleanup removes it when a
+# signal ends the run in between.
+partial_begin() {
+  GAUNTLET_PARTIAL=$1
+}
+
+partial_end() {
+  GAUNTLET_PARTIAL=
+}
+
 # repo_root: print the absolute path of the top-level working tree.
 repo_root() {
   git rev-parse --show-toplevel 2>/dev/null || die "not inside a git repository"

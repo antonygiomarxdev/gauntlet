@@ -48,6 +48,24 @@ unset GIT_GLOB_PATHSPECS GIT_ICASE_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_LITERAL_PA
 # shellcheck source=lib/status.sh
 . "$GAUNTLET_BIN/../lib/status.sh"
 
+# R33: one temp root per run. Every scratch file of a command lives under it (tmp_new),
+# and the traps remove it on a normal exit, on die, and on INT, TERM and HUP, which exit
+# with the status a shell reports for a signal (128 + the number). bash runs a trap once
+# the foreground command ends, so a signal sent to gauntlet alone is handled when the
+# detector returns; a signal to the process group, as Ctrl-C sends, ends the detector
+# too. GAUNTLET_TMP is not exported: a gauntlet run by a check makes a root of its own.
+case "${1:-}" in
+  base|baseline|test-rules|waive|loosen|remove|check|install|install-hooks|status|promote|doctor)
+    GAUNTLET_TMP=$(mktemp -d "${TMPDIR:-/tmp}/gauntlet.XXXXXX") || die "cannot create a temp directory"
+    trap gauntlet_cleanup EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    # Absolute, before the cd below: a relative TMPDIR would mean another directory there.
+    GAUNTLET_TMP=$(cd "$GAUNTLET_TMP" && pwd -P) || die "cannot enter the temp directory"
+    ;;
+esac
+
 # R29: every repo command runs from the repo root, so a path given to git is never
 # relative to a subdirectory. --version needs no repo, install and install-hooks
 # resolve the root themselves, and a usage error needs nothing. Outside a repo,
@@ -73,7 +91,7 @@ case "${1:-}" in
   baseline)
     root=$(repo_root) || exit 2
     validate_rules || exit 2
-    scratch=$(mktemp -d) || exit 2
+    scratch=$(tmp_new -d) || exit 2
     status=0
     measure all "$scratch" || status=$?
     if [ "$status" -eq 0 ]; then

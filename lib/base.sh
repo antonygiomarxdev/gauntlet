@@ -1,6 +1,7 @@
 # shellcheck shell=bash
 # Base resolution: the ref a branch is measured against, and its merge-base.
-# Sourced, never executed. Bash 3.2 compatible; git and coreutils only.
+# Sourced, never executed. Bash 3.2 compatible; git and coreutils only. Needs core.sh
+# sourced first (tmp_new).
 
 # current_branch: print the branch being checked. CI sets GITHUB_HEAD_REF; a
 # detached HEAD outside CI prints HEAD.
@@ -73,8 +74,8 @@ merge_base() {
 git_has() {
   local what=$1 out err rc=0
   shift
-  out=$(mktemp) || return 2
-  err=$(mktemp) || { rm -f "$out"; return 2; }
+  out=$(tmp_new) || return 2
+  err=$(tmp_new) || { rm -f "$out"; return 2; }
   git "$@" > "$out" 2> "$err" || rc=$?
   if [ "$rc" -ne 0 ]; then
     printf 'gauntlet: cannot read %s: %s\n' "$what" "$(head -n 1 "$err")" >&2

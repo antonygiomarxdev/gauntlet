@@ -71,7 +71,7 @@ status_cmd() {
   [ ! -d "$root/.gauntlet/STATUS.md" ] || die ".gauntlet/STATUS.md is a directory; remove it, then run gauntlet status"
   today=$(status_today) || return 2
   budget=$(commit_budget) || return 2
-  scratch=$(mktemp -d) || return 2
+  scratch=$(tmp_new -d) || return 2
   status_body "$root" "$scratch" "$today" "$budget" || status=$?
   if [ "$status" -eq 0 ]; then
     if status_write "$root" "$scratch/body"; then
@@ -91,14 +91,18 @@ status_write() {
   local tmp="$1/.gauntlet/.STATUS.md.$$"
   # The temp file is made with the shell's umask, so the final file has the mode a
   # plain write would have. noclobber: an existing file is never taken over.
+  # partial_begin names it, so the run's trap removes it if a signal ends the run.
   if ! ( set -C; : > "$tmp" ) 2> /dev/null; then
     printf 'gauntlet: cannot write .gauntlet/STATUS.md\n' >&2
     return 1
   fi
+  partial_begin "$tmp"
   if cat "$2" > "$tmp" && mv -f "$tmp" "$1/.gauntlet/STATUS.md"; then
+    partial_end
     return 0
   fi
   rm -f "$tmp"
+  partial_end
   printf 'gauntlet: cannot write .gauntlet/STATUS.md\n' >&2
   return 1
 }
@@ -206,7 +210,7 @@ promote_cmd() {
   [ "$#" -eq 1 ] || die "usage: gauntlet promote <id>"
   id=$1
   root=$(repo_root) || return 2
-  ids=$(mktemp) || return 2
+  ids=$(tmp_new) || return 2
   if rule_ids > "$ids" && GL_ID=$id awk '$0 == ENVIRON["GL_ID"] { found = 1 } END { exit !found }' "$ids"; then
     found=1
   fi
@@ -239,7 +243,7 @@ promote_cmd() {
 
   # Splice by line, not by rewriting every line: head and tail copy the other bytes
   # exactly, including a missing final newline.
-  tmp=$(mktemp) || return 2
+  tmp=$(tmp_new) || return 2
   if ! { head -n "$((n - 1))" "$file" && printf '%s\n' "$repl" && tail -n +"$((n + 1))" "$file"; } > "$tmp"; then
     rm -f "$tmp"
     return 2
@@ -274,7 +278,7 @@ doctor_cmd() {
   [ "$#" -eq 0 ] || die "usage: gauntlet doctor"
   root=$(repo_root) || return 2
   [ -d "$root/.gauntlet" ] || die "not a gauntlet repo: run gauntlet install"
-  scratch=$(mktemp -d) || return 2
+  scratch=$(tmp_new -d) || return 2
   DOCTOR_FAILS=0
   doctor_checks "$root" "$scratch" || status=$?
   rm -rf "$scratch"

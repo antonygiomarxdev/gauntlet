@@ -32,7 +32,7 @@ check_ci() {
     printf 'gauntlet checks what you push; commit or stash first\n' >&2
     return 2
   fi
-  scratch=$(mktemp -d) || return 2
+  scratch=$(tmp_new -d) || return 2
   check_run "$scratch" "$base_ref" "$start" || status=$?
   rm -rf "$scratch"
   return "$status"
@@ -378,7 +378,7 @@ diff_entries() {
 # delete plus an add are not renames, so they are not listed (R23).
 rename_pairs() {
   local entries status=0
-  entries=$(mktemp) || return 2
+  entries=$(tmp_new) || return 2
   diff_entries "$1" > "$entries" || status=2
   if [ "$status" -eq 0 ]; then
     awk -F '\t' '$1 ~ /^R/ { printf "%s\t%s\n", $2, $3 }' "$entries" || status=2
@@ -513,7 +513,7 @@ cmp_touched() {
   local diff=$1 base=$2 now=$3 rules=$4 waived=$5 mode scratch status=0
   mode=$(touched_mode) || return 2
   [ "$mode" = on ] || return 0
-  scratch=$(mktemp -d) || return 2
+  scratch=$(tmp_new -d) || return 2
   cmp_touched_in "$diff" "$base" "$now" "$rules" "$waived" "$scratch" || status=$?
   rm -rf "$scratch"
   return "$status"
@@ -580,7 +580,7 @@ cmp_touched_in() {
 # row covers. Prints nothing when nothing was loosened.
 cmp_loosened() {
   local mb=$1 scratch status=0
-  scratch=$(mktemp -d) || return 2
+  scratch=$(tmp_new -d) || return 2
   cmp_loosened_in "$mb" "$scratch" || status=$?
   rm -rf "$scratch"
   return "$status"
@@ -722,7 +722,7 @@ check_staged() {
   local start status=0 scratch
   start=$(now_ms)
   [ "$#" -eq 0 ] || die "usage: gauntlet check --staged"
-  scratch=$(mktemp -d) || return 2
+  scratch=$(tmp_new -d) || return 2
   check_staged_run "$scratch" "$start" || status=$?
   rm -rf "$scratch"
   return "$status"
@@ -765,15 +765,20 @@ commit_times_path() {
 
 # record_commit_times <root> <time-file>: copy the rule<TAB>ms rows that measure wrote for
 # this commit-gate run to commit_times_path, through a temp file and a rename. Every
-# error is ignored: the gate's result never depends on this file.
+# error is ignored: the gate's result never depends on this file. The temp file is next
+# to the destination so the rename is atomic; partial_begin names it, so the run's trap
+# removes it if a signal ends the run first.
 record_commit_times() {
   local dest tmp
   dest=$(commit_times_path "$1") || return 0
-  tmp=$(mktemp "$dest.XXXXXX" 2> /dev/null) || return 0
+  tmp=$dest.$$.tmp
+  partial_begin "$tmp"
   if cp "$2" "$tmp" 2> /dev/null && mv -f "$tmp" "$dest" 2> /dev/null; then
+    partial_end
     return 0
   fi
   rm -f "$tmp"
+  partial_end
   return 0
 }
 
