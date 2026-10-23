@@ -351,3 +351,24 @@ test_a_relative_tmpdir_is_resolved_before_the_runner_changes_directory() {
   assert_eq "" "$(ls -A "$TMP/repo/tmpx")" "what the run left in the relative TMPDIR"
   assert_eq "" "$(ls -A "$TMP/repo/pkg/sub")" "nothing was made in the working directory"
 }
+
+# BSD tr decodes its input in the user's locale and stops with "Illegal byte sequence" on a file
+# name or a detector line that is not valid UTF-8; GNU tr is bytewise, so only a macOS run shows
+# it. A static pin: every tr in lib/ and bin/ is spelled LC_ALL=C tr on its own line. The
+# allow-list is empty on purpose: add a line here, with the reason, only for a tr that never sees
+# a name or detector output.
+test_every_tr_in_lib_and_bin_runs_in_the_c_locale() {
+  local bad
+  bad=$(awk '
+    /^[[:space:]]*#/ { next }
+    {
+      line = $0; all = 0; c = 0
+      s = line
+      while (match(s, /(^|[^A-Za-z0-9_.\/-])tr /)) { all++; s = substr(s, RSTART + RLENGTH) }
+      s = line
+      while (match(s, /LC_ALL=C tr /)) { c++; s = substr(s, RSTART + RLENGTH) }
+      if (all != c) print FILENAME ":" FNR ": " line
+    }
+  ' "$ROOT"/lib/*.sh "$ROOT/bin/gauntlet")
+  assert_eq "" "$bad" "tr without LC_ALL=C on the same line"
+}

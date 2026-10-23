@@ -91,7 +91,7 @@ gitlink_paths() {
   tmp=$(tmp_new) || return 2
   git -c core.quotepath=off ls-files -s -z > "$tmp" || rc=2
   if [ "$rc" -eq 0 ]; then
-    tr '\0' '\n' < "$tmp" | LC_ALL=C awk '
+    LC_ALL=C tr '\0' '\n' < "$tmp" | LC_ALL=C awk '
       substr($0, 1, 7) == "160000 " { print substr($0, index($0, "\t") + 1) }
     ' || rc=2
   fi
@@ -159,10 +159,10 @@ git_nul_run() {
 # in front (ls-files -t).
 odd_paths_refuse() {
   local odd
-  odd=$(tr -cd '\t\n' < "$1" | wc -c) || return 2
+  odd=$(LC_ALL=C tr -cd '\t\n' < "$1" | wc -c) || return 2
   if [ "$((odd + 0))" -eq 0 ]; then return 0; fi
   # A newline in a name would split it, so it becomes \002 for the awk, which spells it out.
-  tr '\n' '\002' < "$1" | tr '\0' '\n' | LC_ALL=C awk -v tagged="$2" '
+  LC_ALL=C tr '\n' '\002' < "$1" | LC_ALL=C tr '\0' '\n' | LC_ALL=C awk -v tagged="$2" '
     BEGIN { mark = sprintf("%c", 2) }
     index($0, mark) || index($0, "\t") {
       n++

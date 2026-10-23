@@ -351,7 +351,7 @@ has_nul() {
     return 1
   fi
   # shellcheck disable=SC2094 # both sides only read the file; nothing is written
-  if tr -d '\000' < "$1" | cmp -s - "$1"; then
+  if LC_ALL=C tr -d '\000' < "$1" | cmp -s - "$1"; then
     return 1
   fi
   return 0
