@@ -66,13 +66,52 @@ tracked_files() {
 # names with `"`, `\` or tabs unless -z is given, and such names would never
 # match a path the working tree reports. The output goes to a temp file first,
 # because command substitution drops NUL bytes and a pipe would hide git's status.
+# Every listing of paths passes through here, so this is the one place that refuses
+# a path with a tab or a newline (R31): the baseline and the fingerprints are tab
+# and line separated files, and such a name would corrupt them.
 git_nul_lines() {
-  local tmp rc=0
+  local tmp rc=0 tagged=0 arg
+  # ls-files -t puts "<tag> " in front of each name; the message leaves it out.
+  for arg in "$@"; do
+    if [ "$arg" = -t ]; then tagged=1; fi
+  done
   tmp=$(mktemp) || return 2
   git "$@" > "$tmp" || rc=2
+  if [ "$rc" -eq 0 ]; then odd_paths_refuse "$tmp" "$tagged" || rc=2; fi
   if [ "$rc" -eq 0 ]; then tr '\0' '\n' < "$tmp" || rc=2; fi
   rm -f "$tmp"
   return "$rc"
+}
+
+# odd_paths_refuse <nul-file> <tagged>: return 0 when no name in the NUL-separated listing holds
+# a tab or a newline. Otherwise print, for the first five such names, "gauntlet: path
+# with a tab or newline: <name>; rename the file" with the tab written \t and the
+# newline \n, a line for the rest, and return 2. git -z puts neither byte anywhere but
+# in a name, so counting them in the whole listing is the test; the names are only
+# worked out when there is one. <tagged> is 1 when each name has a two-character tag
+# in front (ls-files -t).
+odd_paths_refuse() {
+  local odd
+  odd=$(tr -cd '\t\n' < "$1" | wc -c) || return 2
+  if [ "$((odd + 0))" -eq 0 ]; then return 0; fi
+  # A newline in a name would split it, so it becomes \002 for the awk, which spells it out.
+  tr '\n' '\002' < "$1" | tr '\0' '\n' | LC_ALL=C awk -v tagged="$2" '
+    BEGIN { mark = sprintf("%c", 2) }
+    index($0, mark) || index($0, "\t") {
+      n++
+      if (n > 5) next
+      out = ""
+      for (i = (tagged == 1 ? 3 : 1); i <= length($0); i++) {
+        c = substr($0, i, 1)
+        if (c == "\t") out = out "\\t"
+        else if (c == mark) out = out "\\n"
+        else out = out c
+      }
+      print "gauntlet: path with a tab or newline: " out "; rename the file"
+    }
+    END { if (n > 5) print "gauntlet: and " n - 5 " more; rename the files" }
+  ' >&2
+  return 2
 }
 
 # files_from_listing: read `git ls-files -t` output on stdin. One tag marks each

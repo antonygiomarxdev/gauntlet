@@ -41,6 +41,65 @@ test_listing_prints_special_names_raw() {
   assert_eq 'q"x.ts' "$OUT" "staged_files"
 }
 
+# R31: a path with a tab or a newline cannot be carried by the tab-separated files, so every
+# listing refuses it, once, in git_nul_lines. The path is named with \t and \n spelled out.
+test_listing_refuses_a_tab_in_a_path_and_names_it() {
+  mkrepo
+  paths_lib
+  printf 'x\n' > "$(printf 'a\tb.ts')"
+  must git add -A
+  run tracked_files
+  assert_eq 2 "$STATUS" "tracked_files: $OUT"
+  assert_eq 'gauntlet: path with a tab or newline: a\tb.ts; rename the file' "$OUT" "the message names the path, without the ls-files tag"
+  assert_not_contains "$OUT" "$(printf '\t')"
+  run staged_files
+  assert_eq 2 "$STATUS" "staged_files: $OUT"
+  assert_contains "$OUT" 'a\tb.ts'
+}
+
+test_listing_refuses_a_newline_in_a_path_and_names_it() {
+  mkrepo
+  paths_lib
+  printf 'x\n' > "$(printf 'c\nd.ts')"
+  must git add -A
+  run tracked_files
+  assert_eq 2 "$STATUS" "tracked_files: $OUT"
+  assert_contains "$OUT" 'c\nd.ts'
+  assert_contains "$OUT" "rename the file"
+  assert_eq 1 "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" "one line, the newline is not printed raw: $OUT"
+  run all_files
+  assert_eq 2 "$STATUS" "all_files: $OUT"
+}
+
+test_listing_names_a_few_odd_paths_and_counts_the_rest() {
+  mkrepo
+  paths_lib
+  local i
+  for i in 1 2 3 4 5 6 7; do printf 'x\n' > "$(printf 'p%s\tq.ts' "$i")"; done
+  must git add -A
+  run tracked_files
+  assert_eq 2 "$STATUS" "tracked_files: $OUT"
+  assert_contains "$OUT" 'p1\tq.ts'
+  assert_contains "$OUT" 'p5\tq.ts'
+  assert_not_contains "$OUT" 'p6\tq.ts'
+  assert_contains "$OUT" "and 2 more"
+}
+
+# The names that are fine stay fine: spaces, quotes, a backslash, unicode.
+test_listing_accepts_names_without_a_tab_or_newline() {
+  mkrepo
+  paths_lib
+  printf 'x\n' > "sp ace.ts"
+  printf 'x\n' > 'q"x.ts'
+  printf 'x\n' > 'b\s.ts'
+  printf 'x\n' > "ünï.ts"
+  must git add -A
+  run tracked_files
+  assert_eq 0 "$STATUS" "tracked_files: $OUT"
+  assert_contains "$OUT" "sp ace.ts"
+  assert_contains "$OUT" "ünï.ts"
+}
+
 test_staged_files_excludes_deleted() {
   mkrepo
   paths_lib

@@ -1261,3 +1261,44 @@ test_gates_ignore_pathspec_switches_in_the_environment() {
     assert_eq 0 "$STATUS" "check --staged under $v: $OUT"
   done
 }
+
+# R31 through the gates: a tab or a newline in a tracked path is exit 2 naming the path,
+# never a corrupt baseline and never a silent skip. odd_path_repo <name>
+# puts such a file on top of a repo whose gates pass (printf %b escapes: \t, \n).
+odd_path_repo() {
+  gate_setup 'ok'
+  printf 'x\n' > "$(printf '%b' "$1")"
+}
+
+odd_path_refused() {
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "$1"
+  assert_contains "$OUT" "rename the file"
+  assert_not_contains "$OUT" "gauntlet: ok"
+}
+
+test_gates_refuse_a_tab_in_a_path() {
+  odd_path_repo 'a\tb.ts'
+  must git add -A
+  run "$G" baseline
+  odd_path_refused 'a\tb.ts'
+  assert_eq "" "$(cat .gauntlet/baseline.tsv)" "the baseline is not written"
+  run "$G" check --staged
+  odd_path_refused 'a\tb.ts'
+  commit_all feat
+  gate
+  odd_path_refused 'a\tb.ts'
+}
+
+test_gates_refuse_a_newline_in_a_path() {
+  odd_path_repo 'c\nd.ts'
+  must git add -A
+  run "$G" baseline
+  odd_path_refused 'c\nd.ts'
+  assert_eq "" "$(cat .gauntlet/baseline.tsv)" "the baseline is not written"
+  run "$G" check --staged
+  odd_path_refused 'c\nd.ts'
+  commit_all feat
+  gate
+  odd_path_refused 'c\nd.ts'
+}
