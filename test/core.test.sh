@@ -372,3 +372,62 @@ test_every_tr_in_lib_and_bin_runs_in_the_c_locale() {
   ' "$ROOT"/lib/*.sh "$ROOT/bin/gauntlet")
   assert_eq "" "$bad" "tr without LC_ALL=C on the same line"
 }
+
+# I4: the cleanup removes what this process made, never a path the environment names. A
+# variable of the same name in the environment (a CI job, a wrapper, a leftover export) is not
+# this run's.
+test_an_inherited_partial_path_is_never_removed() {
+  mkrepo
+  printf 'precious\n' > "$TMP/victim.txt"
+  run env GAUNTLET_PARTIAL="$TMP/victim.txt" "$G" base
+  assert_eq 0 "$STATUS" "base: $OUT"
+  assert_eq "precious" "$(cat "$TMP/victim.txt")" "after a command with a root"
+  run env GAUNTLET_PARTIAL="$TMP/victim.txt" "$G" --version
+  assert_eq "precious" "$(cat "$TMP/victim.txt")" "after --version"
+  run env GAUNTLET_PARTIAL="$TMP/victim.txt" "$G" nosuchcommand
+  assert_eq "precious" "$(cat "$TMP/victim.txt")" "after an unknown command"
+}
+
+test_an_inherited_run_root_is_never_removed() {
+  mkrepo
+  must mkdir "$TMP/keep"
+  printf 'precious\n' > "$TMP/keep/file"
+  local args
+  for args in "base" "--version" "nosuchcommand" "check --ci --base nosuch"; do
+    # shellcheck disable=SC2086 # the words of $args are the arguments
+    run env GAUNTLET_TMP="$TMP/keep" "$G" $args
+    assert_eq "precious" "$(cat "$TMP/keep/file" 2> /dev/null)" "after: gauntlet $args"
+  done
+}
+
+# An exported GAUNTLET_TMP does not leak into what the run starts either: the root is not exported.
+test_the_run_root_is_not_exported_to_children() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' "detector=sh -c 'env | grep -e ^GAUNTLET_TMP= -e ^GAUNTLET_PARTIAL= > \"$TMP/env.out\"; true' ignored {files}"
+  cases_of todo 'TODO x'
+  must git add -A
+  run env GAUNTLET_TMP="$TMP/keep" GAUNTLET_PARTIAL="$TMP/victim" "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  assert_eq "" "$(cat "$TMP/env.out")" "GAUNTLET_TMP and GAUNTLET_PARTIAL as the detector saw them"
+}
+
+# M6: when the run root cannot be entered, the root that was made is still removed.
+test_a_root_that_cannot_be_entered_is_still_removed() {
+  [ "$(id -u)" -ne 0 ] || { skip "root enters any directory"; return 77; }
+  mkrepo
+  must mkdir -p "$TMP/priv" "$TMP/shim"
+  local real_mktemp
+  real_mktemp=$(command -v mktemp)
+  cat > "$TMP/shim/mktemp" <<SHIM
+#!/bin/sh
+dir=\$("$real_mktemp" "\$@") || exit \$?
+chmod 000 "\$dir"
+printf '%s\n' "\$dir"
+SHIM
+  must chmod +x "$TMP/shim/mktemp"
+  run env PATH="$TMP/shim:$PATH" TMPDIR="$TMP/priv" "$G" base
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "cannot enter the temp directory"
+  assert_eq "" "$(ls -A "$TMP/priv")" "what the run left in TMPDIR"
+}
