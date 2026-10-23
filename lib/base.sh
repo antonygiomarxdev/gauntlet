@@ -96,9 +96,11 @@ base_has() {
   git_has "$2 at $1" ls-tree --full-tree --name-only -z "$1" -- "$2"
 }
 
-# index_has <path>: base_has for the index, with the same 0, 1 and 2.
+# index_has <path>: base_has for the index, with the same 0, 1 and 2. The pathspec
+# magic makes the path root-relative and literal for this one path, wherever the
+# working directory is and whatever the environment says.
 index_has() {
-  git_has "$1 in the index" --literal-pathspecs ls-files -z -- "$1"
+  git_has "$1 in the index" ls-files -z -- ":(top,literal)$1"
 }
 
 # at_base <sha> <path>: print the file as it was at sha; nothing when the path is

@@ -241,8 +241,42 @@ test_index_has_present_absent_and_error() {
   assert_eq 1 "$STATUS" "not in the index: $OUT"
   run index_has ".gauntlet/base*.tsv"
   assert_eq 1 "$STATUS" "a glob names nothing: $OUT"
+  # Root-relative like base_has: the answer from a subdirectory is the root's.
+  must mkdir -p sub
+  must cd sub
+  run index_has .gauntlet/baseline.tsv
+  assert_eq 0 "$STATUS" "in the index, from a subdirectory: $OUT"
+  run index_has nothing.txt
+  assert_eq 1 "$STATUS" "not in the index, from a subdirectory: $OUT"
+  must cd ..
   printf 'not an index' > .git/index
   run index_has .gauntlet/baseline.tsv
   assert_eq 2 "$STATUS" "unreadable index: $OUT"
   assert_contains "$OUT" ".gauntlet/baseline.tsv"
+}
+
+# A path with glob characters names that file and nothing else, in the base and in the
+# index: a1.ts is not a[1].ts, and a file called *.ts is found by its name.
+test_base_has_and_index_has_treat_glob_characters_literally() {
+  mkrepo
+  base_lib
+  printf 'x\n' > a1.ts
+  printf 'x\n' > 'b[1].ts'
+  printf 'x\n' > '*.ts'
+  must git add -A
+  must git commit -q -m two
+  sha=$(git rev-parse HEAD)
+  local p
+  for p in 'b[1].ts' '*.ts'; do
+    run base_has "$sha" "$p"
+    assert_eq 0 "$STATUS" "base_has finds [$p]: $OUT"
+    run index_has "$p"
+    assert_eq 0 "$STATUS" "index_has finds [$p]: $OUT"
+  done
+  for p in 'a[1].ts' 'a?.ts' 'c*.ts'; do
+    run base_has "$sha" "$p"
+    assert_eq 1 "$STATUS" "base_has does not glob [$p]: $OUT"
+    run index_has "$p"
+    assert_eq 1 "$STATUS" "index_has does not glob [$p]: $OUT"
+  done
 }

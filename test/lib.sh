@@ -165,7 +165,7 @@ git_fails() {
 cmd= ; path= ; rev= ; prev=
 for a in "$@"; do
   case "$a" in ls-tree|ls-files) if [ -z "$cmd" ]; then cmd=$a; fi ;; esac
-  if [ "$prev" = -- ]; then path=$a; fi
+  if [ "$prev" = -- ]; then path=${a#":(top,literal)"}; fi
   if [ "$a" = -- ]; then rev=$prev; fi
   prev=$a
 done

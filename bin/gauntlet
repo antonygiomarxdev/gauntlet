@@ -20,6 +20,11 @@ while [ -L "$gauntlet_entry" ]; do
 done
 GAUNTLET_BIN=$(cd "$(dirname "$gauntlet_entry")" && pwd -P) || exit 2
 
+# A hook inherits the pathspec switches of `git --glob-pathspecs commit` and its
+# siblings. ls-tree rejects pathspec magic and every path gauntlet hands to git is an
+# exact one, so no git call below may see them.
+unset GIT_GLOB_PATHSPECS GIT_ICASE_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_LITERAL_PATHSPECS
+
 # shellcheck source=lib/core.sh
 . "$GAUNTLET_BIN/../lib/core.sh"
 # shellcheck source=lib/rules.sh

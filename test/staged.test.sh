@@ -741,3 +741,18 @@ test_budget_label_names_the_real_budget() {
   assert_eq "5001 ms" "$(budget_label 5001)" "a neighbour of the default"
   assert_eq "300 ms" "$(budget_label 300)" "a budget below a second"
 }
+
+# The real thing the variables come from: git sets them for the hook of
+# `git --glob-pathspecs commit`.
+test_commit_with_a_pathspec_switch_runs_the_gate() {
+  staged_setup 'ok'
+  printf 'fine\n' > b.ts
+  must git add b.ts
+  run git --glob-pathspecs commit -q -m "feat: b under --glob-pathspecs"
+  assert_eq 0 "$STATUS" "commit under --glob-pathspecs: $OUT"
+  printf 'TODO x\n' > c.ts
+  must git add c.ts
+  run git --icase-pathspecs commit -q -m "feat: c under --icase-pathspecs"
+  assert_eq 1 "$STATUS" "a violation still blocks under --icase-pathspecs: $OUT"
+  assert_contains "$OUT" "c.ts:1  todo  TODO x"
+}

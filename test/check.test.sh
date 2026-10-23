@@ -1241,3 +1241,21 @@ test_staged_failed_listing_of_the_baseline_in_the_index_is_exit_2() {
   run "$G" check --staged
   r32_refused
 }
+
+# A hook inherits the pathspec switches of `git --glob-pathspecs commit` (and the other
+# three) in its environment. The gates read the base and the index by exact path, so
+# none of them may change the answer on a valid repo.
+test_gates_ignore_pathspec_switches_in_the_environment() {
+  gate_setup 'ok'
+  local v
+  for v in GIT_GLOB_PATHSPECS GIT_ICASE_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_LITERAL_PATHSPECS; do
+    run env "$v=1" "$G" check --ci --base main
+    assert_eq 0 "$STATUS" "check --ci under $v: $OUT"
+  done
+  printf 'fine\n' > b.ts
+  must git add b.ts
+  for v in GIT_GLOB_PATHSPECS GIT_ICASE_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_LITERAL_PATHSPECS; do
+    run env "$v=1" "$G" check --staged
+    assert_eq 0 "$STATUS" "check --staged under $v: $OUT"
+  done
+}
