@@ -6,15 +6,21 @@ versionExt: md
 versionFormat: '## [{{ trimPrefix "v" .Version }}] - {{.Time.Format "2006-01-02"}}'
 kindFormat: '### {{.Kind}}'
 changeFormat: '- {{.Body}}'
+# While the project is 0.x a breaking change bumps the minor version (semver 2.0.0, item 4: 0.y.z
+# is unstable), so Changed and Removed are "minor". With "major" the first release came out as 1.0.0
+# (`changie next auto` printed v1.0.0). The first release is cut as 0.1.0 with an explicit version:
+#   changie batch 0.1.0 && changie merge
+# `changie batch auto` also gives v0.1.0 now. When the project reaches 1.0, set Changed and Removed
+# back to "major".
 kinds:
     - label: Added
       auto: minor
     - label: Changed
-      auto: major
+      auto: minor
     - label: Deprecated
       auto: minor
     - label: Removed
-      auto: major
+      auto: minor
     - label: Fixed
       auto: patch
     - label: Security
