@@ -255,3 +255,65 @@ test_commit_gate_does_not_run_a_whole_program_detector_without_staged_files_in_s
   assert_eq 0 "$STATUS" "check --staged, src/b.ts staged: $OUT"
   [ -e "$TMP/ran.marker" ] || fail "check --staged did not run the detector with src/b.ts staged"
 }
+
+# The three kinds of entry a detector cannot read as a file, through the gates. The
+# linter here is grep, which exits 2 for a directory and for a path that is not there.
+edge_rule() {
+  rule g engine=linter paths='**' "detector=grep -Hn TODO {files}"
+}
+
+test_baseline_skips_a_submodule_path() {
+  mkrepo
+  edge_rule
+  printf 'TODO a\n' > a.ts
+  must mkdir "$TMP/upstream"
+  (cd "$TMP/upstream" && git init -q . && git config user.name t && git config user.email t@t && printf 'TODO s\n' > s.ts && git add -A && git commit -q -m s) || fail "cannot make the submodule's repo"
+  must git -c protocol.file.allow=always submodule add -q "$TMP/upstream" vendor/sub
+  must git -C vendor/sub config user.name t
+  must git -C vendor/sub config user.email t@t
+  must git add -A
+  assert_contains "$(git ls-files -s)" "160000"
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  assert_eq "$(printf 'g\ta.ts\tTODO a\t1')" "$(cat .gauntlet/baseline.tsv)" "rows"
+  must git commit -q -m "with a submodule"
+  must git -C vendor/sub commit -q --allow-empty -m bump
+  must git add vendor/sub
+  assert_contains "$(git diff --cached --name-only)" "vendor/sub"
+  run "$G" check --staged
+  assert_eq 0 "$STATUS" "check --staged with a bumped submodule: $OUT"
+}
+
+test_baseline_skips_a_sparse_checkout_entry_and_an_unstaged_delete() {
+  mkrepo
+  edge_rule
+  must mkdir out
+  printf 'TODO k\n' > keep.ts
+  printf 'TODO o\n' > out/b.ts
+  printf 'TODO d\n' > deleted.ts
+  must git add -A
+  must git commit -q -m "three files"
+  must git update-index --skip-worktree out/b.ts
+  must rm out/b.ts deleted.ts
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  assert_eq "$(printf 'g\tkeep.ts\tTODO k\t1')" "$(cat .gauntlet/baseline.tsv)" "rows"
+}
+
+test_commit_gate_measures_a_staged_typechange() {
+  mkrepo
+  rule todo paths='**'
+  printf 'fine\n' > target.txt
+  must ln -s target.txt link.ts
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  must git add -A
+  must git commit -q -m "a symlink"
+  must rm link.ts
+  printf 'TODO now a file\n' > link.ts
+  must git add link.ts
+  run "$G" check --staged
+  assert_eq 1 "$STATUS" "check --staged: $OUT"
+  assert_contains "$OUT" "link.ts:1  todo  TODO now a file"
+}

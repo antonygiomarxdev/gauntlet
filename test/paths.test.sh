@@ -104,6 +104,84 @@ test_listing_accepts_names_without_a_tab_or_newline() {
   assert_contains "$OUT" "ünï.ts"
 }
 
+# A gitlink (a submodule path, mode 160000) is a directory on disk. It is not a file a
+# detector can read, so no listing offers it. Names that only start like it stay.
+paths_gitlink_repo() {
+  mkrepo
+  paths_lib
+  must mkdir -p vendor/sub
+  printf 'x\n' > a.ts
+  printf 'x\n' > vendor/sub2
+  printf 'x\n' > vendor/sub.ts
+  must git add -A
+  must git update-index --add --cacheinfo 160000,4b825dc642cb6eb9a060e54bf8d69288fbee4904,vendor/sub
+  must git commit -q -m "with a gitlink"
+}
+
+test_listings_leave_out_gitlinks() {
+  paths_gitlink_repo
+  run tracked_files
+  assert_eq 0 "$STATUS" "tracked_files: $OUT"
+  assert_eq "a.ts" "$(printf '%s\n' "$OUT" | grep -x a.ts)" "tracked_files lists a.ts"
+  assert_eq "vendor/sub.ts" "$(printf '%s\n' "$OUT" | grep -x vendor/sub.ts)" "tracked_files lists vendor/sub.ts"
+  assert_eq "vendor/sub2" "$(printf '%s\n' "$OUT" | grep -x vendor/sub2)" "tracked_files lists vendor/sub2"
+  assert_eq "" "$(printf '%s\n' "$OUT" | grep -x vendor/sub || true)" "tracked_files lists the gitlink"
+  run all_files
+  assert_eq 0 "$STATUS" "all_files: $OUT"
+  assert_eq "" "$(printf '%s\n' "$OUT" | grep -x vendor/sub || true)" "all_files lists the gitlink"
+  assert_contains "$OUT" "vendor/sub2"
+}
+
+test_staged_files_leave_out_a_gitlink_bump() {
+  paths_gitlink_repo
+  printf 'y\n' > a.ts
+  must git add a.ts
+  must git update-index --cacheinfo 160000,e69de29bb2d1d6434b8b29ae775ad8c2e48c5391,vendor/sub
+  assert_contains "$(git diff --cached --name-only)" "vendor/sub"
+  run staged_files
+  assert_eq 0 "$STATUS" "staged_files: $OUT"
+  assert_eq "a.ts" "$OUT" "staged_files"
+}
+
+# An entry with the skip-worktree bit (a sparse checkout) is listed by git and absent on
+# disk. It is not part of this working tree, so it is not offered.
+test_listings_leave_out_skip_worktree_entries() {
+  mkrepo
+  paths_lib
+  must mkdir out
+  printf 'x\n' > keep.ts
+  printf 'x\n' > out/b.ts
+  must git add -A
+  must git commit -q -m "two files"
+  must git update-index --skip-worktree out/b.ts
+  must rm out/b.ts
+  run tracked_files
+  assert_eq 0 "$STATUS" "tracked_files: $OUT"
+  assert_contains "$OUT" "keep.ts"
+  assert_not_contains "$OUT" "out/b.ts"
+  run all_files
+  assert_eq 0 "$STATUS" "all_files: $OUT"
+  assert_not_contains "$OUT" "out/b.ts"
+}
+
+# --diff-filter has to name T: a symlink replaced by a regular file, or the reverse, is a
+# staged file like any other.
+test_staged_files_include_a_typechange() {
+  mkrepo
+  paths_lib
+  printf 'x\n' > target.txt
+  must ln -s target.txt link.ts
+  must git add -A
+  must git commit -q -m "a symlink"
+  must rm link.ts
+  printf 'TODO now a file\n' > link.ts
+  must git add link.ts
+  assert_eq "T	link.ts" "$(git diff --cached --name-status)" "git calls it a typechange"
+  run staged_files
+  assert_eq 0 "$STATUS" "staged_files: $OUT"
+  assert_eq "link.ts" "$OUT" "staged_files"
+}
+
 test_staged_files_excludes_deleted() {
   mkrepo
   paths_lib

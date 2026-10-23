@@ -47,18 +47,50 @@ select_files() {
 # in the working tree, once each. Used by test-rules case discovery; the
 # measurement reads tracked_files instead.
 all_files() {
-  local list
+  local list skip rc=0
   list=$(git_nul_lines -c core.quotepath=off ls-files -t -c -d -o --exclude-standard -z) || return 2
-  printf '%s\n' "$list" | files_from_listing
+  skip=$(tmp_new) || return 2
+  gitlink_paths > "$skip" || rc=2
+  if [ "$rc" -eq 0 ]; then printf '%s\n' "$list" | files_from_listing | skip_names "$skip" || rc=2; fi
+  rm -f "$skip"
+  return "$rc"
 }
 
 # tracked_files: print every file in the index that exists in the working tree,
 # once each. Untracked files are left out, so a local measurement equals what
 # CI sees (decision 2, R19).
 tracked_files() {
-  local list
+  local list skip rc=0
   list=$(git_nul_lines -c core.quotepath=off ls-files -t -c -d -z) || return 2
-  printf '%s\n' "$list" | files_from_listing
+  skip=$(tmp_new) || return 2
+  gitlink_paths > "$skip" || rc=2
+  if [ "$rc" -eq 0 ]; then printf '%s\n' "$list" | files_from_listing | skip_names "$skip" || rc=2; fi
+  rm -f "$skip"
+  return "$rc"
+}
+
+# gitlink_paths: print the paths of the gitlinks (submodules, mode 160000) in the index,
+# one per line. A gitlink is a directory on disk, not a file a detector can read.
+gitlink_paths() {
+  local tmp rc=0
+  tmp=$(tmp_new) || return 2
+  git -c core.quotepath=off ls-files -s -z > "$tmp" || rc=2
+  if [ "$rc" -eq 0 ]; then
+    tr '\0' '\n' < "$tmp" | LC_ALL=C awk '
+      substr($0, 1, 7) == "160000 " { print substr($0, index($0, "\t") + 1) }
+    ' || rc=2
+  fi
+  rm -f "$tmp"
+  return "$rc"
+}
+
+# skip_names <file>: read names on stdin, one per line, and print those that are not a
+# line of <file>.
+skip_names() {
+  GL_SKIP=$1 awk '
+    BEGIN { while ((getline line < ENVIRON["GL_SKIP"]) > 0) skip[line] = 1 }
+    !($0 in skip)
+  '
 }
 
 # git_nul_lines <git-args...>: run git, which must be given -z, and print its
@@ -116,14 +148,16 @@ odd_paths_refuse() {
 
 # files_from_listing: read `git ls-files -t` output on stdin. One tag marks each
 # line: "R name" marks a tracked file deleted from disk (it also appears as
-# tracked), any other tag is a live path. An unmerged path appears once per
-# stage, so names are de-duplicated. No file is opened.
+# tracked), "S name" an entry with the skip-worktree bit (a sparse checkout: git lists
+# it, the disk does not have it), any other tag is a live path. An unmerged path
+# appears once per stage, so names are de-duplicated. No file is opened.
 files_from_listing() {
   awk '
     $0 == "" { next }
     {
       name = substr($0, 3)
       if (substr($0, 1, 1) == "R") gone[name] = 1
+      else if (substr($0, 1, 1) == "S") next
       else order[++n] = name
     }
     END {
@@ -137,7 +171,14 @@ files_from_listing() {
   '
 }
 
-# staged_files: print staged paths that are added, copied, modified or renamed.
+# staged_files: print staged paths that are added, copied, modified, renamed or changed
+# in type (a symlink that became a file, or the reverse), leaving out the gitlinks.
 staged_files() {
-  git_nul_lines -c core.quotepath=off diff --cached --name-only --diff-filter=ACMR -z
+  local list skip rc=0
+  list=$(git_nul_lines -c core.quotepath=off diff --cached --name-only --diff-filter=ACMRT -z) || return 2
+  skip=$(tmp_new) || return 2
+  gitlink_paths > "$skip" || rc=2
+  if [ "$rc" -eq 0 ] && [ -n "$list" ]; then printf '%s\n' "$list" | skip_names "$skip" || rc=2; fi
+  rm -f "$skip"
+  return "$rc"
 }
