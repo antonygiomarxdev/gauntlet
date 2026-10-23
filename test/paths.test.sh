@@ -111,3 +111,21 @@ test_all_files_keeps_dangling_symlink() {
   OUT=$(all_files)
   assert_contains "$OUT" "link"
 }
+
+test_all_files_lists_unmerged_path_once() {
+  mkrepo
+  paths_lib
+  must sh -c 'echo base > f'
+  must git add f
+  must git commit -q -m "add f"
+  must git checkout -q -b side
+  must sh -c 'echo side > f'
+  must git commit -q -am "side"
+  must git checkout -q main
+  must sh -c 'echo main > f'
+  must git commit -q -am "main"
+  git merge -q side >/dev/null 2>&1 || true
+  OUT=$(all_files)
+  COUNT=$(printf '%s\n' "$OUT" | awk '$0 == "f" { n++ } END { print n + 0 }')
+  assert_eq 1 "$COUNT" "f count"
+}

@@ -43,24 +43,30 @@ select_files() {
   '
 }
 
-# all_files: print every tracked or untracked-but-not-ignored file, minus the
-# tracked files deleted from the working tree. The deleted list comes from git,
-# so no file is opened: symlinks, unreadable files and huge files cost nothing.
+# all_files: print every tracked or untracked-but-not-ignored file that exists
+# in the working tree, once each. One git call tags every path: "R name" marks a
+# tracked file deleted from disk (it also appears as tracked), "? name" untracked,
+# any other tag tracked. An unmerged path appears once per stage, so names are
+# de-duplicated. No file is opened.
 all_files() {
-  local dir status=0
-  dir=$(mktemp -d) || return 2
-  git -c core.quotepath=off ls-files --deleted > "$dir/gone" || status=2
-  if [ "$status" -eq 0 ]; then
-    git -c core.quotepath=off ls-files -co --exclude-standard > "$dir/all" || status=2
-  fi
-  if [ "$status" -eq 0 ]; then
-    GL_GONE="$dir/gone" awk '
-      BEGIN { while ((getline line < ENVIRON["GL_GONE"]) > 0) gone[line] = 1 }
-      !($0 in gone)
-    ' "$dir/all" || status=2
-  fi
-  rm -rf "$dir"
-  return "$status"
+  local list
+  list=$(git -c core.quotepath=off ls-files -t -c -d -o --exclude-standard) || return 2
+  printf '%s\n' "$list" | awk '
+    $0 == "" { next }
+    {
+      name = substr($0, 3)
+      if (substr($0, 1, 1) == "R") gone[name] = 1
+      else order[++n] = name
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        name = order[i]
+        if (name in gone || name in seen) continue
+        seen[name] = 1
+        print name
+      }
+    }
+  '
 }
 
 # staged_files: print staged paths that are added, copied, modified or renamed.
