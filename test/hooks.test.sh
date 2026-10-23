@@ -1572,3 +1572,169 @@ test_a_root_ignore_of_bin_lib_and_shell_files_does_not_hide_the_runner() {
   run git check-ignore -q .gauntlet/STATUS.md
   assert_eq 0 "$STATUS" "STATUS.md is ignored by .gauntlet/.gitignore"
 }
+
+# R36: one script that serves both hooks (a symlink, a hard link) would get two gate lines, or the
+# wrong command in one of the two hooks. install-hooks leaves it alone, says why, and prints the
+# lines to add: each gate inside a test on the hook's name.
+# shellcheck disable=SC2016 # shell text for a hook: ${0##*/} is expanded when the hook runs
+HOOK_TEST_GUARD_STAGED='if [ "${0##*/}" = pre-commit ]; then'
+# shellcheck disable=SC2016 # as above
+HOOK_TEST_GUARD_CI='if [ "${0##*/}" = pre-push ]; then'
+
+# one_script_repo <symlink|hardlink>: .git/hooks/pre-push is the same file as pre-commit.
+one_script_repo() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  printf '#!/bin/sh\necho shared\n' > .git/hooks/pre-commit
+  chmod 755 .git/hooks/pre-commit
+  case "$1" in
+    symlink) must ln -s pre-commit .git/hooks/pre-push ;;
+    hardlink)
+      ln .git/hooks/pre-commit .git/hooks/pre-push 2> /dev/null || return 77
+      ;;
+  esac
+}
+
+one_script_case() {
+  local before
+  one_script_repo "$1" || { skip "this filesystem refuses a $1"; return 77; }
+  before=$(hooks_sum .git/hooks/pre-commit)
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "ACTION NEEDED: .git/hooks/pre-commit and .git/hooks/pre-push are the same file"
+  assert_contains "$OUT" "would run in both hooks"
+  assert_contains "$OUT" "Add to .git/hooks/pre-commit, as the first commands"
+  assert_contains "$OUT" "$HOOK_TEST_GUARD_STAGED"$'\n'"$HOOK_TEST_GATE_STAGED"$'\nfi\n'"$HOOK_TEST_GUARD_CI"$'\n'"$HOOK_TEST_GATE_CI"$'\nfi'
+  assert_eq "$before" "$(hooks_sum .git/hooks/pre-commit)" "the shared script is not edited"
+  [ .git/hooks/pre-commit -ef .git/hooks/pre-push ] || fail "the two hooks are no longer one file"
+}
+
+test_a_symlinked_hook_pair_is_print_only() {
+  one_script_case symlink
+  [ -L .git/hooks/pre-push ] || fail "the link was replaced"
+}
+
+test_a_hard_linked_hook_pair_is_print_only() {
+  one_script_case hardlink
+}
+
+test_install_prints_for_a_shared_script_and_edits_nothing_else() {
+  hooks_repo "$TMP/repo"
+  printf '#!/bin/sh\necho shared\n' > .git/hooks/pre-commit
+  chmod 755 .git/hooks/pre-commit
+  must ln -s pre-commit .git/hooks/pre-push
+  run "$G" install
+  assert_eq 0 "$STATUS" "install: $OUT"
+  assert_contains "$OUT" "are the same file"
+  hooks_expect .git/hooks/pre-commit $'#!/bin/sh\necho shared\n'
+  [ -f .gauntlet/bin/gauntlet ] || fail "the runner was not vendored"
+}
+
+test_a_shared_script_with_both_guarded_gates_is_already_present() {
+  one_script_repo symlink
+  printf '#!/bin/sh\n%s\n%s\nfi\n%s\n%s\nfi\necho shared\n' "$HOOK_TEST_GUARD_STAGED" "$HOOK_TEST_GATE_STAGED" "$HOOK_TEST_GUARD_CI" "$HOOK_TEST_GATE_CI" > .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "already present in .git/hooks/pre-commit"
+  assert_not_contains "$OUT" "ACTION NEEDED"
+}
+
+# The state an older install-hooks made of such a pair: both gates, unguarded, in both hooks.
+test_a_shared_script_with_unguarded_gates_still_gets_the_advice() {
+  one_script_repo symlink
+  printf '#!/bin/sh\n%s\n%s\n' "$HOOK_TEST_GATE_CI" "$HOOK_TEST_GATE_STAGED" > .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_contains "$OUT" "ACTION NEEDED"
+}
+
+test_a_symlinked_pair_in_a_husky_directory_is_print_only() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must git config core.hooksPath .husky
+  must mkdir .husky
+  printf '#!/bin/sh\nnpx lint-staged\n' > .husky/pre-commit
+  chmod 755 .husky/pre-commit
+  must ln -s pre-commit .husky/pre-push
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "ACTION NEEDED: .husky/pre-commit and .husky/pre-push are the same file"
+  hooks_expect .husky/pre-commit $'#!/bin/sh\nnpx lint-staged\n'
+}
+
+# A hook that is only a link to another hook file is not one script serving both.
+test_two_different_files_are_edited_as_before() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  printf '#!/bin/sh\necho a\n' > .git/hooks/pre-commit
+  printf '#!/bin/sh\necho b\n' > .git/hooks/real-pre-push
+  chmod 755 .git/hooks/pre-commit .git/hooks/real-pre-push
+  must ln -s real-pre-push .git/hooks/pre-push
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_not_contains "$OUT" "same file"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_GATE_STAGED" .git/hooks/pre-commit)" "pre-commit gate"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_GATE_CI" .git/hooks/real-pre-push)" "pre-push gate in the link's target"
+}
+
+# The lines install-hooks prints work: pasted into the shared script, they gate a commit through
+# pre-commit and a push through pre-push, each with its own command.
+test_the_lines_printed_for_a_shared_script_gate_both_hooks() {
+  hooks_repo "$TMP/repo"
+  must git init -q --bare "$TMP/remote.git"
+  must git remote add origin "$TMP/remote.git"
+  run "$G" install
+  assert_eq 0 "$STATUS" "install: $OUT"
+  rule todo format=path-line
+  must git add -A
+  run git commit -q -m "add the rule"
+  assert_eq 0 "$STATUS" "commit of the rule: $OUT"
+  must rm .git/hooks/pre-commit .git/hooks/pre-push
+  printf '#!/bin/sh\necho shared\n' > .git/hooks/pre-commit
+  chmod 755 .git/hooks/pre-commit
+  must ln -s pre-commit .git/hooks/pre-push
+  run "$G" install-hooks
+  assert_contains "$OUT" "ACTION NEEDED"
+  printf '#!/bin/sh\n%s\necho shared\n' "$(printf '%s\n' "$OUT" | sed -n '/^if \[ /,$p')" > .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_contains "$OUT" "already present in .git/hooks/pre-commit"
+  run git push -q origin main
+  assert_eq 0 "$STATUS" "push of main through the shared script: $OUT"
+  must git checkout -q -b feat
+  printf 'TODO fix me\n' > a.txt
+  must git add a.txt
+  run git commit -q -m "add a violation"
+  if [ "$STATUS" -eq 0 ]; then fail "the shared script did not block the commit: $OUT"; fi
+  run git commit -q --no-verify -m "add a violation"
+  assert_eq 0 "$STATUS" "commit with --no-verify: $OUT"
+  run git push -q origin feat
+  if [ "$STATUS" -eq 0 ]; then fail "the shared script did not block the push: $OUT"; fi
+}
+
+# A shared hooks directory (outside the repo) is printed for, never edited; a symlinked pair in it
+# gets the same one-script advice, not two lines that each run in both hooks.
+test_a_symlinked_pair_in_a_shared_hooks_dir_gets_the_one_script_advice() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must mkdir "$TMP/shared"
+  printf '#!/bin/sh\necho shared\n' > "$TMP/shared/pre-commit"
+  chmod 755 "$TMP/shared/pre-commit"
+  must ln -s pre-commit "$TMP/shared/pre-push"
+  must git config core.hooksPath "$TMP/shared"
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "ACTION NEEDED: $TMP/shared/pre-commit and $TMP/shared/pre-push are the same file"
+  assert_eq 1 "$(printf '%s\n' "$OUT" | grep -c 'ACTION NEEDED')" "one piece of advice"
+  hooks_expect "$TMP/shared/pre-commit" $'#!/bin/sh\necho shared\n'
+}
+
+# Both tests on the hook's name are needed: a gate guarded for one hook and bare for the other
+# still runs in the wrong hook.
+test_a_shared_script_missing_one_guard_still_gets_the_advice() {
+  one_script_repo symlink
+  printf '#!/bin/sh\n%s\n%s\nfi\n%s\n' "$HOOK_TEST_GUARD_STAGED" "$HOOK_TEST_GATE_STAGED" "$HOOK_TEST_GATE_CI" > .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_contains "$OUT" "ACTION NEEDED"
+  printf '#!/bin/sh\n%s\n%s\n%s\nfi\n' "$HOOK_TEST_GATE_STAGED" "$HOOK_TEST_GUARD_CI" "$HOOK_TEST_GATE_CI" > .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_contains "$OUT" "ACTION NEEDED"
+}

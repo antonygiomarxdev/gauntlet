@@ -13,6 +13,16 @@ HOOK_GATE_STAGED='.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet'
 HOOK_LINE_CI='.gauntlet/bin/gauntlet check --ci --pre-push  # gauntlet'
 HOOK_GATE_CI='.gauntlet/bin/gauntlet check --ci --pre-push || exit $?  # gauntlet'
 
+# When pre-commit and pre-push are one file (a symlink, a hard link), that script runs for both
+# hooks, so a gate line in it would run in both: the staged gate under pre-push and the push gate
+# under pre-commit. The gate lines go inside these tests on the hook's name, which the user adds by
+# hand (install-hooks never edits such a file). The gate lines stay whole lines of their own, so
+# doctor reads them like any others; the two tests are what doctor looks for besides.
+# shellcheck disable=SC2016 # shell text for a hook: ${0##*/} is expanded when the hook runs
+HOOK_GUARD_STAGED='if [ "${0##*/}" = pre-commit ]; then'
+# shellcheck disable=SC2016 # as above
+HOOK_GUARD_CI='if [ "${0##*/}" = pre-push ]; then'
+
 # The pre-push lines of the versions before --pre-push: they judge the checked-out branch
 # whatever git pushes. install-hooks replaces them in place; doctor names them.
 HOOK_OLD_LINE_CI='.gauntlet/bin/gauntlet check --ci  # gauntlet'
@@ -309,14 +319,51 @@ hook_target() {
   fi
 }
 
-# add_hook_pair <dir>: add the pre-commit and pre-push gate lines to <dir>.
+# add_hook_pair <dir>: add the pre-commit and pre-push gate lines to <dir>. One script that
+# serves both hooks is not edited (hooks_one_script).
 add_hook_pair() {
+  if [ "$1/pre-commit" -ef "$1/pre-push" ]; then
+    hooks_one_script "$1/pre-commit" "$1/pre-push"
+    return 0
+  fi
   add_hook_line "$1/pre-commit" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED"
   add_hook_line "$1/pre-push" "$HOOK_LINE_CI" "$HOOK_GATE_CI" "$HOOK_OLD_LINE_CI" "$HOOK_OLD_GATE_CI"
 }
 
+# hooks_one_script_done <file>: succeed when <file>, which serves both hooks, holds both gate
+# lines and both tests on the hook's name (HOOK_GUARD_*), as whole lines. Presence, not meaning:
+# like every check of a hook, it cannot tell what the lines around them do.
+hooks_one_script_done() {
+  hook_has_gate "$1" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED" \
+    && hook_has_gate "$1" "$HOOK_LINE_CI" "$HOOK_GATE_CI" \
+    && grep -Fxq -- "$HOOK_GUARD_STAGED" "$1" 2> /dev/null \
+    && grep -Fxq -- "$HOOK_GUARD_CI" "$1" 2> /dev/null
+}
+
+# hooks_one_script <commit-hook> <push-hook>: the two paths are one file (same device and inode,
+# which covers both a symlink and a hard link). Edit nothing: one gate line cannot be right for
+# both hooks. Say why and print the lines to add by hand; or say they are there.
+hooks_one_script() {
+  local shown a b
+  shown=$(path_spell "$(display_path "$1")")
+  if hooks_one_script_done "$1"; then
+    printf 'already present in %s\n' "$shown"
+    warn_if_not_executable "$1"
+    return 0
+  fi
+  a=$(path_spell "$(display_path "$1")")
+  b=$(path_spell "$(display_path "$2")")
+  printf 'ACTION NEEDED: %s and %s are the same file, so a gate line in it would run in both hooks (the staged gate on push, the push gate on commit). It is not edited. Add to %s, as the first commands, after the shebang line if there is one:\n' "$a" "$b" "$shown"
+  printf '%s\n%s\nfi\n%s\n%s\nfi\n' "$HOOK_GUARD_STAGED" "$HOOK_GATE_STAGED" "$HOOK_GUARD_CI" "$HOOK_GATE_CI"
+  warn_if_not_executable "$1"
+}
+
 # print_hook_pair <dir>: print the two gate lines for <dir>, which is not ours to edit.
 print_hook_pair() {
+  if [ "$1/pre-commit" -ef "$1/pre-push" ]; then
+    hooks_one_script "$1/pre-commit" "$1/pre-push"
+    return 0
+  fi
   print_only "$1/pre-commit" "$HOOK_GATE_STAGED"
   print_only "$1/pre-push" "$HOOK_GATE_CI"
 }

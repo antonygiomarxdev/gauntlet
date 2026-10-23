@@ -444,11 +444,32 @@ doctor_hooks() {
       done < "$scratch/configs"
       ;;
     husky|husky-v9|dir|print)
+      if [ "$dir/pre-commit" -ef "$dir/pre-push" ]; then
+        doctor_one_script "$dir/pre-commit" "$dir/pre-push" "$execcheck"
+        return 0
+      fi
       doctor_hook_file pre-commit "$dir/pre-commit" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED" "$kind" "$execcheck"
       doctor_hook_file pre-push "$dir/pre-push" "$HOOK_LINE_CI" "$HOOK_GATE_CI" "$kind" "$execcheck" "$HOOK_OLD_LINE_CI" "$HOOK_OLD_GATE_CI"
       ;;
   esac
   return 0
+}
+
+# doctor_one_script <commit-hook> <push-hook> <execcheck>: the two hooks are one file, which
+# install-hooks does not edit (hooks_one_script says why). It must hold both gate lines inside
+# the tests on the hook's name; the FAIL says what install-hooks says.
+doctor_one_script() {
+  local shown
+  shown=$(display_path "$1")
+  if [ "$3" -eq 1 ] && [ -f "$1" ] && [ ! -x "$1" ]; then
+    doctor_fail "hook $shown is not executable: chmod +x $shown"
+  fi
+  if hooks_one_script_done "$1"; then
+    doctor_ok "pre-commit gate in $shown"
+    doctor_ok "pre-push gate in $shown"
+  else
+    doctor_fail "$shown and $(display_path "$2") are the same file, so a gate line in it would run in both hooks: run gauntlet install-hooks and add by hand the lines it prints, as the first commands of the script"
+  fi
 }
 
 # doctor_hook_file <stage> <file> <plain> <gate> <kind> <execcheck> [<old-plain> <old-gate>]:

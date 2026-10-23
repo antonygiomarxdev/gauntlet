@@ -590,3 +590,29 @@ test_the_ignore_pattern_is_printed_escaped() {
   assert_contains "$OUT" 'FAIL runner files are ignored by git (.gauntlet/bin/gauntlet by .gitignore:1:[b\x1b]in/)'
   assert_clean "$OUT" "doctor"
 }
+
+# --- W3b: the hook advice ---
+
+# esc_hooks_dir: a hooks directory inside the repo whose name holds an ESC, set as core.hooksPath,
+# so every hook path a message prints holds the byte.
+esc_hooks_dir() {
+  ESC_DIR="hk$(printf '\033')d"
+  esc_hooks_repo
+  must mkdir "$ESC_DIR"
+  must git config core.hooksPath "$ESC_DIR"
+}
+
+test_the_one_script_advice_prints_the_paths_escaped() {
+  esc_hooks_dir
+  printf '#!/bin/sh\necho shared\n' > "$ESC_DIR/pre-commit"
+  chmod 755 "$ESC_DIR/pre-commit"
+  must ln -s pre-commit "$ESC_DIR/pre-push"
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" 'ACTION NEEDED: hk\x1bd/pre-commit and hk\x1bd/pre-push are the same file'
+  assert_contains "$OUT" 'Add to hk\x1bd/pre-commit, as the first commands'
+  assert_clean "$OUT" "the one-script advice"
+  run "$G" doctor
+  assert_contains "$OUT" 'FAIL hk\x1bd/pre-commit and hk\x1bd/pre-push are the same file'
+  assert_clean "$OUT" "doctor"
+}

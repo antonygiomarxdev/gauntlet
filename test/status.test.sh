@@ -1697,3 +1697,33 @@ test_doctor_resolves_an_origin_base_the_way_the_gates_do() {
   assert_eq 1 "$STATUS" "doctor with an origin ref that does not exist: $OUT"
   assert_contains "$OUT" "FAIL base origin/gone does not resolve"
 }
+
+# R36: doctor says what install-hooks says about one script serving both hooks, and is satisfied
+# once the guarded lines are there.
+test_doctor_names_a_script_that_serves_both_hooks() {
+  mkrepo
+  printf '#!/bin/sh\necho shared\n' > .git/hooks/pre-commit
+  must chmod 755 .git/hooks/pre-commit
+  must ln -s pre-commit .git/hooks/pre-push
+  doctor_install
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_eq 1 "$(doctor_fails)" "one FAIL for the shared script: $OUT"
+  assert_contains "$OUT" "FAIL .git/hooks/pre-commit and .git/hooks/pre-push are the same file, so a gate line in it would run in both hooks: run gauntlet install-hooks and add by hand the lines it prints"
+  # shellcheck disable=SC2016 # the hook text holds ${0##*/}, which must not expand here
+  printf '#!/bin/sh\nif [ "${0##*/}" = pre-commit ]; then\n.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet\nfi\nif [ "${0##*/}" = pre-push ]; then\n.gauntlet/bin/gauntlet check --ci --pre-push || exit $?  # gauntlet\nfi\necho shared\n' > .git/hooks/pre-commit
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor after the lines are added: $OUT"
+  assert_contains "$OUT" "ok pre-commit gate in .git/hooks/pre-commit"
+  assert_contains "$OUT" "ok pre-push gate in .git/hooks/pre-commit"
+}
+
+test_doctor_fails_a_shared_script_that_is_not_executable() {
+  mkrepo
+  printf '#!/bin/sh\necho shared\n' > .git/hooks/pre-commit
+  must chmod 644 .git/hooks/pre-commit
+  must ln -s pre-commit .git/hooks/pre-push
+  doctor_install
+  run "$G" doctor
+  assert_contains "$OUT" "FAIL hook .git/hooks/pre-commit is not executable: chmod +x .git/hooks/pre-commit"
+}
