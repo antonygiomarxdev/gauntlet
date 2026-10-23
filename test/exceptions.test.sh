@@ -1475,6 +1475,8 @@ exc_script_rule() {
   mkrepo
   must mkdir -p tools "my tools"
   printf '#!/bin/sh\nrg --with-filename --line-number --no-heading TODO "$@"\n' > tools/find.sh
+  # A second argument, "exec", makes the script executable, for a detector that runs it by name.
+  if [ "${2:-}" = exec ]; then must chmod +x tools/find.sh; fi
   cp tools/find.sh "my tools/find.sh"
   printf 'ok\n' > a.ts
   rule todo paths='**/*.ts' engine=script "detector=$1"
@@ -1739,6 +1741,147 @@ test_a_directory_word_does_not_hide_the_script_beside_it() {
   assert_eq 1 "$STATUS" "status: $OUT"
   assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
   assert_not_contains "$OUT" "detector file tools/ changed"
+}
+
+# The command is cut at the shell's operators as well as at blanks: a file glued to one of them
+# is still the file the shell runs. exc_glued <detector>: the rule runs tools/find.sh through
+# <detector>, then the script is rewritten on the branch and the gate runs.
+exc_glued() {
+  exc_script_rule "$1" exec
+  exc_change_tool tools/find.sh
+}
+
+test_a_detector_file_before_a_semicolon_is_found() {
+  exc_glued 'bash tools/find.sh;true'
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
+}
+
+test_a_detector_file_before_an_ampersand_is_found() {
+  exc_glued 'bash tools/find.sh&wait'
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
+}
+
+test_a_detector_file_before_a_pipe_is_found() {
+  exc_glued 'bash tools/find.sh|cat'
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
+}
+
+test_a_detector_file_before_an_input_redirect_is_found() {
+  exc_glued 'bash tools/find.sh</dev/null'
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
+}
+
+test_a_detector_file_before_an_output_redirect_is_found() {
+  exc_glued 'bash tools/find.sh>/dev/null'
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
+}
+
+test_a_detector_file_after_an_opening_parenthesis_is_found() {
+  exc_glued '(tools/find.sh )'
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
+}
+
+test_a_detector_file_before_a_closing_parenthesis_is_found() {
+  exc_glued '(bash tools/find.sh)'
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
+}
+
+# An operator inside quotes is text: the word is one file name, and the file it cuts to is not
+# the one the shell runs.
+test_a_quoted_operator_stays_inside_its_word() {
+  mkrepo
+  must mkdir -p tools
+  printf '#!/bin/sh\nrg --with-filename --line-number --no-heading TODO "$@"\n' > 'tools/find.sh;true'
+  cp 'tools/find.sh;true' tools/find.sh
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script 'detector=bash "tools/find.sh;true" {files}'
+  script_row todo
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  exc_change_tool tools/find.sh
+  assert_eq 0 "$STATUS" "the decoy before the semicolon: $OUT"
+  assert_not_contains "$OUT" "detector file"
+  exc_change_tool 'tools/find.sh;true'
+  assert_eq 1 "$STATUS" "the named file: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh;true changed"
+}
+
+# A newline ends a word too; the operators are cut where they stand, quotes and escapes kept.
+test_detector_words_are_cut_at_operators_and_newlines() {
+  # shellcheck source=lib/check.sh
+  . "$ROOT/lib/check.sh"
+  assert_eq 'a
+b
+c
+d
+e
+f
+g
+h
+i' "$(detector_words 'a;b&c|d<e>f(g)h
+i')" "every operator and the newline"
+  assert_eq 'a;b
+c|d' "$(detector_words "'a;b' \"c|d\"")" "quoted operators stay"
+  assert_eq 'a;b' "$(detector_words 'a\;b')" "an escaped operator stays"
+  assert_eq 'rg
+--pre=tools/pre.sh
+tools/pre.sh
+x=y' "$(detector_words 'rg --pre=tools/pre.sh x=y')" "an option with = also names its value"
+  assert_eq 'rg
+--pre=a
+a
+b' "$(detector_words 'rg --pre=a
+b')" "a newline ends the word before the option's value is read"
+  assert_eq 'x
+--empty=
+y' "$(detector_words 'x --empty= y')" "an empty value is no word"
+}
+
+# An option that takes its file after "=" names that file.
+test_an_option_value_after_an_equals_sign_is_a_detector_file() {
+  mkrepo
+  must mkdir -p tools
+  printf '#!/bin/sh\nrg --with-filename --line-number --no-heading TODO "$@"\n' > tools/find.sh
+  printf '# nothing ignored\n' > tools/ign
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script 'detector=bash tools/find.sh --ignore-file=tools/ign {files}'
+  script_row todo
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  exc_change_tool tools/ign
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/ign changed"
+}
+
+# The ast-grep rule field is one path (the runner quotes it as one word), spaces and all.
+test_an_ast_grep_rule_path_with_a_space_is_one_word() {
+  command -v ast-grep > /dev/null 2>&1 || { skip "ast-grep not installed"; return 77; }
+  mkrepo
+  must mkdir -p ast
+  printf 'id: dbg\nlanguage: TypeScript\nrule:\n  pattern: debugger\nmessage: no debugger\n' > 'ast/with space.yml'
+  printf 'debugger;\nok\n' > a.ts
+  rule dbg paths='**/*.ts' engine=ast-grep 'detector=ast/with space.yml'
+  exc_rebase
+  assert_eq 0 "$STATUS" "main baseline: $(cat .gauntlet/baseline.tsv)"
+  assert_contains "$(cat .gauntlet/baseline.tsv)" "dbg	a.ts	"
+  exc_commit main
+  must git checkout -q -b feat
+  # shellcheck disable=SC2016 # the ast-grep metavariable is meant to stay literal
+  printf 'id: dbg\nlanguage: TypeScript\nrule:\n  pattern: console.log($A)\nmessage: no debugger\n' > 'ast/with space.yml'
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  dbg  detector file ast/with space.yml changed"
 }
 
 # exc_link_rule [chain]: main holds tools/find.sh as a symlink to real.sh and the rule runs it;

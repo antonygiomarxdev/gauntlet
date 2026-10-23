@@ -875,7 +875,12 @@ loosen_changes() {
   # nothing expanded, so {files}, flags and globs are plain words that name nothing. A
   # changed string is reported above.
   if [ "$bdet" = "$cdet" ]; then
-    detector_words "$cdet" > "$scratch/words" || return 2
+    # The ast-grep rule field is one path, quoted whole when the command is built (detect_rule).
+    if [ "$ceng" = ast-grep ]; then
+      printf '%s\n' "$cdet" > "$scratch/words" || return 2
+    else
+      detector_words "$cdet" > "$scratch/words" || return 2
+    fi
     while IFS= read -r w; do
       w=${w#./}
       st=0
@@ -923,17 +928,26 @@ loosen_changes() {
 }
 
 # detector_words <command>: print the words of a detector command, one per line, cut the
-# way the shell cuts a command line and with nothing expanded. A space or a tab ends a word
-# outside quotes. 'single quotes' keep everything. "Double quotes" keep everything but a
-# backslash before ", \, $ or a backtick, which makes that character literal. Outside quotes a
-# backslash makes the next character literal. Quoted and unquoted parts that touch are one
-# word ("tools"/find.sh is tools/find.sh); the quotes and escaping backslashes are gone; an
-# empty word ("") is dropped; a quote left open takes the rest of the line. No $variable, `
-# command, glob, ~ or operator (| ; & < >) is interpreted: the command is judged as text, and
-# a word made of those characters names no file.
+# way the shell cuts a command line and with nothing expanded. A space, a tab, a newline or
+# one of the operators ; & | < > ( ) ends a word outside quotes, so a file glued to an
+# operator (tools/find.sh;true, (tools/find.sh)) is a word of its own; the pieces can only add
+# candidate names, and a name that is no file is silent. 'single quotes' keep everything.
+# "Double quotes" keep everything but a backslash before ", \, $ or a backtick, which makes
+# that character literal. Outside quotes a backslash makes the next character literal. Quoted
+# and unquoted parts that touch are one word ("tools"/find.sh is tools/find.sh); the quotes and
+# escaping backslashes are gone; an empty word ("") is dropped; a quote left open takes the
+# rest of the line. A word that starts with "-" and holds "=" (--pre=tools/pre.sh) is printed
+# whole and then as the text after the first "=". No $variable, ` command, glob, brace or ~ is
+# interpreted: the command is judged as text.
 detector_words() {
   GL_CMD=$1 LC_ALL=C awk '
-    function emit() { if (inword && w != "") print w; w = ""; inword = 0 }
+    function emit(   e) {
+      if (inword && w != "") {
+        print w
+        if (substr(w, 1, 1) == "-" && (e = index(w, "=")) > 0 && e < length(w)) print substr(w, e + 1)
+      }
+      w = ""; inword = 0
+    }
     BEGIN {
       s = ENVIRON["GL_CMD"]; n = length(s); q = ""; w = ""; inword = 0
       for (i = 1; i <= n; i++) {
@@ -950,7 +964,7 @@ detector_words() {
         }
         if (c == "\047" || c == "\"") { q = c; inword = 1; continue }
         if (c == "\\" && i < n) { w = w substr(s, i + 1, 1); i++; inword = 1; continue }
-        if (c == " " || c == "\t") { emit(); continue }
+        if (c == " " || c == "\t" || c == "\n" || index(";&|<>()", c) > 0) { emit(); continue }
         w = w c; inword = 1
       }
       emit()
