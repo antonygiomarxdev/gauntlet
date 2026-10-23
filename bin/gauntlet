@@ -4,8 +4,27 @@ set -eu
 
 # shellcheck source=lib/core.sh
 . "$(dirname "$0")/../lib/core.sh"
+# shellcheck source=lib/rules.sh
+. "$(dirname "$0")/../lib/rules.sh"
+# shellcheck source=lib/paths.sh
+. "$(dirname "$0")/../lib/paths.sh"
+# shellcheck source=lib/detect.sh
+. "$(dirname "$0")/../lib/detect.sh"
+# shellcheck source=lib/measure.sh
+. "$(dirname "$0")/../lib/measure.sh"
 
 case "${1:-}" in
   --version) printf 'gauntlet %s\n' "$GAUNTLET_VERSION" ;;
+  baseline)
+    root=$(repo_root) || exit 2
+    scratch=$(mktemp -d) || exit 2
+    status=0
+    measure all "$scratch" || status=$?
+    if [ "$status" -eq 0 ]; then
+      cp "$scratch/measure.tsv" "$root/.gauntlet/baseline.tsv" || status=2
+    fi
+    rm -rf "$scratch"
+    exit "$status"
+    ;;
   *) die "unknown command: ${1:-}" ;;
 esac
