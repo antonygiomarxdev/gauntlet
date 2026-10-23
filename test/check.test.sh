@@ -173,13 +173,15 @@ section_of() {
 }
 
 test_bad_severity_fails_closed() {
-  gate_setup 'ok' severity=blok
+  gate_setup 'ok'
+  rule todo paths='**/*.ts' severity=blok
   printf 'TODO fix\n' > a.ts
   rebaseline
+  assert_eq 2 "$STATUS" "baseline refuses the rule too"
   commit_all feat
   gate
   assert_eq 2 "$STATUS" "status"
-  assert_contains "$OUT" "bad severity [blok]"
+  assert_contains "$OUT" "rule todo: severity must be block, shadow or track, got [blok]; run gauntlet doctor"
 }
 
 test_four_new_occurrences_count_four() {
@@ -764,6 +766,7 @@ test_check_stdin_is_devnull() {
 test_rule_tests_broken_detector_exits_2() {
   gate_setup 'x'
   rule broken paths='**/*.ts' engine=script detector="sh -c 'for f; do case \$f in *.txt) exit 2;; esac; done' sh {files}"
+  script_row broken
   cases_of broken 'TODO x'
   commit_all feat
   gate
@@ -962,4 +965,102 @@ test_pure_rename_of_shadow_debt_prints_no_shadow_line() {
   gate
   assert_eq 0 "$STATUS" "status"
   assert_not_contains "$OUT" "would have failed"
+}
+
+# R27: baseline, check --staged and check --ci validate every rule before they
+# measure. rv_broken <kind> [stage] writes .gauntlet/rules/bad.md broken one way.
+rv_broken() {
+  local stage=${2:-commit}
+  case "$1" in
+    # detecter: for detector:, so the detector is an empty command.
+    typo)
+      printf -- '---\nid: bad\nseverity: block\nstage: %s\nengine: rg\ndetecter: rg --with-filename --line-number --no-heading TODO {files}\npaths: **\nexclude:\nfix: remove it\nsource: pending\nsince: 2026-10-22\n---\nBroken.\n' "$stage" > .gauntlet/rules/bad.md ;;
+    # a wrong id, and no fix, source or since.
+    wrongid)
+      printf -- '---\nid: wrongid\nseverity: block\nstage: %s\nengine: rg\ndetector: rg --with-filename --line-number --no-heading TODO {files}\npaths: **\nexclude:\n---\nBroken.\n' "$stage" > .gauntlet/rules/bad.md ;;
+    unclosed)
+      printf -- '---\nid: bad\nseverity: block\nstage: %s\n' "$stage" > .gauntlet/rules/bad.md ;;
+    script)
+      rule bad engine=script stage="$stage" ;;
+    *) fail "rv_broken: unknown kind $1" ;;
+  esac
+}
+
+# rv_gates <kind> <message>: with the rule broken that way and a new TODO, every
+# gate exits 2, prints the message and never says ok.
+rv_gates() {
+  gate_setup 'ok'
+  rv_broken "$1"
+  printf 'TODO x\n' > a.ts
+  must git add -A
+  run "$G" baseline
+  assert_eq 2 "$STATUS" "baseline: $OUT"
+  assert_contains "$OUT" "$2"
+  run "$G" check --staged
+  assert_eq 2 "$STATUS" "check --staged: $OUT"
+  assert_contains "$OUT" "$2"
+  assert_not_contains "$OUT" "gauntlet: ok"
+  commit_all feat
+  gate
+  assert_eq 2 "$STATUS" "check --ci: $OUT"
+  assert_contains "$OUT" "$2"
+  assert_not_contains "$OUT" "gauntlet: ok"
+}
+
+test_gates_refuse_a_misspelled_detector_key() {
+  rv_gates typo "rule bad: detector must not be empty; run gauntlet doctor"
+}
+
+test_gates_refuse_a_wrong_id_and_a_missing_fix() {
+  rv_gates wrongid "rule bad: id [wrongid] must equal the file stem [bad]; run gauntlet doctor"
+  assert_contains "$OUT" "rule bad: fix must not be empty; run gauntlet doctor"
+  assert_contains "$OUT" "rule bad: source must not be empty; run gauntlet doctor"
+  assert_contains "$OUT" "rule bad: since must be YYYY-MM-DD, got []; run gauntlet doctor"
+}
+
+test_gates_refuse_an_unclosed_frontmatter() {
+  rv_gates unclosed "rule bad: frontmatter not closed; run gauntlet doctor"
+}
+
+test_gates_refuse_a_script_rule_without_a_script_row() {
+  rv_gates script "rule bad: engine=script needs a script row for [bad] in .gauntlet/exceptions.tsv; run gauntlet doctor"
+}
+
+# The row is all that is asked for: with it the same rule passes every gate.
+test_gates_accept_a_script_rule_with_its_script_row() {
+  gate_setup 'ok'
+  rv_broken script
+  cases_of bad 'TODO x'
+  script_row bad
+  rebaseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  run "$G" check --staged
+  assert_eq 0 "$STATUS" "check --staged: $OUT"
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "check --ci: $OUT"
+}
+
+# A push-stage rule is not measured at commit, but it is validated there: the setup
+# is broken for the push gate and for CI, and the commit gate says so early.
+test_commit_gate_refuses_a_broken_push_stage_rule() {
+  gate_setup 'ok'
+  rv_broken typo push
+  printf 'TODO x\n' > a.ts
+  must git add -A
+  run "$G" check --staged
+  assert_eq 2 "$STATUS" "check --staged: $OUT"
+  assert_contains "$OUT" "rule bad: detector must not be empty; run gauntlet doctor"
+}
+
+# The message lists the problems of every broken rule, not just the first.
+test_gates_report_every_broken_rule() {
+  gate_setup 'ok'
+  rv_broken typo
+  rule worse severity=hard
+  must git add -A
+  run "$G" check --staged
+  assert_eq 2 "$STATUS" "check --staged: $OUT"
+  assert_contains "$OUT" "rule bad: detector must not be empty; run gauntlet doctor"
+  assert_contains "$OUT" "rule worse: severity must be block, shadow or track, got [hard]; run gauntlet doctor"
 }

@@ -47,6 +47,7 @@ check_run() {
   local loosened_n=0 rt_n=0 rt_rc=0 checks_n=0 broken=0 t0 t1
   root=$(repo_root) || return 2
   touched_mode > /dev/null || return 2
+  validate_rules || return 2
   base=$(resolve_base "$base_ref") || return 2
   sha=$(merge_base "$base") || return 2
   # Every file the branch changes, deletions included: the scope of declared checks.
@@ -64,11 +65,6 @@ check_run() {
   while IFS= read -r id; do
     rf="$root/.gauntlet/rules/$id.md"
     sev=$(rule_get "$rf" severity) || return 2
-    # Fail closed: an unknown severity would otherwise match no comparison.
-    if ! severity_rank "$sev" > /dev/null; then
-      printf 'gauntlet: rule %s: bad severity [%s]\n' "$id" "$sev" >&2
-      return 2
-    fi
     fix=$(rule_get "$rf" fix) || return 2
     atb=0
     if git cat-file -e "$sha:.gauntlet/rules/$id.md" 2>/dev/null; then atb=1; fi
@@ -780,25 +776,14 @@ check_staged_run() {
   # id, severity, 1 when the rule file exists at HEAD, fix.
   : > "$scratch/commit.ids"
   : > "$scratch/rules.tsv"
+  validate_rules || return 2
   rule_ids > "$scratch/ids" || return 2
   while IFS= read -r id; do
     rf="$root/.gauntlet/rules/$id.md"
     stage=$(rule_get "$rf" stage) || return 2
     [ -n "$stage" ] || stage=commit
-    case "$stage" in
-      commit) ;;
-      push) continue ;;
-      *)
-        printf 'gauntlet: rule %s: bad stage [%s]\n' "$id" "$stage" >&2
-        return 2
-        ;;
-    esac
+    if [ "$stage" = push ]; then continue; fi
     sev=$(rule_get "$rf" severity) || return 2
-    # Fail closed: an unknown severity would otherwise match no comparison.
-    if ! severity_rank "$sev" > /dev/null; then
-      printf 'gauntlet: rule %s: bad severity [%s]\n' "$id" "$sev" >&2
-      return 2
-    fi
     fix=$(rule_get "$rf" fix) || return 2
     atb=0
     if git cat-file -e "HEAD:.gauntlet/rules/$id.md" 2>/dev/null; then atb=1; fi

@@ -631,7 +631,7 @@ test_bad_stage_exits_2() {
   must git add -A
   run "$G" check --staged
   assert_eq 2 "$STATUS" "status"
-  assert_contains "$OUT" "bad stage [sometimes]"
+  assert_contains "$OUT" "rule todo: stage must be commit or push, got [sometimes]; run gauntlet doctor"
 }
 
 test_bad_budget_exits_2() {

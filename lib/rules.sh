@@ -47,9 +47,9 @@ rule_ids() {
 }
 
 # rule_validate <file>: print "<file>: <problem>" for each error and return 1
-# when there is any.
+# when there is any. Needs exceptions.sh (exc_has_script) for engine=script.
 rule_validate() {
-  local file=$1 bad=0 id severity stage engine detector fix source since stem root
+  local file=$1 bad=0 id severity stage engine detector fix source since stem
   problem() {
     printf '%s: %s\n' "$file" "$1"
     bad=1
@@ -59,7 +59,7 @@ rule_validate() {
     return 1
   fi
   if ! rule_get "$file" id >/dev/null; then
-    problem "frontmatter must be closed by a second ---"
+    problem "frontmatter not closed"
     return 1
   fi
   stem=${file##*/}
@@ -86,9 +86,8 @@ rule_validate() {
   case "$engine" in
     linter|ast-grep|rg) ;;
     script)
-      root=$(repo_root) || exit 2
-      if ! awk -F'\t' -v id="$stem" '$1 == "script" && $2 == id { found = 1 } END { exit !found }' \
-        "$root/.gauntlet/exceptions.tsv" 2>/dev/null; then
+      # A lookup that cannot read the file counts as no row: the gate stops either way.
+      if ! exc_has_script "$stem"; then
         problem "engine=script needs a script row for [$stem] in .gauntlet/exceptions.tsv"
       fi
       ;;
@@ -103,6 +102,32 @@ rule_validate() {
   esac
 
   [ "$bad" -eq 0 ]
+}
+
+# validate_rules: run rule_validate on every rule, whatever its stage. Prints
+# "rule <id>: <problem>; run gauntlet doctor" on stderr for each problem and
+# returns 2 when any rule is broken. The gates call it before they measure, so a
+# rule that would run as an empty detector, or print an empty fix, stops the gate
+# instead (R27, RULE-AC1, RULE-AC2).
+validate_rules() {
+  local root scratch id file line bad=0
+  root=$(repo_root) || return 2
+  scratch=$(mktemp -d) || return 2
+  if ! rule_ids > "$scratch/ids"; then
+    rm -rf "$scratch"
+    return 2
+  fi
+  while IFS= read -r id; do
+    file="$root/.gauntlet/rules/$id.md"
+    if ! rule_validate "$file" > "$scratch/problems"; then
+      bad=1
+      while IFS= read -r line; do
+        printf 'rule %s: %s; run gauntlet doctor\n' "$id" "${line#"$file: "}" >&2
+      done < "$scratch/problems"
+    fi
+  done < "$scratch/ids"
+  rm -rf "$scratch"
+  [ "$bad" -eq 0 ] || return 2
 }
 
 # severity_rank <sev>: print block=3, shadow=2, track=1; return 1 otherwise.

@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2153 # ROOT and STATUS are set by test/lib.sh
 # Tests for lib/rules.sh: frontmatter reads, rule validation and ordering.
 
 # rules_lib: source the libraries under test into the current test subshell.
@@ -8,6 +9,11 @@ rules_lib() {
   . "$ROOT/lib/core.sh"
   # shellcheck source=lib/rules.sh
   . "$ROOT/lib/rules.sh"
+  # rule_validate asks exceptions.sh for the script row; DETECT_TAB is in detect.sh.
+  # shellcheck source=lib/detect.sh
+  . "$ROOT/lib/detect.sh"
+  # shellcheck source=lib/exceptions.sh
+  . "$ROOT/lib/exceptions.sh"
 }
 
 test_get_strips_comment_on_enum_keys() {
@@ -46,7 +52,7 @@ test_validate_rejects_unclosed_frontmatter() {
   printf -- '---\nid: x\nseverity: block\nengine: rg\ndetector: rg TODO {files}\nfix: remove it\nsource: pending\nsince: 2026-10-22\n' > .gauntlet/rules/x.md
   run rule_validate .gauntlet/rules/x.md
   assert_eq 1 "$STATUS" "status"
-  assert_eq ".gauntlet/rules/x.md: frontmatter must be closed by a second ---" "$OUT" "output"
+  assert_eq ".gauntlet/rules/x.md: frontmatter not closed" "$OUT" "output"
 }
 
 test_validate_accepts_good_rule() {

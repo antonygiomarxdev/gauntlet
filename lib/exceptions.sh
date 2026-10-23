@@ -95,6 +95,16 @@ is_waived() {
   waived_paths | GL_PATH=$1 awk '$0 == ENVIRON["GL_PATH"] { found = 1 } END { exit !found }'
 }
 
+# exc_has_script <rule-id>: succeed when exceptions.tsv in the working tree has a
+# script row for the rule (RULE-AC2). Only the row's presence is asked for. Fails
+# when the file is missing or unreadable.
+exc_has_script() {
+  local file
+  file=$(exc_file) || return 2
+  [ -f "$file" ] || return 1
+  GL_ID=$1 awk -F "$DETECT_TAB" '$1 == "script" && $2 == ENVIRON["GL_ID"] { found = 1 } END { exit !found }' "$file"
+}
+
 # exc_new_rows <merge-base> <out>: write the exceptions.tsv rows that are absent
 # from the merge-base's file (decision 6). The rows are written as they are; a
 # row that was already there at the base never counts as new.

@@ -131,6 +131,15 @@ rule() {
   } > ".gauntlet/rules/$id.md" || fail "cannot write rule $id"
 }
 
+# script_row <rule-id>: approve engine=script for a rule with a script row, as a
+# maintainer would by hand (no command writes one).
+script_row() {
+  if [ ! -s .gauntlet/exceptions.tsv ]; then
+    printf 'type\ttarget\treason\tdate\tbranch\n' > .gauntlet/exceptions.tsv || fail "cannot write exceptions.tsv"
+  fi
+  printf 'script\t%s\tfixture\t2026-10-22\t-\n' "$1" >> .gauntlet/exceptions.tsv || fail "cannot write exceptions.tsv"
+}
+
 # run <cmd...>: run a command, capturing combined output in $OUT and status in $STATUS.
 run() {
   # shellcheck disable=SC2034 # read by test files

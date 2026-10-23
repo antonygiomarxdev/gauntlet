@@ -67,6 +67,7 @@ case "${1:-}" in
     ;;
   baseline)
     root=$(repo_root) || exit 2
+    validate_rules || exit 2
     scratch=$(mktemp -d) || exit 2
     status=0
     measure all "$scratch" || status=$?

@@ -327,6 +327,7 @@ test_detector_file_change_is_loosening() {
   chmod +x tools/find.sh
   printf 'ok\n' > a.ts
   rule todo paths='**/*.ts' engine=script detector=tools/find.sh
+  script_row todo
   exc_rebase
   exc_commit main
   must git checkout -q -b feat
@@ -454,6 +455,7 @@ test_detector_args_file_change_is_loosening() {
   printf '#!/bin/sh\nrg --with-filename --line-number --no-heading TODO "$@"\n' > tools/find.sh
   printf 'TODO\n' > a.ts
   rule todo paths='**/*.ts' engine=script detector='bash tools/find.sh {files}'
+  script_row todo
   exc_rebase
   exc_commit main
   must git checkout -q -b feat
@@ -471,6 +473,7 @@ test_detector_args_file_removed_is_loosening() {
   printf '#!/bin/sh\ntrue\n' > tools/find.sh
   printf 'ok\n' > a.ts
   rule todo paths='**/*.ts' engine=script detector='true tools/find.sh {files}'
+  script_row todo
   exc_rebase
   exc_commit main
   must git checkout -q -b feat
@@ -488,6 +491,7 @@ test_detector_file_removed_with_bash_fails_closed() {
   printf '#!/bin/sh\ntrue\n' > tools/find.sh
   printf 'ok\n' > a.ts
   rule todo paths='**/*.ts' engine=script detector='bash tools/find.sh {files}'
+  script_row todo
   exc_rebase
   exc_commit main
   must git checkout -q -b feat
@@ -506,6 +510,7 @@ test_symlinked_detector_unrelated_commit_not_loosened() {
   ln -s real.sh tools/find.sh
   printf 'ok\n' > a.ts
   rule todo paths='**/*.ts' engine=script detector=tools/find.sh
+  script_row todo
   exc_rebase
   exc_commit main
   must git checkout -q -b feat
@@ -589,6 +594,7 @@ test_engine_only_change_is_loosening() {
   exc_commit main
   must git checkout -q -b feat
   rule todo paths='**/*.ts' engine=script
+  script_row todo
   exc_rebase
   exc_commit feat
   exc_gate
@@ -604,6 +610,7 @@ test_dot_slash_detector_file_change_is_loosening() {
   printf '#!/bin/sh\nrg --with-filename --line-number --no-heading TODO "$@"\n' > tools/find.sh
   printf 'ok\n' > a.ts
   rule todo paths='**/*.ts' engine=script "detector=bash ./tools/find.sh {files}"
+  script_row todo
   cases_of todo 'TODO x'
   exc_rebase
   exc_commit main
