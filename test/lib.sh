@@ -37,7 +37,7 @@ must() {
 rule() {
   local id=$1
   shift
-  local severity=block stage=commit engine=rg paths='**' exclude=''
+  local severity=block stage=commit engine=rg paths='**' exclude='' format=''
   local detector="rg --with-filename --line-number --no-heading 'TODO' {files}"
   local fix='remove it' source=pending since=2026-10-22
   local kv
@@ -49,6 +49,7 @@ rule() {
       detector=*) detector=${kv#detector=} ;;
       paths=*) paths=${kv#paths=} ;;
       exclude=*) exclude=${kv#exclude=} ;;
+      format=*) format=${kv#format=} ;;
       fix=*) fix=${kv#fix=} ;;
       source=*) source=${kv#source=} ;;
       since=*) since=${kv#since=} ;;
@@ -65,6 +66,7 @@ rule() {
     echo "detector: $detector"
     echo "paths: $paths"
     echo "exclude: $exclude"
+    if [ -n "$format" ]; then echo "format: $format"; fi
     echo "fix: $fix"
     echo "source: $source"
     echo "since: $since"

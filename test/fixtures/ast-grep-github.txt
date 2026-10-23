@@ -1,0 +1,1 @@
+::error file=x.ts,line=1,endLine=1,title=silent-catch::empty catch
