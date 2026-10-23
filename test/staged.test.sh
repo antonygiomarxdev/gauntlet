@@ -813,6 +813,97 @@ test_stale_base_row_on_rename_destination_is_dropped_at_commit() {
   assert_contains "$OUT" "  b.ts:5  todo  TODO x"
 }
 
+# Rows of a push-stage rule are not measured at commit: they stay as the index has them. A
+# rename moves the file, so its kept rows must move with it, or the next check --ci finds the
+# committed baseline stale. staged_push_setup <a.ts> [<c.ts>]: a push-stage rule over
+# **/*.ts, FIXME lines for debt, one commit-stage rule beside it, the hook installed, branch feat.
+staged_push_setup() {
+  mkrepo
+  printf '%s\n' "$1" > a.ts
+  if [ "$#" -gt 1 ]; then printf '%s\n' "$2" > c.ts; fi
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  rule pushy paths='**/*.ts' stage=push detector="rg --with-filename --line-number --no-heading 'FIXME' {files}"
+  cases_of pushy 'FIXME x'
+  staged_baseline
+  must git add -A
+  must git commit -q -m main
+  staged_hook
+  must git checkout -q -b feat
+}
+
+# staged_pushy_rows: the push-stage rows of the baseline HEAD carries.
+staged_pushy_rows() {
+  staged_committed_baseline | grep -E '^pushy'"$(printf '\t')" || true
+}
+
+test_pure_rename_of_push_stage_debt_commits_moved_rows() {
+  staged_push_setup 'FIXME x'
+  assert_eq $'pushy\ta.ts\tFIXME x\t1' "$(staged_pushy_rows)" "the debt is in the baseline"
+  must git mv a.ts b.ts
+  run git commit -q -m "refactor: rename a.ts"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_eq $'pushy\tb.ts\tFIXME x\t1' "$(staged_pushy_rows)" "old row gone, new path's row in"
+  run "$G" check --ci --base main
+  assert_eq 0 "$STATUS" "check --ci: $OUT"
+  assert_contains "$OUT" "gauntlet: ok"
+}
+
+test_rename_with_an_edit_keeps_the_push_stage_debt_at_the_new_path() {
+  staged_push_setup "$(printf 'alpha\nbeta\nFIXME x')"
+  must git mv a.ts b.ts
+  printf 'alpha\nbeta\nFIXME x\nnew line\n' > b.ts
+  must git add -A
+  run git commit -q -m "refactor: rename and edit"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_eq $'pushy\tb.ts\tFIXME x\t1' "$(staged_pushy_rows)"
+  run "$G" check --ci --base main
+  assert_eq 0 "$STATUS" "check --ci: $OUT"
+}
+
+test_two_renames_carry_both_push_stage_rows() {
+  staged_push_setup 'FIXME one' 'FIXME two'
+  must git mv a.ts b.ts
+  must git mv c.ts d.ts
+  run git commit -q -m "refactor: two renames"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_eq "$(printf 'pushy\tb.ts\tFIXME one\t1\npushy\td.ts\tFIXME two\t1')" "$(staged_pushy_rows)"
+  run "$G" check --ci --base main
+  assert_eq 0 "$STATUS" "check --ci: $OUT"
+}
+
+# A stale push-stage row sits on the path a rename lands on (a file deleted without a new
+# baseline): that path's old content is gone, so its row goes and the renamed file's row takes
+# the path.
+test_rename_onto_a_stale_push_stage_row_replaces_it() {
+  staged_push_setup 'FIXME one' 'FIXME two'
+  must git rm -q c.ts
+  run git commit -q -m "chore: drop c.ts"
+  assert_eq 0 "$STATUS" "drop commit status"
+  assert_contains "$(staged_pushy_rows)" $'pushy\tc.ts\tFIXME two\t1'
+  must git mv a.ts c.ts
+  run git commit -q -m "refactor: rename onto c.ts"
+  assert_eq 0 "$STATUS" "rename commit status"
+  assert_eq $'pushy\tc.ts\tFIXME one\t1' "$(staged_pushy_rows)"
+  run "$G" check --ci --base HEAD~1
+  assert_eq 0 "$STATUS" "check --ci: $OUT"
+}
+
+# The baseline already regenerated after the rename (the advice every note gives) has its rows
+# at the new path and none at the old one. Carrying must not drop them.
+test_a_baseline_regenerated_after_a_rename_keeps_its_push_stage_rows() {
+  staged_push_setup 'FIXME x'
+  must git mv a.ts b.ts
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "regenerate"
+  must git add -A
+  run git commit -q -m "refactor: rename a.ts"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_eq $'pushy\tb.ts\tFIXME x\t1' "$(staged_pushy_rows)"
+  run "$G" check --ci --base main
+  assert_eq 0 "$STATUS" "check --ci: $OUT"
+}
+
 test_copy_of_debt_file_is_new_at_commit() {
   staged_setup 'TODO here'
   cp a.ts c.ts

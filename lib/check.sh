@@ -498,6 +498,30 @@ rekey_base() {
   ' "$1" "$2"
 }
 
+# carry_renamed <pairs> <rows>: print the baseline rows with each renamed file's rows moved to
+# its new path (R23), for rows the commit gate does not measure (push-stage rules) and so can
+# only carry. Rows already at a new path are dropped when the same rule has a row moved there:
+# that file's old content is gone. A rule with no row moved there keeps its rows, which is a
+# baseline regenerated after the rename. rekey_base cannot do this: it reads HEAD's baseline,
+# where a new path holds only stale rows, and drops them all; the index may already hold the
+# new path's real rows.
+carry_renamed() {
+  GL_PAIRS=$1 awk -F "$DETECT_TAB" '
+    FILENAME == ENVIRON["GL_PAIRS"] { to[$1] = $2; next }
+    {
+      n++; line[n] = $0; rule[n] = $1; path[n] = $2; fp[n] = $3; cnt[n] = $4
+      if ($2 in to) moved[$1 SUBSEP to[$2]] = 1
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        if (path[i] in to) printf "%s\t%s\t%s\t%s\n", rule[i], to[path[i]], fp[i], cnt[i]
+        else if ((rule[i] SUBSEP path[i]) in moved) continue
+        else print line[i]
+      }
+    }
+  ' "$1" "$2"
+}
+
 # new_rows <severity> <scratch> [base.tsv]: print one row per new occurrence of a
 # rule of that severity that exists at base: rule, path, line, fix, message. An
 # occurrence is new when its fingerprint count rose; the last occurrences in
@@ -1228,12 +1252,14 @@ check_staged_run() {
   # tight.tsv is the baseline this commit carries (ADR-0003): the index's rows,
   # minus the commit-stage rows of every staged path, plus the rows just measured.
   # Rows of push-stage rules, of unstaged paths and of rules no longer on disk
-  # stay as the index has them.
+  # stay as the index has them, a renamed file's following it to its new path.
+  rename_pairs "$scratch/staged.diff" > "$scratch/renames.tsv" || return 2
   GL_IDS="$scratch/commit.ids" GL_STAGED="$scratch/staged.paths" awk -F "$DETECT_TAB" '
     FILENAME == ENVIRON["GL_IDS"] { commit[$0] = 1; next }
     FILENAME == ENVIRON["GL_STAGED"] { staged[$0] = 1; next }
     !(($1 in commit) && ($2 in staged))
-  ' "$scratch/commit.ids" "$scratch/staged.paths" "$scratch/index.tsv" > "$scratch/kept.tsv" || return 2
+  ' "$scratch/commit.ids" "$scratch/staged.paths" "$scratch/index.tsv" > "$scratch/kept.raw" || return 2
+  carry_renamed "$scratch/renames.tsv" "$scratch/kept.raw" > "$scratch/kept.tsv" || return 2
   cat "$scratch/kept.tsv" "$scratch/now/measure.tsv" > "$scratch/tight.raw" || return 2
   LC_ALL=C sort "$scratch/tight.raw" > "$scratch/tight.tsv" || return 2
 
@@ -1241,7 +1267,6 @@ check_staged_run() {
   if [ "$known" -eq 0 ]; then
     printf 'note: no baseline at HEAD; new, touched, shadow and track checks skipped\n' >> "$body"
   else
-    rename_pairs "$scratch/staged.diff" > "$scratch/renames.tsv" || return 2
     rekey_base "$scratch/renames.tsv" "$scratch/base.tsv" > "$scratch/base.rekeyed.tsv" || return 2
     new_rows block "$scratch" "$scratch/base.rekeyed.tsv" > "$scratch/new.rows" || return 2
     new_n=$(awk 'END { print NR }' "$scratch/new.rows") || return 2
