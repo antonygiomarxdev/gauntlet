@@ -824,7 +824,7 @@ loosen_row() {
 # paths, narrowing exclude and a format that stays the same are not loosening.
 loosen_changes() {
   local mb=$1 scratch=$2 brule=$3 crule=$4
-  local bsev csev rb rc bp cp be ce beng ceng bdet cdet bfe cfe bfmt cfmt gp has
+  local bsev csev rb rc bp cp be ce beng ceng bdet cdet bfe cfe bfmt cfmt gp has w st
   bsev=$(rule_get "$brule" severity) || return 2
   csev=$(rule_get "$crule" severity) || return 2
   rb=$(severity_rank "$bsev") || rb=0
@@ -853,7 +853,13 @@ loosen_changes() {
     (set -f; for w in $cdet; do printf '%s\n' "$w"; done) > "$scratch/words" || return 2
     while IFS= read -r w; do
       w=${w#./}
-      if blob_changed "$mb" "$w"; then printf 'detector file %s changed\n' "$w"; fi
+      st=0
+      blob_changed "$mb" "$w" || st=$?
+      case "$st" in
+        0) printf 'detector file %s changed\n' "$w" ;;
+        1) ;;
+        *) return 2 ;;
+      esac
     done < "$scratch/words"
   fi
 
@@ -865,35 +871,82 @@ loosen_changes() {
   if [ "$csev" = block ]; then
     if [ "$bfmt" != "$cfmt" ]; then printf 'format %s → %s\n' "$bfmt" "$cfmt"; fi
     gp=.gauntlet/formats/$cfmt.md
-    if blob_changed "$mb" "$gp"; then
-      has=0
-      base_has "$mb" "$gp" || has=$?
-      case "$has" in
-        0)
-          has=0
-          base_has HEAD "$gp" || has=$?
-          case "$has" in
-            0) printf 'format file %s changed\n' "$gp" ;;
-            1) printf 'format file %s removed\n' "$gp" ;;
-            *) return 2 ;;
-          esac
-          ;;
-        1) printf 'format file %s added\n' "$gp" ;;
-        *) return 2 ;;
-      esac
-    fi
+    st=0
+    blob_changed "$mb" "$gp" || st=$?
+    case "$st" in
+      0)
+        has=0
+        base_has "$mb" "$gp" || has=$?
+        case "$has" in
+          0)
+            has=0
+            base_has HEAD "$gp" || has=$?
+            case "$has" in
+              0) printf 'format file %s changed\n' "$gp" ;;
+              1) printf 'format file %s removed\n' "$gp" ;;
+              *) return 2 ;;
+            esac
+            ;;
+          1) printf 'format file %s added\n' "$gp" ;;
+          *) return 2 ;;
+        esac
+        ;;
+      1) ;;
+      *) return 2 ;;
+    esac
   fi
 }
 
-# blob_changed <merge-base> <path>: true when <path> has a different git blob at
-# the merge-base than at HEAD; a path absent on one side is a different blob.
-# Blob ids, not file reads: a symlink compares by its link text, and HEAD is
-# clean (check --ci refuses a dirty tree), so HEAD is what CI runs.
+# blob_changed <merge-base> <path>: succeed (0) when <path> has a different git blob at the
+# merge-base than at HEAD, a path absent on one side being a different blob; return 1 when it
+# is the same on both sides, and 2 when git cannot tell for either side (R32): an unreadable
+# side is neither "absent" nor "unchanged". Blob ids, not file reads: a symlink compares by
+# its link text, and HEAD is clean (check --ci refuses a dirty tree), so HEAD is what CI runs.
 blob_changed() {
   local a b
-  a=$(git rev-parse -q --verify "$1:$2" 2>/dev/null) || a=
-  b=$(git rev-parse -q --verify "HEAD:$2" 2>/dev/null) || b=
+  a=$(blob_id "$1" "$2") || return 2
+  b=$(blob_id HEAD "$2") || return 2
   [ "$a" != "$b" ]
+}
+
+# blob_id <rev> <path>: print the git id of <path> at <rev>; nothing when the path is absent
+# there, and return 2 (after a message) when git cannot tell. base_has answers present, absent
+# or unreadable first, so a failed listing is never read as an absent path. A detector word is
+# any text, and most of it names no file of the repository: an empty or absolute word, one that
+# starts with ":" (git's pathspec magic), and one that folds to the root or climbs above it
+# ("." and "..") are absent; the others are read as the tree path they fold to (tree_join).
+blob_id() {
+  local rc=0 path
+  case "$2" in '' | /* | :*) return 0 ;; esac
+  path=$(tree_join "" "$2")
+  if [ -z "$path" ]; then return 0; fi
+  base_has "$1" "$path" || rc=$?
+  case "$rc" in
+    0)
+      git rev-parse "$1:$path" 2> /dev/null || {
+        printf 'gauntlet: cannot read %s at %s\n' "$path" "$1" >&2
+        return 2
+      }
+      ;;
+    1) ;;
+    *) return 2 ;;
+  esac
+}
+
+# tree_join <dir> <relative>: print "<dir>/<relative>" with "." and ".." folded, as a path
+# inside the repository. Prints nothing when the result is the root itself or climbs above it.
+tree_join() {
+  GL_P="$1/$2" awk 'BEGIN {
+    n = split(ENVIRON["GL_P"], a, "/"); k = 0
+    for (i = 1; i <= n; i++) {
+      if (a[i] == "" || a[i] == ".") continue
+      if (a[i] == "..") { if (k == 0) exit; k--; continue }
+      b[++k] = a[i]
+    }
+    out = ""
+    for (i = 1; i <= k; i++) out = out (i > 1 ? "/" : "") b[i]
+    if (out != "") print out
+  }'
 }
 
 # list_missing <label> <list> <other>: print "<label> <glob>" for each word of

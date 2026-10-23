@@ -152,14 +152,16 @@ unreadable_object() {
   if git cat-file -p "$oid" > /dev/null 2>&1; then fail "unreadable_object: $1 still reads"; fi
 }
 
-# git_fails <ls-tree|ls-files> <path> [<rev>]: put a git first on PATH that fails the
-# first listing of <path> (and, when given, only at <rev>) with a git error, as a
-# damaged repository would, and runs every other call through the real git. Only the
-# first, so a later read of the same path cannot stand in for the site under test.
+# git_fails <ls-tree|ls-files> <path> [<rev> [<nth>]]: put a git first on PATH that fails
+# the <nth> listing of <path> (the first by default) and, when <rev> is given, only at <rev>,
+# with a git error, as a damaged repository would, and runs every other call through the real
+# git. Only that one, so a later read of the same path cannot stand in for the site under
+# test, and <nth> reaches a site behind an earlier read of the same path.
 git_fails() {
   local real
   real=$(command -v git) || fail "git_fails: no git on PATH"
   must mkdir -p "$TMP/shim"
+  rm -f "$TMP/shim/count"
   cat > "$TMP/shim/git" <<'SHIM'
 #!/bin/sh
 cmd= ; path= ; rev= ; prev=
@@ -169,15 +171,19 @@ for a in "$@"; do
   if [ "$a" = -- ]; then rev=$prev; fi
   prev=$a
 done
-if [ "$cmd" = "$SHIM_CMD" ] && [ "$path" = "$SHIM_PATH" ] && { [ -z "$SHIM_REV" ] || [ "$rev" = "$SHIM_REV" ]; } && [ ! -e "$SHIM_DONE" ]; then
-  : > "$SHIM_DONE"
-  echo "fatal: simulated failure reading $path" >&2
-  exit 128
+if [ "$cmd" = "$SHIM_CMD" ] && [ "$path" = "$SHIM_PATH" ] && { [ -z "$SHIM_REV" ] || [ "$rev" = "$SHIM_REV" ]; }; then
+  n=$(cat "$SHIM_COUNT" 2>/dev/null || echo 0)
+  n=$((n + 1))
+  echo "$n" > "$SHIM_COUNT"
+  if [ "$n" -eq "$SHIM_NTH" ]; then
+    echo "fatal: simulated failure reading $path" >&2
+    exit 128
+  fi
 fi
 exec "$SHIM_REAL" "$@"
 SHIM
   must chmod +x "$TMP/shim/git"
-  export SHIM_REAL=$real SHIM_CMD=$1 SHIM_PATH=$2 SHIM_REV=${3:-} SHIM_DONE="$TMP/shim/done"
+  export SHIM_REAL=$real SHIM_CMD=$1 SHIM_PATH=$2 SHIM_REV=${3:-} SHIM_NTH=${4:-1} SHIM_COUNT="$TMP/shim/count"
   PATH="$TMP/shim:$PATH"
   export PATH
 }

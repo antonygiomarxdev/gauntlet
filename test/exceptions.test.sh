@@ -1466,3 +1466,156 @@ test_removed_checks_are_listed_by_name() {
   got=$(printf '%s\n' "$OUT" | grep '^  @config  check ' | tr '\n' '|')
   assert_eq "  @config  check alpha removed|  @config  check beta removed|  @config  check delta removed|  @config  check mid removed|  @config  check omega removed|  @config  check zeta removed|" "$got" "order"
 }
+
+# R32 for blob_changed: a detector file or format file that git cannot list, at the base or at
+# HEAD, is exit 2 and never "unchanged" or "changed". exc_script_rule <detector>: main holds
+# tools/find.sh (a script that finds TODO) and the todo rule over it with that detector, then a
+# feat branch.
+exc_script_rule() {
+  mkrepo
+  must mkdir -p tools
+  printf '#!/bin/sh\nrg --with-filename --line-number --no-heading TODO "$@"\n' > tools/find.sh
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script "detector=$1"
+  script_row todo
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+}
+
+# exc_tool_commit: a commit on feat that touches nothing the rule reads.
+exc_tool_commit() {
+  printf 'x\n' > b.txt
+  exc_rebase
+  exc_commit feat
+}
+
+test_an_unreadable_detector_file_at_the_base_is_exit_2() {
+  exc_script_rule 'bash tools/find.sh {files}'
+  exc_tool_commit
+  git_fails ls-tree tools/find.sh "$(git rev-parse main)"
+  exc_gate
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "simulated failure"
+  assert_not_contains "$OUT" "detector file"
+}
+
+test_an_unreadable_detector_file_at_head_is_exit_2() {
+  exc_script_rule 'bash tools/find.sh {files}'
+  exc_tool_commit
+  git_fails ls-tree tools/find.sh HEAD
+  exc_gate
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "simulated failure"
+  assert_not_contains "$OUT" "detector file"
+}
+
+# The second listing of the format file is the one that tells added from removed from changed;
+# the first belongs to blob_changed, which the two tests that fail the first listing now meet.
+test_a_failed_second_listing_of_the_format_file_at_the_base_is_exit_2() {
+  exc_format_setup
+  git_fails ls-tree .gauntlet/formats/path-line.md "$(git rev-parse main)" 2
+  run "$G" check --ci --base main
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "simulated failure"
+  assert_not_contains "$OUT" "format file"
+}
+
+test_a_failed_second_listing_of_the_format_file_at_head_is_exit_2() {
+  exc_format_setup
+  git_fails ls-tree .gauntlet/formats/path-line.md HEAD 2
+  run "$G" check --ci --base main
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "simulated failure"
+  assert_not_contains "$OUT" "format file"
+}
+
+# The same format file, unreadable at the first listing: a guard on the listing blob_changed makes.
+test_an_unreadable_format_file_is_exit_2_in_blob_changed_too() {
+  exc_format_setup
+  git_fails ls-tree .gauntlet/formats/path-line.md "$(git rev-parse main)" 1
+  run "$G" check --ci --base main
+  assert_eq 2 "$STATUS" "at the base: $OUT"
+  assert_not_contains "$OUT" "format file"
+}
+
+# What the callers are told: 0 changed, 1 the same, 2 unreadable.
+test_blob_changed_answers_changed_same_and_unreadable() {
+  exc_script_rule 'bash tools/find.sh {files}'
+  # shellcheck source=lib/core.sh
+  . "$ROOT/lib/core.sh"
+  # shellcheck source=lib/rules.sh
+  . "$ROOT/lib/rules.sh"
+  # shellcheck source=lib/detect.sh
+  . "$ROOT/lib/detect.sh"
+  # shellcheck source=lib/base.sh
+  . "$ROOT/lib/base.sh"
+  # shellcheck source=lib/exceptions.sh
+  . "$ROOT/lib/exceptions.sh"
+  # shellcheck source=lib/paths.sh
+  . "$ROOT/lib/paths.sh"
+  # shellcheck source=lib/check.sh
+  . "$ROOT/lib/check.sh"
+  mb=$(git rev-parse main)
+  exc_tool_commit
+  rc=0
+  blob_changed "$mb" tools/find.sh || rc=$?
+  assert_eq 1 "$rc" "same file on both sides"
+  rc=0
+  blob_changed "$mb" tools/missing.sh || rc=$?
+  assert_eq 1 "$rc" "absent on both sides"
+  printf '#!/bin/sh\ntrue\n' > tools/find.sh
+  exc_rebase
+  exc_commit changed
+  rc=0
+  blob_changed "$mb" tools/find.sh || rc=$?
+  assert_eq 0 "$rc" "changed file"
+  rc=0
+  blob_changed "$mb" b.txt || rc=$?
+  assert_eq 0 "$rc" "added file"
+  git_fails ls-tree tools/find.sh HEAD
+  rc=0
+  blob_changed "$mb" tools/find.sh 2> "$TMP/err" || rc=$?
+  assert_eq 2 "$rc" "unreadable: $(cat "$TMP/err")"
+  assert_contains "$(cat "$TMP/err")" "simulated failure"
+}
+
+# A detector word is any text: most of it names no file of the repository. Such a word is
+# absent, never an unreadable one. "." is the root, ".." and an absolute path leave the tree,
+# and a leading ":" is git's pathspec magic.
+test_detector_words_that_name_no_file_in_the_tree_are_not_read() {
+  mkrepo
+  must mkdir -p tools
+  printf '#!/bin/sh\nexit 1\n' > tools/quiet.sh
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script 'detector=bash tools/quiet.sh {files} . ./ .. ../x /tmp/ran.marker :\(glob\)x sub/../../y -v --'
+  script_row todo
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  exc_tool_commit
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "detector file"
+  assert_not_contains "$OUT" "cannot read"
+}
+
+# An absolute word is outside the repository, whatever the tree holds under the same name.
+test_an_absolute_detector_word_is_not_a_file_of_the_tree() {
+  mkrepo
+  must mkdir -p tools
+  printf '#!/bin/sh\nexit 1\n' > tools/quiet.sh
+  printf 'one\n' > tools/other.sh
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script 'detector=bash tools/quiet.sh {files} /tools/other.sh'
+  script_row todo
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf 'two\n' > tools/other.sh
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "detector file"
+}
