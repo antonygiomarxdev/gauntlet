@@ -1,6 +1,6 @@
 # FRD — Agent integration
 
-**Status:** Draft
+**Status:** Approved by Antony Giomar Hernández on 2026-10-22
 **Key:** AGENT
 **Parent PRD:** [PRD — I-01 Core](../PRD.md)
 **Owner:** Antony Giomar Hernández

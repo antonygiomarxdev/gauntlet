@@ -1,6 +1,6 @@
 # FRD — Rules and detectors
 
-**Status:** Draft
+**Status:** Approved by Antony Giomar Hernández on 2026-10-22
 **Key:** RULE
 **Parent PRD:** [PRD — I-01 Core](../PRD.md)
 **Owner:** Antony Giomar Hernández

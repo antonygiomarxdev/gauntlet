@@ -1,6 +1,6 @@
 # PRD — I-01 Core
 
-**Status:** Draft
+**Status:** Approved by Antony Giomar Hernández on 2026-10-22
 **Key:** CORE
 **Owner:** Antony Giomar Hernández
 **Target stage:** v0.1 (runner usable by hand), then v0.2 (agent onboarding)
@@ -73,12 +73,12 @@ None blocking. The FRDs carry their own questions, each with a proposed default.
 
 | Document | Status |
 |---|---|
-| [FRD-01](frd/FRD-01-onboarding.md) Onboarding | Draft |
-| [FRD-02](frd/FRD-02-rules-and-detectors.md) Rules and detectors | Draft |
-| [FRD-03](frd/FRD-03-push-and-ci-gate.md) Push and CI gate | Draft |
-| [FRD-04](frd/FRD-04-exceptions.md) Exceptions | Draft |
-| [FRD-05](frd/FRD-05-agent-integration.md) Agent integration | Draft |
-| [FRD-06](frd/FRD-06-rule-lifecycle.md) Rule lifecycle | Draft |
-| [FRD-07](frd/FRD-07-commit-gate-and-hooks.md) Commit gate and hooks | Draft |
-| [TP-01](../../architecture/TP-01-gauntlet.md) System technical proposal (parent; this initiative has no local proposal yet) | Draft |
-| [IS-01](specs/IS-01-runner-core.md) Runner core | Draft |
+| [FRD-01](frd/FRD-01-onboarding.md) Onboarding | Approved |
+| [FRD-02](frd/FRD-02-rules-and-detectors.md) Rules and detectors | Approved |
+| [FRD-03](frd/FRD-03-push-and-ci-gate.md) Push and CI gate | Approved |
+| [FRD-04](frd/FRD-04-exceptions.md) Exceptions | Approved |
+| [FRD-05](frd/FRD-05-agent-integration.md) Agent integration | Approved |
+| [FRD-06](frd/FRD-06-rule-lifecycle.md) Rule lifecycle | Approved |
+| [FRD-07](frd/FRD-07-commit-gate-and-hooks.md) Commit gate and hooks | Approved |
+| [TP-01](../../architecture/TP-01-gauntlet.md) System technical proposal (parent; this initiative has no local proposal yet) | Approved |
+| [IS-01](specs/IS-01-runner-core.md) Runner core | Approved |

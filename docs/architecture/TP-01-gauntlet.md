@@ -1,6 +1,6 @@
 # Technical Proposal — gauntlet
 
-**Status:** Draft
+**Status:** Approved by Antony Giomar Hernández on 2026-10-22
 **Scope:** system. Every initiative builds on it; an initiative-local proposal names it as `Parent`.
 **Parent:** [VISION](../VISION.md)
 **PRD:** [I-01 Core](../initiatives/I-01-core/PRD.md)
