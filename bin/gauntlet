@@ -40,6 +40,8 @@ GAUNTLET_BIN=$(cd "$(dirname "$gauntlet_entry")" && pwd -P) || exit 2
 . "$GAUNTLET_BIN/../lib/check.sh"
 # shellcheck source=lib/hooks.sh
 . "$GAUNTLET_BIN/../lib/hooks.sh"
+# shellcheck source=lib/status.sh
+. "$GAUNTLET_BIN/../lib/status.sh"
 
 case "${1:-}" in
   --version) printf 'gauntlet %s\n' "$GAUNTLET_VERSION" ;;
@@ -103,6 +105,24 @@ case "${1:-}" in
     ;;
   install-hooks)
     install_hooks
+    ;;
+  status)
+    shift
+    status=0
+    status_cmd ${1+"$@"} || status=$?
+    exit "$status"
+    ;;
+  promote)
+    shift
+    status=0
+    promote_cmd ${1+"$@"} || status=$?
+    exit "$status"
+    ;;
+  doctor)
+    shift
+    status=0
+    doctor_cmd ${1+"$@"} || status=$?
+    exit "$status"
     ;;
   *) die "unknown command: ${1:-}" ;;
 esac

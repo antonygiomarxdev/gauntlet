@@ -180,23 +180,52 @@ create_missing() {
 # the git common dir; a shared one outside them is printed only. An empty
 # core.hooksPath means unset: the default hooks directory is <common git dir>/hooks.
 install_hooks() {
-  local root hooks_path husky git_common hooks
+  local root target kind dir
   root=$(repo_root)
   cd "$root" || die "cannot enter $root"
-  HOOKS_ROOT=$(physical_path "$root")
-  git_common=$(git rev-parse --git-common-dir) || die "cannot find the git directory"
-  HOOKS_COMMON=$(abs_path "$git_common")
+  hook_paths || die "cannot find the git directory"
   if [ ! -f .gauntlet/bin/gauntlet ]; then
     printf 'gauntlet: warning: .gauntlet/bin/gauntlet is missing; run gauntlet install\n' >&2
   fi
-  # --path expands a leading ~ (so ~/.husky is the home directory's, not ./~/.husky).
+  target=$(hook_target)
+  kind=${target%% *}
+  dir=${target#"$kind"}
+  dir=${dir# }
+  case "$kind" in
+    husky|dir)
+      mkdir -p "$dir" || die "cannot create $dir"
+      add_hook_pair "$dir"
+      ;;
+    print) print_hook_pair "$dir" ;;
+    configs) print_config_snippets ;;
+  esac
+}
+
+# hook_paths: set HOOKS_ROOT, the physical repo root, and HOOKS_COMMON, the physical
+# git common dir. Relative paths in the hook code are taken from the repo root, so
+# the caller must be there. Returns 2 when git cannot name the common dir.
+hook_paths() {
+  local root git_common
+  root=$(repo_root) || return 2
+  HOOKS_ROOT=$(physical_path "$root")
+  git_common=$(git rev-parse --git-common-dir) || return 2
+  HOOKS_COMMON=$(abs_path "$git_common")
+}
+
+# hook_target: print where install-hooks puts the gate, as one of: "husky <dir>"
+# (husky's directory), "configs" (a lefthook, prek or other config owns the hooks),
+# "dir <dir>" (a hooks directory this project owns) or "print <dir>" (a shared hooks
+# directory outside the repo and its git dir, printed only). Needs hook_paths first.
+# --path expands a leading ~ (so ~/.husky is the home directory's, not ./~/.husky).
+hook_target() {
+  local hooks_path husky hooks
   hooks_path=$(git config --path --get core.hooksPath) || hooks_path=
   if husky=$(husky_dir "$hooks_path"); then
-    mkdir -p "$husky" || die "cannot create $husky"
-    add_hook_pair "$husky"
+    printf 'husky %s\n' "$husky"
     return 0
   fi
-  if print_config_snippets; then
+  if [ -n "$(config_files)" ]; then
+    printf 'configs\n'
     return 0
   fi
   if [ -n "$hooks_path" ]; then
@@ -205,10 +234,9 @@ install_hooks() {
     hooks=$(abs_path "$HOOKS_COMMON/hooks")
   fi
   if owned_path "$hooks" "$HOOKS_COMMON"; then
-    mkdir -p "$hooks" || die "cannot create $hooks"
-    add_hook_pair "$hooks"
+    printf 'dir %s\n' "$hooks"
   else
-    print_hook_pair "$hooks"
+    printf 'print %s\n' "$hooks"
   fi
 }
 
@@ -232,28 +260,22 @@ print_hook_pair() {
 # edit is printed instead. A missing file, or an empty one, gets the plain pinned form.
 # An existing file keeps its mode and every byte except the inserted line.
 add_hook_line() {
-  local file=$1 line=$2 gate=$3 tmp status=0
-  if [ -e "$file" ] && { grep -Fxq -- "$line" "$file" 2>/dev/null || grep -Fxq -- "$gate" "$file" 2>/dev/null; }; then
+  local file=$1 line=$2 gate=$3 tmp rc=0
+  if [ -e "$file" ] && hook_has_gate "$file" "$line" "$gate"; then
     printf 'already present in %s\n' "$(display_path "$file")"
     warn_if_not_executable "$file"
     return 0
   fi
-  if [ -L "$file" ] && [ ! -e "$file" ]; then
-    print_only "$file" "$gate"
-    return 0
-  fi
+  hook_editable "$file" || rc=$?
+  case "$rc" in
+    0) ;;
+    1) print_only "$file" "$gate"; return 0 ;;
+    *) die "cannot read $file" ;;
+  esac
   if [ ! -e "$file" ]; then
     printf '#!/usr/bin/env sh\n%s\n' "$line" > "$file" || die "cannot create $file"
     chmod +x "$file" || die "cannot make $file executable"
     printf 'created %s\n' "$(display_path "$file")"
-    return 0
-  fi
-  if [ -L "$file" ] && ! owned_path "$(resolve_link "$file")" "$HOOKS_COMMON"; then
-    print_only "$file" "$gate"
-    return 0
-  fi
-  if [ ! -f "$file" ]; then
-    print_only "$file" "$gate"
     return 0
   fi
   if [ ! -s "$file" ]; then
@@ -262,16 +284,6 @@ add_hook_line() {
     warn_if_not_executable "$file"
     return 0
   fi
-  if has_nul "$file"; then
-    print_only "$file" "$gate"
-    return 0
-  fi
-  awk "$HOOK_CHECK_AWK" "$file" || status=$?
-  case "$status" in
-    0) ;;
-    3) print_only "$file" "$gate"; return 0 ;;
-    *) die "cannot read $file" ;;
-  esac
   tmp=$(mktemp "${TMPDIR:-/tmp}/gauntlet-hook.XXXXXX") || die "cannot create a temp file"
   if ! insert_gate_first "$file" "$gate" > "$tmp"; then
     rm -f "$tmp"
@@ -282,6 +294,33 @@ add_hook_line() {
   rm -f "$tmp"
   printf 'added gauntlet line to %s\n' "$(display_path "$file")"
   warn_if_not_executable "$file"
+}
+
+# hook_has_gate <file> <plain> <gate>: succeed when <file> holds either gate form as a
+# whole line. doctor and install-hooks both ask this, so a hook is done by one rule.
+hook_has_gate() {
+  grep -Fxq -- "$2" "$1" 2>/dev/null || grep -Fxq -- "$3" "$1" 2>/dev/null
+}
+
+# hook_editable <file>: say whether install-hooks may edit <file> itself. Returns 0
+# when it may, 1 when the gate is only printed for it (a dangling symlink, a symlink
+# to a file this project does not own, a non-file, a NUL byte, a shebang or CRLF that
+# is not a shell's), and 2 when the file cannot be read. A missing file is editable:
+# install-hooks creates it.
+hook_editable() {
+  local file=$1 status=0
+  if [ -L "$file" ] && [ ! -e "$file" ]; then return 1; fi
+  if [ ! -e "$file" ]; then return 0; fi
+  if [ -L "$file" ] && ! owned_path "$(resolve_link "$file")" "$HOOKS_COMMON"; then return 1; fi
+  if [ ! -f "$file" ]; then return 1; fi
+  if [ ! -s "$file" ]; then return 0; fi
+  if has_nul "$file"; then return 1; fi
+  awk "$HOOK_CHECK_AWK" "$file" || status=$?
+  case "$status" in
+    0) return 0 ;;
+    3) return 1 ;;
+    *) return 2 ;;
+  esac
 }
 
 # insert_gate_first <file> <gate>: print <file> with <gate> on the line after its
@@ -370,20 +409,25 @@ husky_dir() {
   fi
 }
 
-# print_config_snippets: for each lefthook, prek, or TOML or JSON config in the repo
-# root, print the lines to add, or say it is already configured. Succeeds when at
-# least one config exists, so the hooks are left to that config.
-print_config_snippets() {
-  local f found=1
+# config_files: print each lefthook, prek or other hook-manager config in the repo
+# root that install-hooks reads: YAML, TOML or JSON. Prints nothing when there is none.
+config_files() {
+  local f
   for f in lefthook.* .lefthook.* .config/lefthook.* .pre-commit-config.yaml prek.toml; do
     if [ ! -f "$f" ]; then
       continue
     fi
     case "$f" in
-      *.yml|*.yaml|*.json|*.toml) ;;
-      *) continue ;;
+      *.yml|*.yaml|*.json|*.toml) printf '%s\n' "$f" ;;
     esac
-    found=0
+  done
+}
+
+# print_config_snippets: for each config_files entry, print the lines to add, or say
+# it is already configured.
+print_config_snippets() {
+  local f
+  config_files | while IFS= read -r f; do
     if config_has_gate "$f"; then
       printf 'already configured in %s\n' "$f"
       continue
@@ -395,7 +439,6 @@ print_config_snippets() {
       *) generic_snippet ;;
     esac
   done
-  return "$found"
 }
 
 # config_has_gate <file>: succeed when <file> contains both gate command strings.

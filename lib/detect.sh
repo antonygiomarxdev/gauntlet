@@ -86,6 +86,24 @@ detect_fail() {
   head -n 5 "$2" 2>/dev/null | sed 's/^/gauntlet:   | /' >&2
 }
 
+# missing_tool_hint <tool>: print how to install an engine tool, with a leading ". "
+# so it can follow the tool's name. Prints nothing for a tool with no hint.
+missing_tool_hint() {
+  case "$1" in
+    rg|ast-grep) printf '%s\n' ". Install: brew install ripgrep ast-grep | apt install ripgrep; pipx install ast-grep-cli" ;;
+  esac
+}
+
+# tool_present <tool> <root>: succeed when <tool> is on PATH, or when it is an
+# executable path: absolute, or relative to the repo root <root>.
+tool_present() {
+  case "$1" in
+    /*) [ -x "$1" ] ;;
+    */*) [ -x "$2/$1" ] ;;
+    *) command -v "$1" > /dev/null 2>&1 ;;
+  esac
+}
+
 # detect_batch <root> <cmd> <id> <errf>: run one detector command in <root>,
 # append its stdout to DETECT_RAW and its stderr to <errf>. Returns 2 after a
 # message for a missing tool (127) or any exit code above 1.
@@ -98,9 +116,7 @@ detect_batch() {
 "
       ;;
     127)
-      case "$tool" in
-        rg|ast-grep) hint=". Install: brew install ripgrep ast-grep | apt install ripgrep; pipx install ast-grep-cli" ;;
-      esac
+      hint=$(missing_tool_hint "$tool")
       detect_fail "missing tool $tool$hint" "$4"
       return 2
       ;;

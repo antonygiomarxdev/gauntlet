@@ -216,17 +216,14 @@ rule_tests_due() {
   ' "$1"
 }
 
-# check_table <root> <scratch>: read the declared checks from .gauntlet/config
-# into <scratch>/checks.raw, one "<name>\t<ci>\t<paths>\t<command>" row per
-# check, sorted by name. Keys are check.<name>, check.<name>.paths and
+# check_key_rows <config>: print the declared checks of a config file, one
+# "<name>\t<ci>\t<paths>\t<command>" row each, and a "BAD\t<key>\t<reason>" row for
+# each check key that is not valid. Keys are check.<name>, check.<name>.paths and
 # check.<name>.ci, names matching ^[A-Za-z0-9_-]+$. Any other check. key, an
-# attribute with no command, an empty command, or a ci that is not on or off
-# is a bad key: the table is refused and the key is named on stderr (exit 2).
-check_table() {
-  local root=$1 scratch=$2 bad
-  : > "$scratch/checks.all"
-  if [ -f "$root/.gauntlet/config" ]; then
-    awk '
+# attribute with no command, an empty command, or a ci that is not on or off is bad.
+# check_table and doctor both read the keys through this function.
+check_key_rows() {
+  awk '
       /^[[:space:]]*#/ { next }
       {
         eq = index($0, "=")
@@ -260,7 +257,17 @@ check_table() {
         }
         for (key in bad) print "BAD\t" key "\tnot a check key; use check.<name>, check.<name>.paths or check.<name>.ci"
       }
-    ' "$root/.gauntlet/config" > "$scratch/checks.all" || return 2
+  ' "$1"
+}
+
+# check_table <root> <scratch>: read the declared checks from .gauntlet/config
+# into <scratch>/checks.raw, sorted by name. A bad key refuses the table: the key
+# is named on stderr (exit 2).
+check_table() {
+  local root=$1 scratch=$2 bad
+  : > "$scratch/checks.all"
+  if [ -f "$root/.gauntlet/config" ]; then
+    check_key_rows "$root/.gauntlet/config" > "$scratch/checks.all" || return 2
   fi
   LC_ALL=C sort "$scratch/checks.all" > "$scratch/checks.raw" || return 2
   # Sorted before the first bad row is taken, so the reported key is the same on every run.
@@ -686,6 +693,20 @@ check_staged() {
   return "$status"
 }
 
+# commit_budget: print the commit-stage budget in milliseconds, from
+# GAUNTLET_COMMIT_BUDGET_MS (default 5000). Returns 2 with a message on stderr
+# when it is not a whole number.
+commit_budget() {
+  local budget=${GAUNTLET_COMMIT_BUDGET_MS:-5000}
+  case "$budget" in
+    ''|*[!0-9]*)
+      printf 'gauntlet: GAUNTLET_COMMIT_BUDGET_MS must be a whole number of milliseconds, got [%s]\n' "$budget" >&2
+      return 2
+      ;;
+  esac
+  printf '%s\n' "$budget"
+}
+
 # check_staged_run <scratch> <start-ms>: the work of check_staged, with every
 # intermediate file kept in <scratch>. The checks compare with HEAD's baseline.
 # Auto-tighten starts from the baseline as the index holds it (the one this
@@ -696,13 +717,7 @@ check_staged_run() {
   local new_n=0 touched_n=0 problems=0 n_commit ms end body
   local -a ids
   body="$scratch/body"
-  budget=${GAUNTLET_COMMIT_BUDGET_MS:-5000}
-  case "$budget" in
-    ''|*[!0-9]*)
-      printf 'gauntlet: GAUNTLET_COMMIT_BUDGET_MS must be a whole number of milliseconds, got [%s]\n' "$budget" >&2
-      return 2
-      ;;
-  esac
+  budget=$(commit_budget) || return 2
   root=$(repo_root) || return 2
   # The first commit has no HEAD to compare with: it passes with a note.
   if ! git rev-parse -q --verify HEAD > /dev/null 2>&1; then
