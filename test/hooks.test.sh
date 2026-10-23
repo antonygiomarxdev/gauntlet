@@ -1499,6 +1499,57 @@ test_failed_copy_after_kill_restores_the_live_lib() {
   assert_eq "$lib" "$(hooks_sum .gauntlet/lib)" "the live lib is the old one, restored"
 }
 
+# Task 13 review N1 and N2, byte for byte (gate_after_shebang_case and top_gate_case above check the
+# lines that matter; these pin that nothing else moves). A shell shebang that is not /bin/sh keeps its
+# line 1 and gets the gate on line 2.
+test_a_bash_env_shebang_keeps_every_other_byte() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  printf '#!/usr/bin/env bash\nset -e\necho x\n' > .git/hooks/pre-commit
+  chmod 755 .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  hooks_expect .git/hooks/pre-commit $'#!/usr/bin/env bash\n'"$HOOK_TEST_GATE_STAGED"$'\nset -e\necho x\n'
+}
+
+# No shebang, and line 1 is `exit 0`: the gate becomes line 1, before it, and `exit 0` follows.
+test_a_hook_without_a_shebang_that_starts_with_exit_0_gets_the_gate_before_it() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  printf 'exit 0\necho never\n' > .git/hooks/pre-push
+  chmod 755 .git/hooks/pre-push
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  hooks_expect .git/hooks/pre-push "$HOOK_TEST_GATE_CI"$'\nexit 0\necho never\n'
+}
+
+# The state a swap killed after moving the old bin aside leaves (kill state 1): the live bin is
+# .bin.old, no bin is in place, and a complete new copy waits in .bin.new. A later install whose
+# copy fails must put the old bin back (recover_interrupted_install), not drop it and not leave
+# .gauntlet without a runner. The lib twin of this test is the one above.
+test_failed_copy_after_kill_restores_the_live_bin() {
+  hooks_repo "$TMP/repo"
+  if hooks_as_root; then
+    skip "running as root: unreadable and read-only files are still readable here"
+    return 77
+  fi
+  run "$G" install
+  assert_eq 0 "$STATUS" "install"
+  local bin status=0
+  bin=$(hooks_sum .gauntlet/bin)
+  must mv .gauntlet/bin .gauntlet/.bin.old
+  must cp -R "$ROOT/bin" .gauntlet/.bin.new
+  must mkdir -p "$TMP/broken"
+  must cp -R "$ROOT/bin" "$ROOT/lib" "$TMP/broken/"
+  must chmod 000 "$TMP/broken/lib/formats/github.md"
+  bash "$TMP/broken/bin/gauntlet" install > "$TMP/out" 2>&1 || status=$?
+  assert_eq 2 "$status" "install fails on an unreadable source file"
+  assert_eq "$bin" "$(hooks_sum .gauntlet/bin)" "the live bin is the old one, restored"
+  if [ -e .gauntlet/.bin.old ] || [ -e .gauntlet/.bin.new ]; then fail "copies were left behind"; fi
+  run .gauntlet/bin/gauntlet --version
+  assert_eq 0 "$STATUS" "the runner works after the failed install: $OUT"
+}
+
 # FRD-03 section 4.11: the pre-push line is `check --ci --pre-push`. A hook written by an earlier
 # version has the line without the flag, which silently judges whatever is checked out, so
 # install-hooks puts the new line where the old one was instead of adding a second gate.
