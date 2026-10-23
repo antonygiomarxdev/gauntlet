@@ -633,7 +633,7 @@ test_touched_gate_blocks_at_commit() {
   assert_eq 1 "$STATUS" "commit status"
   assert_contains "$OUT" "[touched]"
   assert_contains "$OUT" "  a.ts  1 → 1  (must go down)"
-  assert_contains "$OUT" "FAIL (1 problems)"
+  assert_contains "$OUT" "FAIL (1 problem)"
 }
 
 test_one_name_status_call_per_run() {
@@ -814,4 +814,14 @@ test_commit_with_a_pathspec_switch_runs_the_gate() {
   run git --icase-pathspecs commit -q -m "feat: c under --icase-pathspecs"
   assert_eq 1 "$STATUS" "a violation still blocks under --icase-pathspecs: $OUT"
   assert_contains "$OUT" "c.ts:1  todo  TODO x"
+}
+
+test_commit_report_counts_are_singular_for_one() {
+  staged_setup 'ok'
+  printf 'fine\n' > b.ts
+  must git add b.ts
+  run "$G" check --staged
+  assert_eq 0 "$STATUS" "check --staged: $OUT"
+  assert_contains "$OUT" "gauntlet  commit · 1 rule · "
+  assert_not_contains "$OUT" "1 rules"
 }

@@ -329,7 +329,7 @@ test_touched_requires_decrease() {
   assert_eq 1 "$STATUS" "status"
   assert_contains "$OUT" "[touched]"
   assert_contains "$OUT" "  a.ts  1 → 1  (must go down)"
-  assert_contains "$OUT" "FAIL (1 problems)"
+  assert_contains "$OUT" "FAIL (1 problem)"
 }
 
 test_touched_path_with_space() {
@@ -512,7 +512,7 @@ test_base_zero_file_gaining_debt_must_stay_zero() {
   assert_eq 1 "$STATUS" "status"
   assert_contains "$OUT" "[touched]"
   assert_contains "$OUT" "  a.ts  0 → 1  (must stay 0)"
-  assert_contains "$OUT" "FAIL (1 problems)"
+  assert_contains "$OUT" "FAIL (1 problem)"
 }
 
 test_rule_change_runs_cases() {
@@ -548,7 +548,7 @@ test_a_bad_case_with_no_output_from_the_detector_fails_the_rule_tests() {
   gate
   assert_eq 1 "$STATUS" "check --ci: $OUT"
   assert_contains "$OUT" "todo  todo.bad.txt  bad case not flagged"
-  assert_contains "$OUT" "FAIL (1 problems)"
+  assert_contains "$OUT" "FAIL (1 problem)"
   run "$G" test-rules
   assert_eq 1 "$STATUS" "test-rules: $OUT"
   assert_contains "$OUT" "todo  todo.bad.txt  bad case not flagged"
@@ -576,7 +576,7 @@ test_rule_tests_status_1_without_output_still_fails_the_gate() {
   ' _ "$ROOT"
   assert_eq 1 "$STATUS" "check --ci: $OUT"
   assert_contains "$OUT" "[rule-tests]"
-  assert_contains "$OUT" "FAIL (1 problems)"
+  assert_contains "$OUT" "FAIL (1 problem)"
   assert_not_contains "$OUT" "gauntlet: ok"
 }
 
@@ -641,7 +641,7 @@ test_declared_check_runs_on_scope() {
   assert_eq 1 "$STATUS" "status"
   assert_contains "$OUT" "[checks]"
   assert_contains "$OUT" "  t  exit 1"
-  assert_contains "$OUT" "FAIL (1 problems)"
+  assert_contains "$OUT" "FAIL (1 problem)"
 }
 
 test_declared_check_skipped_off_scope() {
@@ -950,7 +950,7 @@ test_second_copy_of_a_baselined_line_is_the_new_one() {
   assert_eq 1 "$STATUS" "status"
   assert_contains "$OUT" "  a.ts:2  todo  TODO fix"
   assert_not_contains "$OUT" "a.ts:1"
-  assert_contains "$OUT" "FAIL (1 problems)"
+  assert_contains "$OUT" "FAIL (1 problem)"
 }
 
 # A declared check's paths match from the start of the path: x/src/a and mysrc/a are not
@@ -1349,4 +1349,19 @@ test_gates_refuse_a_newline_in_a_path() {
   commit_all feat
   gate
   odd_path_refused 'c\nd.ts'
+}
+
+# Counts read as English: 1 rule, 2 rules; 1 problem, 2 problems.
+test_report_counts_are_singular_for_one() {
+  gate_setup 'ok'
+  gate
+  assert_eq 0 "$STATUS" "check --ci: $OUT"
+  assert_contains "$OUT" "gauntlet  ci · 1 rule · "
+  assert_not_contains "$OUT" "1 rules"
+  rule second paths='**/*.ts'
+  cases_of second 'TODO x'
+  rebaseline
+  commit_all two-rules
+  gate
+  assert_contains "$OUT" "gauntlet  ci · 2 rules · "
 }

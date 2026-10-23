@@ -37,6 +37,11 @@ partial_end() {
   GAUNTLET_PARTIAL=
 }
 
+# plural <n> <singular> <plural>: print "<n> <word>", with the singular word for 1.
+plural() {
+  if [ "$1" = 1 ]; then printf '%s %s\n' "$1" "$2"; else printf '%s %s\n' "$1" "$3"; fi
+}
+
 # repo_root: print the absolute path of the top-level working tree.
 repo_root() {
   git rev-parse --show-toplevel 2>/dev/null || die "not inside a git repository"

@@ -52,7 +52,7 @@ test_waive_exempts_new_on_branch() {
   assert_eq 1 "$STATUS" "status"
   assert_not_contains "$OUT" "[new]"
   assert_contains "$OUT" "[global]"
-  assert_contains "$OUT" "FAIL (1 problems)"
+  assert_contains "$OUT" "FAIL (1 problem)"
 }
 
 # R29: waive, loosen and remove run from the repo root whatever the working directory.
@@ -94,7 +94,7 @@ test_waived_global_rise_counts_once() {
   assert_eq 1 "$STATUS" "status"
   assert_contains "$OUT" "[global]"
   assert_contains "$OUT" "todo  0 → 2"
-  assert_contains "$OUT" "FAIL (1 problems)"
+  assert_contains "$OUT" "FAIL (1 problem)"
 }
 
 test_waive_other_branch_ignored() {
@@ -224,7 +224,7 @@ test_lower_severity_fails_without_row() {
   assert_eq 1 "$STATUS" "status"
   assert_contains "$OUT" "[loosened]"
   assert_contains "$OUT" "  todo  severity block → shadow"
-  assert_contains "$OUT" "FAIL (1 problems)"
+  assert_contains "$OUT" "FAIL (1 problem)"
 }
 
 test_lower_severity_passes_with_new_row() {
@@ -394,7 +394,7 @@ test_engine_and_detector_change_are_loosening() {
   exc_gate
   assert_eq 1 "$STATUS" "status"
   assert_contains "$OUT" "  todo  detector changed"
-  assert_contains "$OUT" "FAIL (1 problems)"
+  assert_contains "$OUT" "FAIL (1 problem)"
 }
 
 test_wrong_argument_count_exits_2() {
@@ -698,7 +698,7 @@ test_ci_loosening_is_found_from_a_subdirectory() {
   exc_gate
   assert_eq 1 "$STATUS" "from pkg/sub: $OUT"
   assert_contains "$OUT" "[loosened]"
-  assert_contains "$OUT" "FAIL (1 problems)"
+  assert_contains "$OUT" "FAIL (1 problem)"
   assert_eq "$want" "$(exc_untimed "$OUT")" "same report as from the root"
 }
 

@@ -109,7 +109,7 @@ case_verdict() {
       for (i = 1; i <= n; i++) {
         c = hits[top[i]] + 0
         if (kind[i] == "bad" && c == 0) print "  " id "  " top[i] "  bad case not flagged"
-        if (kind[i] == "good" && c > 0) print "  " id "  " top[i] "  good case flagged: " c " rows"
+        if (kind[i] == "good" && c > 0) print "  " id "  " top[i] "  good case flagged: " c (c == 1 ? " row" : " rows")
       }
     }
   ' "$2"

@@ -207,7 +207,7 @@ check_run() {
 
   end=$(now_ms)
   ms=$((end - start))
-  printf 'gauntlet  ci · %s rules · %s.%s s\n' "$n_rules" "$((ms / 1000))" "$(((ms % 1000) / 100))"
+  printf 'gauntlet  ci · %s · %s.%s s\n' "$(plural "$n_rules" rule rules)" "$((ms / 1000))" "$(((ms % 1000) / 100))"
   cat "$body"
   if [ "$broken" -eq 1 ]; then
     printf 'gauntlet: rule tests could not run\n' >&2
@@ -217,7 +217,7 @@ check_run() {
     printf 'gauntlet: ok\n'
     return 0
   fi
-  printf 'gauntlet: FAIL (%s problems)\n' "$n"
+  printf 'gauntlet: FAIL (%s)\n' "$(plural "$n" problem problems)"
   return 1
 }
 
@@ -986,13 +986,13 @@ check_staged_run() {
   printf '[time]\n' >> "$body"
   awk -F '\t' '{ printf "  %s  %s ms\n", $1, $2 }' "$scratch/now/time.tsv" >> "$body" || return 2
 
-  printf 'gauntlet  commit · %s rules · %s.%s s\n' "$n_commit" "$((ms / 1000))" "$(((ms % 1000) / 100))"
+  printf 'gauntlet  commit · %s · %s.%s s\n' "$(plural "$n_commit" rule rules)" "$((ms / 1000))" "$(((ms % 1000) / 100))"
   cat "$body"
   if [ "$problems" -eq 0 ]; then
     printf 'gauntlet: ok\n'
     return 0
   fi
-  printf 'gauntlet: FAIL (%s problems)\n' "$problems"
+  printf 'gauntlet: FAIL (%s)\n' "$(plural "$problems" problem problems)"
   return 1
 }
 

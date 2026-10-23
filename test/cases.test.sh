@@ -196,3 +196,18 @@ test_broken_detector_exits_2_and_cleans_up() {
   assert_contains "$OUT" "broken detector"
   assert_eq "" "$(ls -A "$TMP/tmpdir")" "leftover temp dirs"
 }
+
+test_good_case_flagged_counts_its_rows_in_the_singular() {
+  cases_lib
+  mkrepo
+  rule todo paths='**'
+  printf 'TODO bad\n' > .gauntlet/rules/todo.bad.txt
+  printf 'TODO once\n' > .gauntlet/rules/todo.good.txt
+  run run_rule_tests
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  todo.good.txt  good case flagged: 1 row"
+  assert_not_contains "$OUT" "1 rows"
+  printf 'TODO once\nTODO twice\n' > .gauntlet/rules/todo.good.txt
+  run run_rule_tests
+  assert_contains "$OUT" "  todo  todo.good.txt  good case flagged: 2 rows"
+}
