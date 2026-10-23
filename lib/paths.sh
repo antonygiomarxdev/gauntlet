@@ -43,12 +43,24 @@ select_files() {
   '
 }
 
-# all_files: print every tracked or untracked-but-not-ignored file that exists
-# in the working tree. A tracked file deleted from disk is left out. One awk
-# process probes each path with getline, so no file costs a fork.
+# all_files: print every tracked or untracked-but-not-ignored file, minus the
+# tracked files deleted from the working tree. The deleted list comes from git,
+# so no file is opened: symlinks, unreadable files and huge files cost nothing.
 all_files() {
-  git -c core.quotepath=off ls-files -co --exclude-standard |
-    awk '{ probe = (getline line < $0); close($0); if (probe >= 0) print }'
+  local dir status=0
+  dir=$(mktemp -d) || return 2
+  git -c core.quotepath=off ls-files --deleted > "$dir/gone" || status=2
+  if [ "$status" -eq 0 ]; then
+    git -c core.quotepath=off ls-files -co --exclude-standard > "$dir/all" || status=2
+  fi
+  if [ "$status" -eq 0 ]; then
+    GL_GONE="$dir/gone" awk '
+      BEGIN { while ((getline line < ENVIRON["GL_GONE"]) > 0) gone[line] = 1 }
+      !($0 in gone)
+    ' "$dir/all" || status=2
+  fi
+  rm -rf "$dir"
+  return "$status"
 }
 
 # staged_files: print staged paths that are added, copied, modified or renamed.

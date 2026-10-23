@@ -101,3 +101,13 @@ test_all_files_omits_deleted_tracked_file() {
   assert_contains "$OUT" "keep.txt"
   assert_not_contains "$OUT" "gone.txt"
 }
+
+test_all_files_keeps_dangling_symlink() {
+  mkrepo
+  paths_lib
+  must ln -s nowhere link
+  must git add link
+  must git commit -q -m "add link"
+  OUT=$(all_files)
+  assert_contains "$OUT" "link"
+}
