@@ -83,7 +83,7 @@ quote_word() {
 # the detector's stderr, which the caller keeps in <errf>.
 detect_fail() {
   printf 'gauntlet: %s\n' "$1" >&2
-  head -n 5 "$2" 2>/dev/null | sed 's/^/gauntlet:   | /' >&2
+  head -n 5 "$2" 2>/dev/null | LC_ALL=C sed 's/^/gauntlet:   | /' >&2
 }
 
 # missing_tool_hint <tool>: print how to install an engine tool, with a leading ". "
@@ -105,13 +105,16 @@ tool_present() {
 }
 
 # detect_batch <root> <cmd> <id> <errf>: run one detector command in <root>,
-# append its stdout to DETECT_RAW and its stderr to <errf>. Returns 2 after a
-# message for a missing tool (127) or any exit code above 1. The subshell drops
-# RIPGREP_CONFIG_PATH: a developer's ripgrep flags (--smart-case, --hidden) would
-# change the rows on one machine and not on CI.
+# append its stdout to DETECT_RAW and its stderr to <errf>. Exit 0 and 1 are
+# results (1 is "no matches" for rg and grep); a missing tool (127) or any exit
+# code above 1 returns 2 after a message. The command runs under pipefail, so
+# the status is the last stage that failed: `rg ... | sed ...` cannot hide an rg
+# that did not run. The subshell drops RIPGREP_CONFIG_PATH: a developer's
+# ripgrep flags (--smart-case, --hidden) would change the rows on one machine
+# and not on CI.
 detect_batch() {
   local out status tool=${2%% *} hint=
-  out=$(cd "$1" && unset RIPGREP_CONFIG_PATH && bash -c "$2" </dev/null 2>>"$4") && status=0 || status=$?
+  out=$(cd "$1" && unset RIPGREP_CONFIG_PATH && bash -o pipefail -c "$2" </dev/null 2>>"$4") && status=0 || status=$?
   case "$status" in
     0|1)
       DETECT_RAW="$DETECT_RAW$out
@@ -144,6 +147,9 @@ detect_scan() {
   # The command's own text counts against the budget too.
   limit=$((DETECT_BATCH_CHARS - ${#cmd}))
   while IFS= read -r p || [ -n "$p" ]; do
+    # A name that starts with - would be read as an option: ./ makes it a path.
+    # detect_rule strips the ./ from the rows again.
+    case "$p" in -*) p=./$p ;; esac
     quote_word "$p"
     if [ -n "$batch" ] && [ $((blen + ${#QUOTED})) -gt "$limit" ]; then
       # Assign before passing: inside an argument, ${var//pat/"rep"} keeps its
@@ -187,7 +193,9 @@ s/.*/${DETECT_UNPARSED}&/p
 b
 :emit
 p"
-  sed -n -E "$s" "$raw" > "$out" 2>/dev/null || {
+  # LC_ALL=C: in a UTF-8 locale sed does not match a byte that is not valid UTF-8,
+  # and a file name or a source line may hold one.
+  LC_ALL=C sed -n -E "$s" "$raw" > "$out" 2>/dev/null || {
     printf 'format %s does not compile\n' "$1" >&2
     return 2
   }
@@ -218,7 +226,9 @@ detect_rule() {
   case "$engine" in
     ast-grep)
       quote_word "$detector"
-      cmd="ast-grep scan --rule $QUOTED --format github {files}"
+      # --error: a rule whose severity is hint (the default) or off reports nothing
+      # otherwise, and the gate would pass over it.
+      cmd="ast-grep scan --rule $QUOTED --format github --error {files}"
       ;;
     rg|linter|script) cmd=$detector ;;
     *)

@@ -242,6 +242,7 @@ test_ast_grep_command_line() {
   args=$(cat "$TMP/args")
   assert_contains "$args" "scan --rule"
   assert_contains "$args" "--format github"
+  assert_contains "$args" "--error"
   assert_contains "$args" "x.ts"
 }
 
@@ -324,4 +325,142 @@ test_command_length_counts_against_budget() {
   local max
   max=$(sort -n "$TMP/sizes" | tail -1)
   if [ "$max" -gt 100000 ]; then fail "one command was $max bytes, over 100000"; fi
+}
+
+# R30 hardening. utf8_locale: print a UTF-8 locale this machine has, or fail.
+utf8_locale() {
+  local l
+  for l in en_US.UTF-8 en_US.utf8 C.UTF-8 C.utf8; do
+    if [ "$(LC_ALL=$l locale charmap 2>/dev/null)" = UTF-8 ]; then
+      printf '%s\n' "$l"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# sed runs in the C locale: in a UTF-8 locale it does not match a byte that is not valid
+# UTF-8, so a Latin-1 file name or a Latin-1 line in a matched file was "an unparsed line".
+test_invalid_utf8_in_names_and_lines_parses_in_a_utf8_locale() {
+  local loc name
+  loc=$(utf8_locale) || { skip "no UTF-8 locale installed"; return 77; }
+  mkrepo
+  rule todo
+  name=$(printf 'caf\351.ts')
+  printf 'TODO a\n' > "$name"
+  printf 'TODO b \351\n' > plain.ts
+  must git add -A
+  run env LC_ALL="$loc" "$G" baseline
+  assert_eq 0 "$STATUS" "baseline in $loc: $OUT"
+  assert_eq "$(printf 'todo\tcaf\351.ts\tTODO a\t1\ntodo\tplain.ts\tTODO b \351\t1')" "$(cat .gauntlet/baseline.tsv)" "rows"
+}
+
+# A tracked name that starts with - is a file, not an option.
+test_dash_names_reach_the_detector_as_files() {
+  mkrepo
+  detect_lib
+  printf 'TODO x\n' > ./-x.txt
+  printf 'TODO z\n' > ./-
+  printf 'TODO y\n' > ok.ts
+  printf -- '-x.txt\n-\nok.ts\n' > "$TMP/files.txt"
+  rule todo
+  run run_detector .gauntlet/rules/todo.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 0 "$STATUS" "rg {files}: $OUT"
+  assert_eq "$(printf 'todo\t-\t1\tTODO z\ntodo\t-x.txt\t1\tTODO x\ntodo\tok.ts\t1\tTODO y')" "$(LC_ALL=C sort "$TMP/out.tsv")" "rg rows"
+  rule lint engine=linter "detector=grep -Hn TODO {files}"
+  run run_detector .gauntlet/rules/lint.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 0 "$STATUS" "linter {files}: $OUT"
+  assert_eq "$(printf 'lint\t-\t1\tTODO z\nlint\t-x.txt\t1\tTODO x\nlint\tok.ts\t1\tTODO y')" "$(LC_ALL=C sort "$TMP/out.tsv")" "linter rows"
+}
+
+test_dash_names_are_measured_by_the_gates() {
+  mkrepo
+  printf 'TODO x\n' > ./-x.txt
+  printf 'TODO z\n' > ./-
+  rule todo
+  rule prog "detector=rg --no-ignore --with-filename --line-number --no-heading TODO ."
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  assert_eq "$(printf 'prog\t-\tTODO z\t1\nprog\t-x.txt\tTODO x\t1\ntodo\t-\tTODO z\t1\ntodo\t-x.txt\tTODO x\t1')" "$(cat .gauntlet/baseline.tsv)" "rows"
+}
+
+# bash -o pipefail: the exit code of a pipeline is the failure of any stage, not just the last.
+test_pipeline_failure_in_the_first_stage_is_a_broken_detector() {
+  mkrepo
+  detect_lib
+  : > "$TMP/files.txt"
+  rule r engine=linter "detector=sh -c 'echo boom >&2; exit 2' | cat"
+  run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 2 "$STATUS" "status"
+  assert_contains "$OUT" "broken detector: r: exit 2"
+  assert_contains "$OUT" "boom"
+}
+
+test_pipeline_with_a_missing_first_tool_names_the_tool() {
+  mkrepo
+  detect_lib
+  : > "$TMP/files.txt"
+  rule r engine=linter "detector=nosuchtool-gauntlet | cat"
+  run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 2 "$STATUS" "status"
+  assert_contains "$OUT" "missing tool nosuchtool-gauntlet"
+}
+
+# Exit 1 from a stage still means "no matches", and rows still come through a pipe.
+test_pipeline_keeps_exit_1_as_no_matches_and_passes_rows() {
+  mkrepo
+  detect_lib
+  printf 'TODO here\n' > a.ts
+  printf 'a.ts\n' > "$TMP/files.txt"
+  rule none engine=linter "detector=rg --with-filename --line-number --no-heading NOPE {files} | cat"
+  run run_detector .gauntlet/rules/none.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 0 "$STATUS" "no matches through a pipe: $OUT"
+  assert_eq "" "$(cat "$TMP/out.tsv")" "no rows"
+  rule some engine=linter "detector=rg --with-filename --line-number --no-heading TODO {files} | cat"
+  run run_detector .gauntlet/rules/some.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 0 "$STATUS" "matches through a pipe: $OUT"
+  assert_eq "$(printf 'some\ta.ts\t1\tTODO here')" "$(cat "$TMP/out.tsv")" "rows"
+  rule fail engine=linter "detector=rg --with-filename --line-number --no-heading NOPE {files} | sh -c 'cat; exit 2'"
+  run run_detector .gauntlet/rules/fail.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 2 "$STATUS" "a failing later stage after an exit-1 first stage: $OUT"
+}
+
+# rg names a binary file it matched on stdout. It is not a violation of anything.
+test_binary_file_match_is_ignored() {
+  mkrepo
+  detect_lib
+  printf 'TODO bin\0stuff\n' > data.bin
+  printf 'TODO y\n' > ok.ts
+  printf 'data.bin\nok.ts\n' > "$TMP/files.txt"
+  rule todo
+  run run_detector .gauntlet/rules/todo.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_eq "$(printf 'todo\tok.ts\t1\tTODO y')" "$(cat "$TMP/out.tsv")" "rows"
+}
+
+test_binary_file_match_does_not_fail_the_gate_or_count() {
+  mkrepo
+  printf 'TODO bin\0stuff\n' > data.bin
+  printf 'TODO y\n' > ok.ts
+  rule todo
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  assert_eq "$(printf 'todo\tok.ts\tTODO y\t1')" "$(cat .gauntlet/baseline.tsv)" "rows"
+}
+
+# --error: ast-grep reports a rule whose severity is hint (the default) or off only
+# when told to; without it such a rule found nothing and the gate passed.
+test_ast_grep_rule_without_a_severity_is_still_counted() {
+  command -v ast-grep > /dev/null 2>&1 || { skip "ast-grep not installed"; return 77; }
+  mkrepo
+  printf 'try { a() } catch (e) {}\n' > x.ts
+  # shellcheck disable=SC2016 # the ast-grep metavariables are meant to stay literal
+  printf 'id: silent-catch\nlanguage: TypeScript\nrule:\n  pattern: try { $$$A } catch ($E) {}\nmessage: empty catch\n' > .gauntlet/rules/silent-catch.yml
+  rule silent-catch engine=ast-grep detector=.gauntlet/rules/silent-catch.yml
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  assert_contains "$(cat .gauntlet/baseline.tsv)" "silent-catch	x.ts	"
 }
