@@ -30,14 +30,19 @@ rule_get() {
   ' "$1"
 }
 
-# rule_ids: print the stems of .gauntlet/rules/*.md, sorted.
+# rule_ids: print the stems of .gauntlet/rules/*.md, sorted. A Markdown case
+# file (<id>.bad.md, <id>.good.md) is not a rule and is skipped.
 rule_ids() {
-  local root f
+  local root f stem
   root=$(repo_root) || exit 2
   for f in "$root"/.gauntlet/rules/*.md; do
     [ -f "$f" ] || continue
     f=${f##*/}
-    printf '%s\n' "${f%.md}"
+    stem=${f%.md}
+    case "$stem" in
+      *.bad|*.bad.*|*.good|*.good.*) continue ;;
+    esac
+    printf '%s\n' "$stem"
   done | LC_ALL=C sort
 }
 

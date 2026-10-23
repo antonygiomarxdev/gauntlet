@@ -138,3 +138,61 @@ test_bin_test_rules_fails() {
   assert_eq 1 "$STATUS" "exit status"
   assert_contains "$OUT" "bad case not flagged"
 }
+
+test_markdown_case_file_is_not_a_rule() {
+  mkrepo
+  cases_lib
+  rule mdr
+  printf 'TODO\n' > .gauntlet/rules/mdr.bad.md
+  run run_rule_tests "$TMP/repo"
+  assert_eq 0 "$STATUS" "status"
+  assert_eq "" "$OUT" "output"
+}
+
+test_project_format_shadowing_builtin_is_tested() {
+  mkrepo
+  cases_lib
+  mkdir -p .gauntlet/formats
+  # Same name as the built-in path-line: the project file is the one tested.
+  # shellcheck disable=SC2016 # fence markers are literal text
+  printf -- '---\nmatch: ^([^:]+):([0-9]+): (.*)$\npath: 1\nline: 2\nmessage: 3\n---\n```sample\na.ts:1: bad\n```\n```expected\na.ts\t1\twrong\n```\n' > .gauntlet/formats/path-line.md
+  run run_rule_tests "$TMP/repo"
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  path-line  expected"
+}
+
+test_sample_that_does_not_parse_fails() {
+  mkrepo
+  cases_lib
+  mkdir -p .gauntlet/formats
+  # shellcheck disable=SC2016 # fence markers are literal text
+  printf -- '---\nmatch: ^([^:]+):([0-9]+): (.*)$\npath: 1\nline: 2\nmessage: 3\n---\n```sample\nnot a match\n```\n```expected\na.ts\t1\tx\n```\n' > .gauntlet/formats/unparsed.md
+  run run_rule_tests "$TMP/repo"
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  unparsed  sample  does not parse"
+}
+
+test_bad_directory_without_violation_fails() {
+  mkrepo
+  cases_lib
+  rule todo
+  mkdir -p .gauntlet/rules/todo.bad
+  printf 'ok\n' > .gauntlet/rules/todo.bad/a.ts
+  printf 'ok\n' > .gauntlet/rules/todo.bad/b.ts
+  run run_rule_tests "$TMP/repo"
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  todo  todo.bad  bad case not flagged"
+}
+
+test_broken_detector_exits_2_and_cleans_up() {
+  mkrepo
+  rule r engine=linter "detector=echo garbage; exit 0"
+  printf 'x\n' > .gauntlet/rules/r.bad.ts
+  mkdir -p "$TMP/tmpdir"
+  TMPDIR="$TMP/tmpdir"
+  export TMPDIR
+  run "$G" test-rules
+  assert_eq 2 "$STATUS" "status"
+  assert_contains "$OUT" "broken detector"
+  assert_eq "" "$(ls -A "$TMP/tmpdir")" "leftover temp dirs"
+}

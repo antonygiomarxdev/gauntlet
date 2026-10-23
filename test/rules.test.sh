@@ -104,3 +104,13 @@ test_severity_rank_orders_levels() {
   assert_eq 2 "$(severity_rank shadow)" "shadow"
   assert_eq 1 "$(severity_rank track)" "track"
 }
+
+test_rule_ids_skips_case_files() {
+  mkrepo
+  rules_lib
+  rule mdr
+  printf 'TODO\n' > .gauntlet/rules/mdr.bad.md
+  printf 'ok\n' > .gauntlet/rules/mdr.good.md
+  run rule_ids
+  assert_eq "mdr" "$OUT" "ids"
+}
