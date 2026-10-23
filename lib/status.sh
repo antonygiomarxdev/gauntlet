@@ -546,7 +546,7 @@ doctor_config() {
       END { print found + 0 }
     ' "$cfg") || return 2
     GL_BOM_LINE1=$bom awk -F "$DETECT_TAB" '
-      $1 == "BAD" { print "bad check key " $2 ": " $3 }
+      $1 == "#BAD" { print "bad check key " $2 ": " $3 }
       $1 == "#MALFORMED" { print $3 }
       $1 == "#UNKNOWN" {
         msg = $3

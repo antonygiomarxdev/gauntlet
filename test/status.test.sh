@@ -465,6 +465,22 @@ test_doctor_bad_check_key_fails() {
   doctor_one_fail "FAIL bad check key check.a.b.c"
 }
 
+test_doctor_accepts_a_check_named_BAD() {
+  mkrepo
+  doctor_install
+  printf 'check.BAD=echo hi\n' >> .gauntlet/config
+  run "$G" doctor
+  assert_eq 0 "$(doctor_fails)" "FAIL lines: $OUT"
+  assert_not_contains "$OUT" "bad check key"
+}
+
+test_doctor_invalid_check_name_says_what_a_name_may_hold() {
+  mkrepo
+  doctor_install
+  printf 'check.my check=echo hi\n' >> .gauntlet/config
+  doctor_one_fail "FAIL bad check key check.my check: check name my check: use letters, digits, - and _"
+}
+
 test_doctor_touched_value_fails() {
   mkrepo
   doctor_install

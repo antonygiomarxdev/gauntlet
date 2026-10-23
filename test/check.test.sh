@@ -729,6 +729,34 @@ test_bad_check_key_exits_2() {
   assert_contains "$OUT" "bad check key check.t.x"
 }
 
+# A check called BAD is a check: the word is what the key parser used to tag a bad key
+# with, so it was taken for one and refused with a message about nothing.
+test_a_check_named_BAD_is_an_ordinary_check() {
+  gate_setup 'x'
+  printf 'check.BAD=true\n' > .gauntlet/config
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "check:BAD"
+}
+
+# A name outside letters, digits, - and _ says what a name may hold.
+test_an_invalid_check_name_says_what_a_name_may_hold() {
+  gate_setup 'x'
+  local row key shown
+  for row in 'check.my check=true|check.my check|my check' 'check.a.b=true|check.a.b|a.b' \
+    'check.=true|check.|(empty)' 'check.x y.paths=src/|check.x y.paths|x y'; do
+    printf '%s\n' "${row%%|*}" > .gauntlet/config
+    key=${row#*|}
+    shown=${key#*|}
+    key=${key%%|*}
+    commit_all "config $shown"
+    gate
+    assert_eq 2 "$STATUS" "status for [$key]: $OUT"
+    assert_contains "$OUT" "bad check key $key: check name $shown: use letters, digits, - and _"
+  done
+}
+
 test_checks_run_on_onboarding_branch() {
   mkrepo
   printf 'x\n' > a.ts

@@ -232,12 +232,12 @@ rule_tests_due() {
 
 # check_key_rows <config>: the one parser of config keys, shared by check and doctor.
 # Prints a "<name>\t<ci>\t<paths>\t<command>" row for each declared check, a
-# "BAD\t<key>\t<reason>" row for each check key that is not valid, a
+# "#BAD\t<key>\t<reason>" row for each check key that is not valid, a
 # "#UNKNOWN\t<key>\t<message>" row for each key that is not base, touched or check.*,
 # and a "#MALFORMED\t<n>\t<message>" row for each line that has no key or no "=".
 # Blank lines and # comments are not lines of this kind. The "#" tags cannot be check
 # names, so a check is never mistaken for a row of this kind. Every message names the
-# fix. check_table refuses on a BAD row and ignores the "#" rows: check has always
+# fix. check_table refuses on a #BAD row and ignores the other "#" rows: check has always
 # ignored lines and keys it does not know.
 check_key_rows() {
   awk '
@@ -271,21 +271,27 @@ check_key_rows() {
         if (rest ~ /\.paths$/) paths[name] = val
         else ci[name] = val
       }
-      else bad[key] = 1
+      else {
+        # Neither a check nor its .paths or .ci: the name part holds something a name may
+        # not (a space, a dot, nothing at all).
+        nm = rest
+        sub(/\.(paths|ci)$/, "", nm)
+        bad[key] = "check name " (nm == "" ? "(empty)" : nm) ": use letters, digits, - and _"
+      }
     }
     END {
       for (name in attr_key)
-        if (!(name in declared)) print "BAD\t" attr_key[name] "\tattribute without a command; add check." name "=<command> or remove the line"
+        if (!(name in declared)) print "#BAD\t" attr_key[name] "\tattribute without a command; add check." name "=<command> or remove the line"
       for (name in declared) {
-        if (cmd[name] == "") { print "BAD\t" declared[name] "\tempty command; give check." name " a command or remove the line"; continue }
+        if (cmd[name] == "") { print "#BAD\t" declared[name] "\tempty command; give check." name " a command or remove the line"; continue }
         c = (name in ci) ? ci[name] : "off"
         if (c != "on" && c != "off") {
-          print "BAD\t" declared[name] ".ci\t.ci must be on or off, got [" c "]; write on or off"
+          print "#BAD\t" declared[name] ".ci\t.ci must be on or off, got [" c "]; write on or off"
           continue
         }
         printf "%s\t%s\t%s\t%s\n", name, c, paths[name], cmd[name]
       }
-      for (key in bad) print "BAD\t" key "\tnot a check key; use check.<name>, check.<name>.paths or check.<name>.ci"
+      for (key in bad) print "#BAD\t" key "\t" bad[key]
     }
   ' "$1"
 }
@@ -302,7 +308,7 @@ check_table() {
   fi
   LC_ALL=C sort "$scratch/checks.all" > "$scratch/checks.raw" || return 2
   # Sorted before the first bad row is taken, so the reported key is the same on every run.
-  bad=$(awk -F '\t' '$1 == "BAD" { print $2 ": " $3; exit }' "$scratch/checks.raw") || return 2
+  bad=$(awk -F '\t' '$1 == "#BAD" { print $2 ": " $3; exit }' "$scratch/checks.raw") || return 2
   if [ -n "$bad" ]; then
     printf 'gauntlet: bad check key %s\n' "$bad" >&2
     return 2
