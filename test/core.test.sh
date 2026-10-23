@@ -338,6 +338,80 @@ SHIM
   tmp_assert_clean "SIGTERM while STATUS.md is written"
 }
 
+# C4: install and install-hooks take a lock (a directory under the git common dir) and the run's
+# traps remove it on every way out. The lock is the owner's alone.
+lock_repo() {
+  mkrepo
+  must cp -R "$ROOT/bin" "$ROOT/lib" .gauntlet/
+  tmp_decoys
+}
+
+# The owner is held inside the vendoring copy (the cp says so and hangs) when the signal comes.
+test_a_signal_during_install_removes_the_lock() {
+  lock_repo
+  must mkdir -p "$TMP/shim"
+  real_cp=$(command -v cp)
+  cat > "$TMP/shim/cp" <<SHIM
+#!/bin/sh
+case "\$*" in
+  *.bin.new*) [ -d "$TMP/repo/.git/gauntlet-install.lock" ] && touch "$TMP/cp.started"; sleep 30 ;;
+esac
+exec "$real_cp" "\$@"
+SHIM
+  must chmod +x "$TMP/shim/cp"
+  TMP_MARK="$TMP/cp.started" PATH="$TMP/shim:$PATH" tmp_signal TERM group install
+  assert_eq 143 "$RC" "install after SIGTERM: $(cat "$TMP/run.out")"
+  [ ! -e .git/gauntlet-install.lock ] || fail "the lock survived the signal"
+  tmp_assert_clean "SIGTERM during install"
+}
+
+# A command that waits on somebody else's lock does not own it: a signal ends the waiter and the
+# lock stays for its owner.
+test_a_signal_to_a_command_waiting_for_the_lock_leaves_the_lock() {
+  lock_repo
+  must mkdir .git/gauntlet-install.lock
+  must mkdir -p "$TMP/shim"
+  real_sleep=$(command -v sleep)
+  cat > "$TMP/shim/sleep" <<SHIM
+#!/bin/sh
+touch "$TMP/sleep.started"
+exec "$real_sleep" "\$@"
+SHIM
+  must chmod +x "$TMP/shim/sleep"
+  GAUNTLET_LOCK_WAIT=30 TMP_MARK="$TMP/sleep.started" PATH="$TMP/shim:$PATH" tmp_signal TERM group install-hooks
+  assert_eq 143 "$RC" "install-hooks after SIGTERM: $(cat "$TMP/run.out")"
+  [ -d .git/gauntlet-install.lock ] || fail "a waiter that did not own the lock removed it"
+  tmp_assert_clean "SIGTERM while waiting for the lock"
+}
+
+# A signal that lands while mkdir makes the lock is handled once mkdir returns, before the run
+# can record that it owns the lock. The lock must not outlive the run all the same.
+test_a_signal_as_the_lock_is_made_still_removes_it() {
+  lock_repo
+  must mkdir -p "$TMP/shim"
+  real_mkdir=$(command -v mkdir)
+  cat > "$TMP/shim/mkdir" <<SHIM
+#!/bin/sh
+"$real_mkdir" "\$@" || exit \$?
+case "\$*" in
+  *gauntlet-install.lock) kill -TERM "\$PPID" ;;
+esac
+SHIM
+  must chmod +x "$TMP/shim/mkdir"
+  run env TMPDIR="$TMP/priv" PATH="$TMP/shim:$PATH" "$G" install
+  assert_eq 143 "$STATUS" "install, signalled as it made the lock: $OUT"
+  [ ! -e .git/gauntlet-install.lock ] || fail "the lock survived a signal that landed as it was made"
+  tmp_assert_clean "SIGTERM as the lock is made"
+}
+
+test_an_inherited_lock_path_is_never_removed() {
+  lock_repo
+  must mkdir "$TMP/keep"
+  run env GAUNTLET_LOCK="$TMP/keep" "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  [ -d "$TMP/keep" ] || fail "a lock path from the environment was removed"
+}
+
 # bin/gauntlet changes to the repo root, so a relative TMPDIR must not change meaning on the way.
 test_a_relative_tmpdir_is_resolved_before_the_runner_changes_directory() {
   mkrepo

@@ -72,11 +72,23 @@ tmp_new() {
   mktemp ${1+"$1"} "${GAUNTLET_TMP:-${TMPDIR:-/tmp}}/gauntlet.XXXXXX"
 }
 
+# gauntlet_signal_traps: HUP, INT and TERM end the run with the status a shell reports for a
+# signal (128 + the number), and the EXIT trap, gauntlet_cleanup, runs on the way out.
+# bin/gauntlet sets them for the run; install_lock sets them back after it has held them.
+gauntlet_signal_traps() {
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+}
+
 # gauntlet_cleanup: remove what the run made outside its own scratch and then the run
 # root, GAUNTLET_TMP. bin/gauntlet runs it from its EXIT trap. It removes the root it
-# was given and the one partial file registered, nothing else.
+# was given, the one partial file registered and the install lock this run took, nothing
+# else. GAUNTLET_LOCK names a lock only once this process made it (install_lock): a run
+# that waited, or gave up, never removes the lock of the run it waited for.
 gauntlet_cleanup() {
   if [ -n "${GAUNTLET_PARTIAL:-}" ]; then rm -f "$GAUNTLET_PARTIAL"; fi
+  if [ -n "${GAUNTLET_LOCK:-}" ]; then rmdir "$GAUNTLET_LOCK" 2> /dev/null || true; fi
   if [ -n "${GAUNTLET_TMP:-}" ]; then rm -rf "$GAUNTLET_TMP"; fi
 }
 

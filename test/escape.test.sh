@@ -504,3 +504,52 @@ test_an_unreadable_link_blob_prints_its_path_escaped() {
   assert_contains "$(cat "$TMP/err")" 'gauntlet: cannot read l\x1b[2Jk\x0dy.sh at HEAD'
   assert_clean "$(cat "$TMP/err")" "path_identity"
 }
+
+# --- W3b: the install lock ---
+
+# esc_hooks_repo: a repo whose directory name holds an ESC, with the runner vendored, so every
+# path under it that a message prints holds the byte.
+esc_hooks_repo() {
+  local dir
+  dir="$TMP/r$(printf '\033')p"
+  must mkdir -p "$dir"
+  must cd "$dir"
+  must git init -q .
+  must git symbolic-ref HEAD refs/heads/main
+  must git config user.name "Test User"
+  must git config user.email "test@example.com"
+  must git config commit.gpgsign false
+  printf 'hello\n' > README.md
+  must git add README.md
+  must git commit -q -m init
+  must mkdir -p .gauntlet
+  must cp -R "$ROOT/bin" "$ROOT/lib" .gauntlet/
+}
+
+test_the_lock_messages_print_the_path_escaped() {
+  esc_hooks_repo
+  must mkdir .git/gauntlet-install.lock
+  run env GAUNTLET_LOCK_WAIT=0 "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" 'r\x1bp/.git/gauntlet-install.lock; if none is running, remove it'
+  assert_clean "$OUT" "the lock held"
+  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" &
+  local pid=$!
+  for _ in $(seq 1 100); do
+    if grep -Fq "waiting for another install" "$TMP/err"; then break; fi
+    sleep 0.1 2> /dev/null || sleep 1
+  done
+  assert_contains "$(cat "$TMP/err")" 'waiting for another install to finish ('
+  assert_contains "$(cat "$TMP/err")" 'r\x1bp/.git/gauntlet-install.lock'
+  assert_clean "$(cat "$TMP/err")" "the wait"
+  must rmdir .git/gauntlet-install.lock
+  wait "$pid" || fail "install-hooks did not finish once the lock was free: $(cat "$TMP/out" "$TMP/err")"
+  if [ "$(id -u)" -ne 0 ]; then
+    must chmod 555 .git
+    run env "$G" install-hooks
+    chmod 755 .git
+    assert_contains "$OUT" 'gauntlet: cannot create'
+    assert_contains "$OUT" 'r\x1bp/.git/gauntlet-install.lock'
+    assert_clean "$OUT" "the lock that cannot be made"
+  fi
+}

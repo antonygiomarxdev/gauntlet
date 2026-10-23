@@ -53,8 +53,57 @@ END {
 }
 '
 
+# install_lock: take the lock that serializes install and install-hooks, or wait for it. The
+# lock is a directory under the git common dir (so linked worktrees, which share the hooks,
+# share it), made with mkdir, which either creates it or fails. Monorepo `prepare` scripts run
+# these commands at the same moment, and unserialised they lost the project's own hook body,
+# doubled the gate line and left .gauntlet/lib empty. A command that finds the lock held waits
+# for it (GAUNTLET_LOCK_WAIT seconds, 30 by default; one line on stderr says so) and then does
+# its work on what the other left, which is where the "gate line already there" check is: it
+# runs under the lock, so it sees every edit made before. Only the run that made the lock
+# names it in GAUNTLET_LOCK, and only that name is removed on the way out (gauntlet_cleanup).
+# Needs hook_paths first. A run that already holds the lock (install calls install_hooks)
+# returns at once. After the wait a lock nobody frees, left by a killed process, is not broken
+# on a guess: exit 2 with the path to remove.
+install_lock() {
+  local lock wait=${GAUNTLET_LOCK_WAIT:-30} limit ticks=0 told=0 absent=0 sig=''
+  if [ -n "${GAUNTLET_LOCK:-}" ]; then return 0; fi
+  case "$wait" in
+    ''|*[!0-9]*) die "GAUNTLET_LOCK_WAIT must be a whole number of seconds, got [$wait]" ;;
+  esac
+  lock="$HOOKS_COMMON/gauntlet-install.lock"
+  limit=$((wait * 5))
+  while :; do
+    # A signal that lands while mkdir runs is handled once it returns, before the next
+    # statement could record that the lock is ours: the lock would stay. So for these two
+    # statements the signals only leave a note, and the run exits on it once the lock is named.
+    trap 'sig=129' HUP
+    trap 'sig=130' INT
+    trap 'sig=143' TERM
+    if mkdir "$lock" 2> /dev/null; then GAUNTLET_LOCK=$lock; fi
+    gauntlet_signal_traps
+    if [ -n "$sig" ]; then exit "$sig"; fi
+    if [ -n "$GAUNTLET_LOCK" ]; then return 0; fi
+    if [ -d "$lock" ]; then
+      absent=0
+      if [ "$ticks" -ge "$limit" ]; then die "another install holds $lock; if none is running, remove it"; fi
+      if [ "$told" -eq 0 ]; then
+        printf 'gauntlet: waiting for another install to finish (%s)\n' "$(path_spell "$lock")" >&2
+        told=1
+      fi
+      if sleep 0.2 2> /dev/null; then ticks=$((ticks + 1)); else sleep 1; ticks=$((ticks + 5)); fi
+    else
+      # mkdir failed and nothing is there: the lock was freed between the two calls, or the
+      # directory cannot be written. A few more tries tell them apart.
+      absent=$((absent + 1))
+      if [ "$absent" -ge 3 ]; then die "cannot create $lock"; fi
+    fi
+  done
+}
+
 # install: vendor the runner, create the state files that are missing, then
-# install the hooks. The source is the checkout that holds the running script.
+# install the hooks. The source is the checkout that holds the running script. The
+# whole of it runs under the install lock (install_lock).
 install_runner() {
   local src root
   src=$(install_source) || die "cannot find the runner source"
@@ -63,6 +112,8 @@ install_runner() {
   fi
   root=$(repo_root)
   cd "$root" || die "cannot enter $root"
+  hook_paths || die "cannot find the git directory"
+  install_lock
   vendor_runner "$src"
   create_missing .gauntlet/baseline.tsv ''
   create_missing .gauntlet/exceptions.tsv $'type\ttarget\treason\tdate\tbranch\n'
@@ -190,6 +241,7 @@ install_hooks() {
   root=$(repo_root)
   cd "$root" || die "cannot enter $root"
   hook_paths || die "cannot find the git directory"
+  install_lock
   if [ ! -f .gauntlet/bin/gauntlet ]; then
     printf 'gauntlet: warning: .gauntlet/bin/gauntlet is missing; run gauntlet install\n' >&2
   fi

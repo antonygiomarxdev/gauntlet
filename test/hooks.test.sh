@@ -52,6 +52,47 @@ hooks_as_root() {
   [ "$(id -u)" -eq 0 ]
 }
 
+# hooks_vendor: put the runner in .gauntlet/ the way install does, without touching a hook.
+hooks_vendor() {
+  must mkdir -p .gauntlet
+  must cp -R "$ROOT/bin" "$ROOT/lib" .gauntlet/
+}
+
+# hooks_parallel <n> <cmd...>: start <n> copies of the command at the same moment and wait
+# for all of them; fail unless each exits 0. The copies spin on a flag file so that they leave
+# the gate together (a plain loop of & starts them far enough apart to hide a race). Each
+# one's output is in $TMP/par.<i>.
+hooks_parallel() {
+  local n=$1 i pids='' p failed='' k=0
+  shift
+  rm -f "$TMP/go"
+  for i in $(seq 1 "$n"); do
+    (
+      while [ ! -e "$TMP/go" ]; do :; done
+      exec "$@"
+    ) > "$TMP/par.$i" 2>&1 &
+    pids="$pids $!"
+  done
+  : > "$TMP/go"
+  for p in $pids; do
+    k=$((k + 1))
+    wait "$p" || failed="$failed $k"
+  done
+  [ -z "$failed" ] || fail "runs that failed:$failed: $(cat "$TMP"/par.*)"
+}
+
+# hooks_wait_for <file> <text>: wait until <file> holds <text>, up to ten seconds. The poll
+# is a short sleep where sleep takes a fraction and a second where it does not; the
+# test's result never depends on how long it ran.
+hooks_wait_for() {
+  local i
+  for i in $(seq 1 100); do
+    if grep -Fq -- "$2" "$1" 2> /dev/null; then return 0; fi
+    sleep 0.1 2> /dev/null || sleep 1
+  done
+  fail "$1 never held [$2]: $(cat "$1" 2> /dev/null)"
+}
+
 test_plain_repo_gets_hooks() {
   hooks_repo "$TMP/repo"
   run "$G" install
@@ -1389,4 +1430,112 @@ test_replacing_the_old_line_keeps_a_missing_final_newline() {
   printf '#!/bin/sh\necho one\n%s' "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-push
   run "$G" install-hooks
   hooks_expect .git/hooks/pre-push $'#!/bin/sh\necho one\n'"$HOOK_TEST_GATE_CI"
+}
+
+# C4 (final review B): monorepo `prepare` scripts run install and install-hooks at the same
+# time. Unserialised, the runs overwrote each other's edit of a hook: the project's own body
+# was lost in 6 of 30 runs and the gate line doubled in 6 of 30. A mkdir lock under the git
+# common dir makes the runs take turns; the loser waits and then finds the work done.
+# shellcheck disable=SC2016 # the hook text holds $(...) that must not expand here
+test_parallel_install_hooks_keep_every_hook_body_and_add_one_gate_line() {
+  hooks_repo "$TMP/repo"
+  must git config core.hooksPath .husky
+  must mkdir .husky
+  printf '#!/bin/sh\n. "$(dirname "$0")/_/husky.sh"\nnpx lint-staged\n' > .husky/pre-commit
+  printf '#!/bin/sh\n. "$(dirname "$0")/_/husky.sh"\nnpm test\n' > .husky/pre-push
+  chmod 755 .husky/pre-commit .husky/pre-push
+  hooks_vendor
+  hooks_parallel 8 "$G" install-hooks
+  hooks_expect .husky/pre-commit $'#!/bin/sh\n'"$HOOK_TEST_GATE_STAGED"$'\n. "$(dirname "$0")/_/husky.sh"\nnpx lint-staged\n'
+  hooks_expect .husky/pre-push $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\n. "$(dirname "$0")/_/husky.sh"\nnpm test\n'
+  [ ! -e .git/gauntlet-install.lock ] || fail "the lock is still there after every run ended"
+}
+
+# The same race for install: .gauntlet/lib came out empty, .gauntlet/bin held a bin, the hooks
+# had two gate lines. The result must be what one install gives.
+test_parallel_install_leaves_one_complete_runner() {
+  hooks_repo "$TMP/repo"
+  hooks_parallel 8 "$G" install
+  [ ! -e .gauntlet/bin/bin ] || fail "install nested .gauntlet/bin/bin"
+  diff -r "$ROOT/bin" .gauntlet/bin || fail ".gauntlet/bin differs from the checkout's bin"
+  diff -r "$ROOT/lib" .gauntlet/lib || fail ".gauntlet/lib differs from the checkout's lib"
+  assert_eq "" "$(find .gauntlet -name '.*.new' -o -name '.*.old' | tr '\n' ' ')" "copies left behind"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "pre-commit gate lines"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_CI" .git/hooks/pre-push)" "pre-push gate lines"
+  [ ! -e .git/gauntlet-install.lock ] || fail "the lock is still there after every run ended"
+}
+
+# A command that finds the lock held waits, says so, and carries on once it is free: a
+# parallel `prepare` script must not fail `npm install`.
+test_a_held_lock_makes_install_hooks_wait_and_then_succeed() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must mkdir .git/gauntlet-install.lock
+  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" &
+  local pid=$!
+  hooks_wait_for "$TMP/err" "waiting for another install"
+  assert_contains "$(cat "$TMP/err")" ".git/gauntlet-install.lock"
+  [ ! -e .git/hooks/pre-commit ] || fail "a hook was written while the lock was held"
+  must rmdir .git/gauntlet-install.lock
+  local status=0
+  wait "$pid" || status=$?
+  assert_eq 0 "$status" "install-hooks after the lock was freed: $(cat "$TMP/out" "$TMP/err")"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "the hook was written once the lock was free"
+  [ ! -e .git/gauntlet-install.lock ] || fail "the lock is still there after the run ended"
+}
+
+# A lock nobody owns (its owner was killed hard) is not broken by a guess: after the bound the
+# command exits 2 and names the path. The bound is GAUNTLET_LOCK_WAIT seconds, 30 by default.
+# The lock is not ours, so it stays.
+test_a_stale_lock_ends_in_exit_2_naming_the_lock_and_stays() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must mkdir .git/gauntlet-install.lock
+  run env GAUNTLET_LOCK_WAIT=1 "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks with a stale lock: $OUT"
+  assert_contains "$OUT" "gauntlet: another install holds $TMP/repo/.git/gauntlet-install.lock; if none is running, remove it"
+  [ -d .git/gauntlet-install.lock ] || fail "a process that did not own the lock removed it"
+  [ ! -e .git/hooks/pre-commit ] || fail "a hook was written without the lock"
+  run env GAUNTLET_LOCK_WAIT=1 "$G" install
+  assert_eq 2 "$STATUS" "install with a stale lock: $OUT"
+  assert_contains "$OUT" "another install holds"
+  [ -d .git/gauntlet-install.lock ] || fail "install removed a lock it did not own"
+}
+
+test_the_lock_wait_must_be_a_whole_number_of_seconds() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  run env GAUNTLET_LOCK_WAIT=soon "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "gauntlet: GAUNTLET_LOCK_WAIT must be a whole number of seconds, got [soon]"
+}
+
+# A linked worktree shares the common git dir, so the lock must be there and not in the
+# worktree's own git dir: two worktrees edit the same hooks.
+test_the_lock_is_in_the_common_git_dir_of_a_linked_worktree() {
+  hooks_repo "$TMP/repo"
+  must git worktree add -q "$TMP/wt" -b side
+  must mkdir "$TMP/repo/.git/gauntlet-install.lock"
+  must cd "$TMP/wt"
+  hooks_vendor
+  run env GAUNTLET_LOCK_WAIT=0 "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks in the worktree: $OUT"
+  assert_contains "$OUT" "$TMP/repo/.git/gauntlet-install.lock"
+}
+
+# A git dir that cannot be written is not a lock to wait for: the command says it could not make
+# the lock, at once. The permission is restored before anything is asserted.
+test_an_unwritable_git_dir_is_an_error_not_a_wait() {
+  hooks_repo "$TMP/repo"
+  if hooks_as_root; then
+    skip "running as root: a directory is writable here whatever its mode"
+    return 77
+  fi
+  hooks_vendor
+  must chmod 555 .git
+  run env GAUNTLET_LOCK_WAIT=30 "$G" install-hooks
+  chmod 755 .git
+  assert_eq 2 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot create $TMP/repo/.git/gauntlet-install.lock"
+  assert_not_contains "$OUT" "waiting"
 }

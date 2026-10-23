@@ -53,20 +53,20 @@ unset GIT_GLOB_PATHSPECS GIT_ICASE_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_LITERAL_PA
 # with the status a shell reports for a signal (128 + the number). bash runs a trap once
 # the foreground command ends, so a signal sent to gauntlet alone is handled when the
 # detector returns; a signal to the process group, as Ctrl-C sends, ends the detector
-# too. The two variables the cleanup removes are this run's own: whatever the environment
+# too. The variables the cleanup removes are this run's own: whatever the environment
 # held under their names is dropped first (unset also drops the export), or the trap would
 # remove a path somebody else named. GAUNTLET_TMP is not exported: a gauntlet run by a
-# check makes a root of its own.
-unset GAUNTLET_TMP GAUNTLET_PARTIAL
+# check makes a root of its own. GAUNTLET_LOCK, the install lock this run holds, is under
+# the same rule (install_lock sets it; the cleanup removes it, and only it).
+unset GAUNTLET_TMP GAUNTLET_PARTIAL GAUNTLET_LOCK
 GAUNTLET_TMP=
 GAUNTLET_PARTIAL=
+GAUNTLET_LOCK=
 case "${1:-}" in
   base|baseline|test-rules|waive|loosen|remove|check|install|install-hooks|status|promote|doctor)
     # The traps first: from here on, a root that was made is removed whatever fails next.
     trap gauntlet_cleanup EXIT
-    trap 'exit 129' HUP
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
+    gauntlet_signal_traps
     GAUNTLET_TMP=$(mktemp -d "${TMPDIR:-/tmp}/gauntlet.XXXXXX") || die "cannot create a temp directory"
     # Absolute, before the cd below: a relative TMPDIR would mean another directory there.
     # Through a variable of its own: if the cd fails, GAUNTLET_TMP keeps the root to remove.
