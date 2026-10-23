@@ -862,3 +862,114 @@ test_failed_listing_of_the_format_file_at_head_is_exit_2() {
   assert_contains "$OUT" "simulated failure"
   assert_not_contains "$OUT" "format file"
 }
+
+# R36: loosen and remove name a rule that exists, so a typo cannot write a row that covers
+# nothing. A rule exists when its file is in the working tree, in HEAD, or at the merge-base.
+test_loosen_rejects_an_unknown_rule() {
+  exc_setup 'ok'
+  run "$G" loosen nope "severity to shadow" "why"
+  assert_eq 2 "$STATUS" "loosen: $OUT"
+  assert_eq "gauntlet: no rule nope" "$OUT" "message"
+  # An id is a file stem, not a path: ../notes would name .gauntlet/notes.md.
+  printf 'x\n' > .gauntlet/notes.md
+  run "$G" loosen ../notes "severity to shadow" "why"
+  assert_eq 2 "$STATUS" "a path is not a rule id: $OUT"
+  assert_eq "" "$(cat .gauntlet/exceptions.tsv)" "no row was written"
+}
+
+test_remove_rejects_an_unknown_rule() {
+  exc_setup 'ok'
+  run "$G" remove nope "why"
+  assert_eq 2 "$STATUS" "remove: $OUT"
+  assert_eq "gauntlet: no rule nope" "$OUT" "message"
+  assert_eq "" "$(cat .gauntlet/exceptions.tsv)" "no row was written"
+}
+
+# EXC-AC4 still comes first for a rule that does not exist: the reason is wrong either way.
+test_an_empty_reason_for_an_unknown_rule_is_exit_2() {
+  exc_setup 'ok'
+  run "$G" loosen nope "what" ""
+  assert_eq 2 "$STATUS" "loosen: $OUT"
+  run "$G" remove nope ""
+  assert_eq 2 "$STATUS" "remove: $OUT"
+  assert_eq "" "$(cat .gauntlet/exceptions.tsv)" "no row was written"
+}
+
+test_loosen_and_remove_accept_a_rule_in_the_working_tree() {
+  exc_setup 'ok'
+  run "$G" loosen todo "severity to shadow" "why"
+  assert_eq 0 "$STATUS" "loosen: $OUT"
+  run "$G" remove todo "why"
+  assert_eq 0 "$STATUS" "remove: $OUT"
+}
+
+# A human may delete the rule file first and run the command after: HEAD still has it.
+test_loosen_and_remove_accept_a_rule_only_head_has() {
+  exc_setup 'ok'
+  must rm .gauntlet/rules/todo.md
+  run "$G" loosen todo "severity to shadow" "why"
+  assert_eq 0 "$STATUS" "loosen: $OUT"
+  run "$G" remove todo "why"
+  assert_eq 0 "$STATUS" "remove: $OUT"
+}
+
+# ... or after committing the deletion: only the merge-base has it.
+test_loosen_and_remove_accept_a_rule_only_the_base_has() {
+  exc_setup 'ok'
+  must git rm -q .gauntlet/rules/todo.md
+  exc_commit drop-rule
+  run "$G" loosen todo "severity to shadow" "why"
+  assert_eq 0 "$STATUS" "loosen: $OUT"
+  run "$G" remove todo "why"
+  assert_eq 0 "$STATUS" "remove: $OUT"
+}
+
+# The pseudo-rule @config stands for .gauntlet/config: it can be loosened, never removed.
+test_loosen_accepts_the_config_pseudo_rule_and_remove_does_not() {
+  exc_setup 'ok'
+  run "$G" loosen @config "touched on -> off" "why"
+  assert_eq 0 "$STATUS" "loosen: $OUT"
+  assert_contains "$(cat .gauntlet/exceptions.tsv)" "loosen	@config: touched on -> off	why	"
+  run "$G" remove @config "why"
+  assert_eq 2 "$STATUS" "remove: $OUT"
+  assert_eq "gauntlet: no rule @config" "$OUT" "message"
+}
+
+# R32: a rule lookup that git cannot answer is exit 2, never "no such rule".
+test_a_failed_lookup_of_the_rule_in_head_is_exit_2() {
+  exc_setup 'ok'
+  must rm .gauntlet/rules/todo.md
+  git_fails ls-tree .gauntlet/rules/todo.md HEAD
+  run "$G" loosen todo "severity to shadow" "why"
+  assert_eq 2 "$STATUS" "loosen: $OUT"
+  assert_contains "$OUT" "simulated failure"
+  assert_not_contains "$OUT" "no rule"
+}
+
+test_a_failed_lookup_of_the_rule_at_the_base_is_exit_2() {
+  exc_setup 'ok'
+  must git rm -q .gauntlet/rules/todo.md
+  exc_commit drop-rule
+  git_fails ls-tree .gauntlet/rules/todo.md "$(git rev-parse main)"
+  run "$G" remove todo "why"
+  assert_eq 2 "$STATUS" "remove: $OUT"
+  assert_contains "$OUT" "simulated failure"
+  assert_not_contains "$OUT" "no rule"
+}
+
+# A repo that never ran gauntlet install has no .gauntlet/: the commands say so instead
+# of showing the shell's redirect error.
+test_exception_commands_without_a_gauntlet_directory() {
+  must mkdir -p "$TMP/plain"
+  must cd "$TMP/plain"
+  must git init -q .
+  must git symbolic-ref HEAD refs/heads/main
+  printf 'x\n' > a.ts
+  for c in "waive a.ts why" "loosen todo what why" "remove todo why" "loosen @config what why"; do
+    # shellcheck disable=SC2086 # the words of $c are separate arguments
+    run "$G" $c
+    assert_eq 2 "$STATUS" "gauntlet $c: $OUT"
+    assert_eq "gauntlet: no .gauntlet/ directory; run gauntlet install" "$OUT" "gauntlet $c"
+  done
+  [ ! -e .gauntlet ] || fail "a .gauntlet directory appeared"
+}

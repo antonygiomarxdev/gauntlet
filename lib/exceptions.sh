@@ -23,6 +23,50 @@ exc_text_check() {
   esac
 }
 
+# exc_require_dir: exit 2 with one message when the repo has no .gauntlet/ directory, which
+# is what gauntlet install makes. Without it the row cannot be written anywhere.
+exc_require_dir() {
+  local root
+  root=$(repo_root) || return 2
+  [ -d "$root/.gauntlet" ] || die "no .gauntlet/ directory; run gauntlet install"
+}
+
+# exc_rule_known <id>: succeed (0) when .gauntlet/rules/<id>.md exists in the working tree,
+# in HEAD, or at the merge-base of HEAD and the base ref; 1 when it exists nowhere; 2 when
+# git cannot tell (R32). A human may delete the file before running remove, or commit the
+# deletion first, so the working tree alone is not enough. The base is the local ref, never
+# fetched: these commands do not touch the network. When HEAD or the base does not
+# resolve, that place is skipped.
+exc_rule_known() {
+  local id=$1 root path rc ref mb
+  root=$(repo_root) || return 2
+  case "$id" in */*) return 1 ;; esac
+  path=.gauntlet/rules/$id.md
+  if [ -f "$root/$path" ]; then return 0; fi
+  git rev-parse -q --verify 'HEAD^{commit}' > /dev/null 2>&1 || return 1
+  rc=0
+  base_has HEAD "$path" || rc=$?
+  case "$rc" in 0) return 0 ;; 1) ;; *) return 2 ;; esac
+  ref=$(resolve_base "") || return 1
+  git rev-parse -q --verify "$ref^{commit}" > /dev/null 2>&1 || return 1
+  mb=$(git merge-base HEAD "$ref" 2> /dev/null) || return 1
+  rc=0
+  base_has "$mb" "$path" || rc=$?
+  case "$rc" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
+}
+
+# exc_rule_check <id>: exit 2 with "no rule <id>" when the rule exists nowhere (see
+# exc_rule_known), and 2 when git cannot tell.
+exc_rule_check() {
+  local rc=0
+  exc_rule_known "$1" || rc=$?
+  case "$rc" in
+    0) ;;
+    1) die "no rule $1" ;;
+    *) exit 2 ;;
+  esac
+}
+
 # exc_append <type> <target> <reason> <branch>: append one row, dated today, to
 # exceptions.tsv. The file gets its header when it is missing or empty.
 exc_append() {
@@ -50,6 +94,7 @@ exc_script_hint() {
 exc_waive() {
   local path reason branch
   [ "$#" -eq 2 ] || die "usage: gauntlet waive <path> <reason>"
+  exc_require_dir || return 2
   path=$1
   reason=$2
   exc_text_check path "$path"
@@ -68,21 +113,28 @@ exc_waive() {
   exc_append waive "$path" "$reason" "$branch" || return 2
 }
 
-# exc_loosen <rule> <what> <reason>: record a loosening of a rule. It covers
-# every loosening of that rule that the gate finds since the merge-base.
+# exc_loosen <rule> <what> <reason>: record a loosening of a rule, or of .gauntlet/config
+# when the rule is @config. It covers every loosening of that rule that the gate finds
+# since the merge-base. The rule must exist (exc_rule_check).
 exc_loosen() {
   [ "$#" -eq 3 ] || die "usage: gauntlet loosen <rule> <what> <reason>"
+  exc_require_dir || return 2
   exc_text_check rule "$1"
   exc_text_check what "$2"
   exc_text_check reason "$3"
+  # @config stands for .gauntlet/config (see cmp_config): it has no rule file.
+  if [ "$1" != @config ]; then exc_rule_check "$1"; fi
   exc_append loosen "$1: $2" "$3" - || return 2
 }
 
-# exc_remove <rule> <reason>: record the removal of a rule.
+# exc_remove <rule> <reason>: record the removal of a rule. The rule must exist
+# (exc_rule_check): in the working tree, in HEAD or at the merge-base.
 exc_remove() {
   [ "$#" -eq 2 ] || die "usage: gauntlet remove <rule> <reason>"
+  exc_require_dir || return 2
   exc_text_check rule "$1"
   exc_text_check reason "$2"
+  exc_rule_check "$1"
   exc_append remove "$1" "$2" - || return 2
 }
 
