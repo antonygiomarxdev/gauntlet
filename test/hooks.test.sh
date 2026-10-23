@@ -1539,3 +1539,36 @@ test_an_unwritable_git_dir_is_an_error_not_a_wait() {
   assert_contains "$OUT" "gauntlet: cannot create $TMP/repo/.git/gauntlet-install.lock"
   assert_not_contains "$OUT" "waiting"
 }
+
+# I1 (final review B): a root .gitignore with bin/ or lib/ hid the vendored runner, so a clone
+# had hooks that called a runner it did not have. install writes .gauntlet/.gitignore: STATUS.md
+# (the derived file) is ignored, and bin/ and lib/ are brought back whatever a shallower
+# ignore says, down to the files in them (a root *.sh would otherwise still hide lib/*.sh).
+HOOK_TEST_GITIGNORE=$'STATUS.md\n!bin/\n!lib/\n!bin/**\n!lib/**\n'
+
+test_install_writes_the_gauntlet_gitignore_and_keeps_an_existing_one() {
+  hooks_repo "$TMP/repo"
+  run "$G" install
+  assert_eq 0 "$STATUS" "install: $OUT"
+  assert_contains "$OUT" "created .gauntlet/.gitignore"
+  hooks_expect .gauntlet/.gitignore "$HOOK_TEST_GITIGNORE"
+  printf 'STATUS.md\nmine\n' > .gauntlet/.gitignore
+  run "$G" install
+  assert_eq 0 "$STATUS" "second install: $OUT"
+  assert_not_contains "$OUT" ".gauntlet/.gitignore"
+  hooks_expect .gauntlet/.gitignore $'STATUS.md\nmine\n'
+}
+
+test_a_root_ignore_of_bin_lib_and_shell_files_does_not_hide_the_runner() {
+  hooks_repo "$TMP/repo"
+  printf 'bin/\nlib/\n*.sh\n*.md\n' > .gitignore
+  run "$G" install
+  assert_eq 0 "$STATUS" "install: $OUT"
+  run git status --porcelain --untracked-files=all
+  assert_contains "$OUT" "?? .gauntlet/bin/gauntlet"
+  assert_contains "$OUT" "?? .gauntlet/lib/core.sh"
+  assert_contains "$OUT" "?? .gauntlet/lib/formats/path-line.md"
+  printf 'x\n' > .gauntlet/STATUS.md
+  run git check-ignore -q .gauntlet/STATUS.md
+  assert_eq 0 "$STATUS" "STATUS.md is ignored by .gauntlet/.gitignore"
+}

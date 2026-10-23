@@ -101,6 +101,12 @@ install_lock() {
   done
 }
 
+# GAUNTLET_GITIGNORE: what install writes to .gauntlet/.gitignore. STATUS.md is derived text and
+# stays out of git. bin/ and lib/ are the vendored runner and must be committed: a root .gitignore
+# with bin/ or lib/ would hide them, and !bin/ undoes that for the directory. A root pattern for
+# files (*.sh, *.md) still matches the files inside, so !bin/** and !lib/** bring those back too.
+GAUNTLET_GITIGNORE=$'STATUS.md\n!bin/\n!lib/\n!bin/**\n!lib/**\n'
+
 # install: vendor the runner, create the state files that are missing, then
 # install the hooks. The source is the checkout that holds the running script. The
 # whole of it runs under the install lock (install_lock).
@@ -118,6 +124,7 @@ install_runner() {
   create_missing .gauntlet/baseline.tsv ''
   create_missing .gauntlet/exceptions.tsv $'type\ttarget\treason\tdate\tbranch\n'
   create_missing .gauntlet/config $'touched=off\n'
+  create_missing .gauntlet/.gitignore "$GAUNTLET_GITIGNORE"
   if [ ! -d .gauntlet/rules ]; then
     mkdir -p .gauntlet/rules || die "cannot create .gauntlet/rules"
     printf 'created .gauntlet/rules/\n'

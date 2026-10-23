@@ -307,3 +307,18 @@ test_base_has_and_index_has_treat_glob_characters_literally() {
     assert_eq 1 "$STATUS" "index_has does not glob [$p]: $OUT"
   done
 }
+
+# I1 (d): the gate's own error for a base it cannot find says how to name the right one. The
+# demo is a repo whose default branch is master and that has no origin/HEAD: the fallback is main.
+test_check_ci_on_a_repo_without_main_says_how_to_set_the_base() {
+  mkrepo
+  must git branch -m main master
+  run "$G" check --ci
+  assert_eq 2 "$STATUS" "check --ci: $OUT"
+  assert_contains "$OUT" "gauntlet: unknown ref: main; run gauntlet base <ref> or set base= in .gauntlet/config"
+  run "$G" check --ci --base nope
+  assert_eq 2 "$STATUS" "check --ci --base nope: $OUT"
+  assert_contains "$OUT" "gauntlet: unknown ref: nope; run gauntlet base <ref> or set base= in .gauntlet/config"
+  run "$G" check --ci --base master
+  assert_eq 0 "$STATUS" "check --ci --base master: $OUT"
+}

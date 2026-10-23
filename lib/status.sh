@@ -301,6 +301,8 @@ doctor_checks() {
   : > "$scratch/causes" || return 2
   doctor_tools "$root" "$scratch" || return 2
   doctor_hooks "$root" "$scratch" || return 2
+  doctor_ignored || return 2
+  doctor_base || return 2
   doctor_baseline "$root" "$scratch" || return 2
   doctor_config "$root" "$scratch" || return 2
   doctor_rules "$root" "$scratch" || return 2
@@ -483,6 +485,48 @@ doctor_hook_file() {
     doctor_fail "$stage gate missing from $shown: add this line by hand as the first command, after the shebang line if there is one: $gate"
   else
     doctor_fail "$stage gate missing from $shown: run gauntlet install-hooks"
+  fi
+  return 0
+}
+
+# doctor_ignored: the vendored runner is committed so that a clone and CI have the one the
+# hooks call, and git must not ignore it: a root .gitignore with bin/ or lib/ is the usual
+# cause. One path of bin/, one of lib/ and one of lib/formats/ stand for the three directories
+# (a file pattern such as *.sh hides single files). A tracked file is not subject to ignore
+# rules, so check-ignore says nothing for a runner that was committed. The FAIL names each
+# path with the pattern git matched (check-ignore -v: <source>:<line>:<pattern> <tab> <path>).
+doctor_ignored() {
+  local path rc hit list=''
+  for path in .gauntlet/bin/gauntlet .gauntlet/lib/core.sh .gauntlet/lib/formats/path-line.md; do
+    rc=0
+    git check-ignore -q -- "$path" || rc=$?
+    case "$rc" in
+      0) ;;
+      1) continue ;;
+      *) return 2 ;;
+    esac
+    hit=$(git check-ignore -v -- "$path") || return 2
+    hit=${hit%%"$DETECT_TAB"*}
+    list="$list${list:+, }$path by $hit"
+  done
+  if [ -n "$list" ]; then
+    doctor_fail "runner files are ignored by git ($list): add !bin/ and !lib/ to .gauntlet/.gitignore, or remove the root pattern"
+  else
+    doctor_ok "runner files are not ignored by git"
+  fi
+  return 0
+}
+
+# doctor_base: the base the gates compare with must resolve, by the resolution they use
+# (resolve_base, then base_resolves, which fetches an origin/ ref first as merge_base does). The
+# usual cause is a default branch that is not main in a repo without origin/HEAD.
+doctor_base() {
+  local base
+  base=$(resolve_base "") || return 2
+  if base_resolves "$base"; then
+    doctor_ok "base $base"
+  else
+    doctor_fail "base $base does not resolve; $BASE_HINT"
   fi
   return 0
 }

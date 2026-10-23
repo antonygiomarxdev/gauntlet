@@ -1098,7 +1098,7 @@ test_doctor_blank_and_comment_config_lines_are_ok() {
 test_doctor_base_key_is_accepted() {
   mkrepo
   doctor_install
-  printf 'base=origin/main\ntouched=off\n' > .gauntlet/config
+  printf 'base=main\ntouched=off\n' > .gauntlet/config
   run "$G" doctor
   assert_eq 0 "$STATUS" "doctor with base"
   assert_contains "$OUT" "ok config keys"
@@ -1585,4 +1585,115 @@ test_doctor_flags_an_old_pre_push_command_in_a_hook_manager_config() {
   run "$G" doctor
   assert_eq 1 "$STATUS" "doctor: $OUT"
   assert_contains "$OUT" "FAIL gate missing from lefthook.yml: run gauntlet install-hooks"
+}
+
+# I1: doctor sees a runner that git ignores. The demo is a root .gitignore with bin/ and lib/.
+test_doctor_fails_when_a_root_ignore_hides_the_runner() {
+  mkrepo
+  doctor_install
+  printf 'bin/\nlib/\n' > .gitignore
+  must rm .gauntlet/.gitignore
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_eq 1 "$(doctor_fails)" "one FAIL line: $OUT"
+  assert_contains "$OUT" "FAIL runner files are ignored by git (.gauntlet/bin/gauntlet by .gitignore:1:bin/, .gauntlet/lib/core.sh by .gitignore:2:lib/"
+  assert_contains "$OUT" "): add !bin/ and !lib/ to .gauntlet/.gitignore, or remove the root pattern"
+  printf 'STATUS.md\n!bin/\n!lib/\n' > .gauntlet/.gitignore
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor after the fix: $OUT"
+}
+
+# A file pattern of the root ignore (*.sh) is not undone by !lib/: the file is named.
+test_doctor_names_the_file_pattern_that_hides_a_lib_file() {
+  mkrepo
+  doctor_install
+  printf '*.sh\n' > .gitignore
+  printf 'STATUS.md\n!bin/\n!lib/\n' > .gauntlet/.gitignore
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" ".gauntlet/lib/core.sh by .gitignore:1:*.sh"
+  printf '*.md\n' > .gitignore
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor with *.md ignored: $OUT"
+  assert_contains "$OUT" ".gauntlet/lib/formats/path-line.md by .gitignore:1:*.md"
+  assert_not_contains "$OUT" "lib/core.sh by"
+}
+
+# A runner that is tracked is not subject to ignore rules, so it is not a FAIL.
+test_doctor_accepts_a_tracked_runner_under_a_root_ignore() {
+  mkrepo
+  doctor_install
+  must git add -f .gauntlet
+  printf 'bin/\nlib/\n' > .gitignore
+  must rm .gauntlet/.gitignore
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "ok runner files are not ignored by git"
+}
+
+# I1 (c): the base must resolve, by the resolution the gates use.
+test_doctor_fails_when_the_base_does_not_resolve() {
+  mkrepo
+  must git branch -m main master
+  doctor_install
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor on a repo whose only branch is master: $OUT"
+  assert_eq 1 "$(doctor_fails)" "one FAIL line: $OUT"
+  assert_contains "$OUT" "FAIL base main does not resolve; run gauntlet base <ref> or set base= in .gauntlet/config"
+  must git config branch.master.gauntletBase master
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor after gauntlet base master: $OUT"
+  assert_contains "$OUT" "ok base master"
+  must git config --unset branch.master.gauntletBase
+  printf 'base=master\n' > .gauntlet/config
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor after base= in the config: $OUT"
+}
+
+# The demo of the final review: a clone whose default branch is master. With origin/HEAD the base
+# is origin/master; without it (a remote added by hand, or set-head removed) the fallback main
+# does not exist, and the command that fixes it is named.
+test_doctor_on_a_clone_whose_default_branch_is_master() {
+  must git init -q --bare -b master "$TMP/remote.git"
+  mkrepo
+  must git branch -m main master
+  must git remote add origin "$TMP/remote.git"
+  must git push -q origin master
+  must cd "$TMP"
+  must git clone -q "$TMP/remote.git" "$TMP/clone"
+  must cd "$TMP/clone"
+  must git config user.name "Test User"
+  must git config user.email "test@example.com"
+  must git config commit.gpgsign false
+  must mkdir -p .gauntlet/rules
+  must touch .gauntlet/config .gauntlet/baseline.tsv .gauntlet/exceptions.tsv
+  doctor_install
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor in the clone: $OUT"
+  assert_contains "$OUT" "ok base origin/master"
+  must git remote set-head origin -d
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor without origin/HEAD: $OUT"
+  assert_contains "$OUT" "FAIL base main does not resolve; run gauntlet base <ref> or set base= in .gauntlet/config"
+}
+
+# The gates fetch an origin/ ref before they use it, so doctor must too: a base that only exists
+# on the remote is resolvable, and the check must not call it missing.
+test_doctor_resolves_an_origin_base_the_way_the_gates_do() {
+  must git init -q --bare -b main "$TMP/remote.git"
+  mkrepo
+  must git remote add origin "$TMP/remote.git"
+  must git push -q origin main
+  must git push -q origin main:dev
+  must git update-ref -d refs/remotes/origin/dev
+  doctor_install
+  must git config branch.main.gauntletBase origin/dev
+  if git rev-parse -q --verify refs/remotes/origin/dev > /dev/null; then fail "origin/dev is already local: the fixture does not test the fetch"; fi
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "ok base origin/dev"
+  must git config branch.main.gauntletBase origin/gone
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor with an origin ref that does not exist: $OUT"
+  assert_contains "$OUT" "FAIL base origin/gone does not resolve"
 }

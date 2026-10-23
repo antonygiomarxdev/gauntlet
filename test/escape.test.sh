@@ -553,3 +553,40 @@ test_the_lock_messages_print_the_path_escaped() {
     assert_clean "$OUT" "the lock that cannot be made"
   fi
 }
+
+# --- W3b: the runner ignore and the base ---
+
+# The base is whatever the config says: a ref that holds a control byte (git forbids one in a ref
+# name, but not in branch.<b>.gauntletBase) is printed spelled, by doctor and by the gate.
+test_the_base_that_does_not_resolve_is_printed_escaped() {
+  local ref
+  mkrepo
+  must cp -R "$ROOT/bin" "$ROOT/lib" .gauntlet/
+  ref=$(printf 'x\033[2Jy')
+  must git config branch.main.gauntletBase "$ref"
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" 'FAIL base x\x1b[2Jy does not resolve; run gauntlet base <ref>'
+  assert_clean "$OUT" "doctor"
+  run "$G" check --ci
+  assert_eq 2 "$STATUS" "check --ci: $OUT"
+  assert_contains "$OUT" 'gauntlet: unknown ref: x\x1b[2Jy; run gauntlet base <ref>'
+  assert_clean "$OUT" "check --ci"
+  must git config branch.main.gauntletBase "origin/$ref"
+  must git remote add origin "$TMP/nowhere"
+  run "$G" check --ci
+  assert_contains "$OUT" 'gauntlet: fetch of origin/x\x1b[2Jy failed; using the local ref'
+  assert_clean "$OUT" "the failed fetch"
+}
+
+# doctor prints the ignore pattern git matched, and the pattern is the project's text: [b<ESC>]in/
+# matches bin/ and holds the byte. (git quotes the source file's path itself.)
+test_the_ignore_pattern_is_printed_escaped() {
+  mkrepo
+  must cp -R "$ROOT/bin" "$ROOT/lib" .gauntlet/
+  printf '[b\033]in/\n' > .gitignore
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" 'FAIL runner files are ignored by git (.gauntlet/bin/gauntlet by .gitignore:1:[b\x1b]in/)'
+  assert_clean "$OUT" "doctor"
+}

@@ -38,6 +38,28 @@ resolve_base() {
   fi
 }
 
+# BASE_HINT: what to do when the base does not resolve. The default branch of a repo is not
+# always main, and a repo without origin/HEAD falls back to it. The gates and doctor say the same.
+BASE_HINT='run gauntlet base <ref> or set base= in .gauntlet/config'
+
+# fetch_base_ref <ref>: bring an origin/ ref up to date, as the gates do before they use it;
+# a ref of another kind is left alone. Returns git's status. An explicit refspec stores the ref
+# even in a single-branch clone. The prompt is off so a credential request cannot stall a hook
+# or CI.
+fetch_base_ref() {
+  case "$1" in
+    origin/*) GIT_TERMINAL_PROMPT=0 git fetch --quiet origin "+refs/heads/${1#origin/}:refs/remotes/$1" ;;
+  esac
+}
+
+# base_resolves <ref>: succeed when <ref> names a commit once the gates' own fetch has run (a
+# failed fetch is not an error here: a ref that is already local still resolves). doctor asks this
+# with the ref resolve_base gives, so it judges the base the way merge_base does.
+base_resolves() {
+  fetch_base_ref "$1" > /dev/null 2>&1 || true
+  git rev-parse --verify -q "$1^{commit}" > /dev/null
+}
+
 # merge_base <ref>: print the sha where HEAD forked from ref. An origin/ ref is
 # fetched first; a failed fetch warns and uses the local ref. Exits 2 when ref
 # does not exist or no merge-base is found. A shallow clone is named as the
@@ -46,16 +68,10 @@ resolve_base() {
 # bare "$(...)", which mask the exit.
 merge_base() {
   local ref=$1 sha
-  case "$ref" in
-    origin/*)
-      # An explicit refspec stores the ref even in a single-branch clone. The
-      # prompt is off so a credential request cannot stall a hook or CI.
-      if ! GIT_TERMINAL_PROMPT=0 git fetch --quiet origin "+refs/heads/${ref#origin/}:refs/remotes/$ref"; then
-        printf 'gauntlet: fetch of %s failed; using the local ref\n' "$ref" >&2
-      fi
-      ;;
-  esac
-  git rev-parse --verify -q "$ref^{commit}" >/dev/null || die "unknown ref: $ref"
+  if ! fetch_base_ref "$ref"; then
+    printf 'gauntlet: fetch of %s failed; using the local ref\n' "$(path_spell "$ref")" >&2
+  fi
+  git rev-parse --verify -q "$ref^{commit}" >/dev/null || die "unknown ref: $ref; $BASE_HINT"
   if sha=$(git merge-base HEAD "$ref") && [ -n "$sha" ]; then
     printf '%s\n' "$sha"
     return 0
