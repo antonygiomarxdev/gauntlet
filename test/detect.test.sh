@@ -472,6 +472,48 @@ test_pipeline_with_a_bad_rg_flag_before_a_filter_is_a_broken_detector() {
   assert_contains "$OUT" "no-such-flag"
 }
 
+# W2b re-review N2. `bash -o pipefail` is not redundant next to the PIPESTATUS check: in `a | b && c` the
+# `&&` runs the next command on b's status alone, and c's own status then replaces the pipeline's in
+# PIPESTATUS. With pipefail the crashed pipeline fails, `&&` skips c, and the check sees the pipeline.
+test_a_crash_before_cat_in_a_chain_with_and_is_a_broken_detector() {
+  mkrepo
+  detect_lib
+  : > "$TMP/files.txt"
+  rule r engine=linter "detector=sh -c 'echo boom >&2; exit 2' | cat && echo a.ts:1:x"
+  run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "broken detector: r: exit 2"
+  assert_contains "$OUT" "boom"
+  rule t engine=linter "detector=sh -c 'echo boom >&2; exit 2' | cat && true"
+  run run_detector .gauntlet/rules/t.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 2 "$STATUS" "a crash before cat and then true: $OUT"
+  assert_contains "$OUT" "broken detector: t: exit 2"
+}
+
+# The documented limit of the check (lib/detect.sh, detect_batch): it reads the PIPESTATUS of the last
+# pipeline the command string ran. A crash that the string hides from that pipeline is not seen. These
+# are the three forms known to hide one: a subshell (a filter that exits 1 on empty input is the
+# pipeline's status there), `set -e` (the shell ends with the filter's 1 before the check runs) and
+# `|| true`. They pass as "no matches", as documented; if the check ever learns to see them, these
+# tests are the ones to change.
+test_the_pipeline_check_limit_is_pinned_for_subshell_set_e_and_or_true() {
+  mkrepo
+  detect_lib
+  : > "$TMP/files.txt"
+  rule sub engine=linter "detector=(sh -c 'echo boom >&2; exit 2' | grep -v nothing-here)"
+  run run_detector .gauntlet/rules/sub.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 0 "$STATUS" "a crash inside a subshell is not seen (documented limit): $OUT"
+  assert_eq "" "$(cat "$TMP/out.tsv")" "no rows"
+  rule sete engine=linter "detector=set -e; sh -c 'echo boom >&2; exit 2' | grep -v nothing-here"
+  run run_detector .gauntlet/rules/sete.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 0 "$STATUS" "a crash under set -e is not seen (documented limit): $OUT"
+  assert_eq "" "$(cat "$TMP/out.tsv")" "no rows"
+  rule ort engine=linter "detector=sh -c 'echo boom >&2; exit 2' | grep -v nothing-here || true"
+  run run_detector .gauntlet/rules/ort.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 0 "$STATUS" "a crash before || true is not seen (documented limit): $OUT"
+  assert_eq "" "$(cat "$TMP/out.tsv")" "no rows"
+}
+
 # A stage cut off because a later stage closed the pipe early (head) is not a failure: grep
 # is killed by SIGPIPE (141) and the rows head let through are the rows of the rule. The file
 # is far bigger than a pipe buffer, so grep is still writing when head exits.

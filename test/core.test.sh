@@ -489,6 +489,18 @@ test_the_run_root_is_not_exported_to_children() {
 # M6: when the run root cannot be entered, the root that was made is still removed.
 test_a_root_that_cannot_be_entered_is_still_removed() {
   [ "$(id -u)" -ne 0 ] || { skip "root enters any directory"; return 77; }
+  # W2b re-review N7: BSD rm (macOS) stops on a directory it cannot enter and leaves it, even an empty
+  # one, so the assertion below cannot hold there. Probe the platform first, and skip with the reason.
+  local probe
+  probe=$(mktemp -d "$TMP/probe.XXXXXX") || fail "cannot make the probe directory"
+  chmod 000 "$probe"
+  rm -rf "$probe" 2> /dev/null || true
+  if [ -e "$probe" ]; then
+    chmod 700 "$probe"
+    rm -rf "$probe"
+    skip "rm -rf leaves an empty mode-000 directory on this platform (BSD rm): the removal of a root that cannot be entered cannot be tested here"
+    return 77
+  fi
   mkrepo
   must mkdir -p "$TMP/priv" "$TMP/shim"
   local real_mktemp
@@ -501,6 +513,10 @@ printf '%s\n' "\$dir"
 SHIM
   must chmod +x "$TMP/shim/mktemp"
   run env PATH="$TMP/shim:$PATH" TMPDIR="$TMP/priv" "$G" base
+  # The directory the shim made may still be mode 000 if the cleanup failed: make everything under
+  # TMPDIR removable before anything is asserted, so a failed run never leaves a directory the
+  # harness cannot delete.
+  chmod -R u+rwx "$TMP/priv" 2> /dev/null || true
   assert_eq 2 "$STATUS" "status: $OUT"
   assert_contains "$OUT" "cannot enter the temp directory"
   assert_eq "" "$(ls -A "$TMP/priv")" "what the run left in TMPDIR"
@@ -527,6 +543,40 @@ test_every_mktemp_call_is_inside_the_run_root() {
     run env TMPDIR="$TMP/priv" PATH="$TMP/shim:$PATH" "$G" $cmd
     runs=$((runs + 1))
     [ -s "$TMP/mktemp.log" ] || fail "gauntlet $cmd made no temp file at all: $OUT"
+  done
+  # The commands that write a hook or a rule file make a temp file of their own (the new text
+  # goes into a temp file, then over the target, so the target keeps its mode): install-hooks edits an
+  # existing hook and upgrades an old pre-push line, promote rewrites a rule's severity, install
+  # does both after vendoring. The shim saw only the six commands above before (W2b re-review N3),
+  # so a bare mktemp at these sites passed. The allow-list is still empty.
+  must cp -R "$ROOT/bin" "$ROOT/lib" .gauntlet/
+  printf '#!/bin/sh\necho mine\n' > .git/hooks/pre-commit
+  printf '#!/bin/sh\n%s\n' "$(hook_const HOOK_OLD_LINE_CI)" > .git/hooks/pre-push
+  chmod 755 .git/hooks/pre-commit .git/hooks/pre-push
+  rule shadowed severity=shadow
+  for cmd in "install-hooks" "promote shadowed" "install"; do
+    cp "$TMP/mktemp.log" "$TMP/mktemp.before"
+    # shellcheck disable=SC2086 # the words of $cmd are the arguments
+    run env TMPDIR="$TMP/priv" PATH="$TMP/shim:$PATH" "$G" $cmd
+    runs=$((runs + 1))
+    assert_eq 0 "$STATUS" "gauntlet $cmd: $OUT"
+    if cmp -s "$TMP/mktemp.before" "$TMP/mktemp.log"; then fail "gauntlet $cmd made no temp file at all: $OUT"; fi
+    printf '#!/bin/sh\necho mine\n' > .git/hooks/pre-commit
+    printf '#!/bin/sh\n%s\n' "$(hook_const HOOK_OLD_LINE_CI)" > .git/hooks/pre-push
+  done
+  # The other two ways a hook is written: a hook that does not exist yet, and an empty one.
+  rm -f .git/hooks/pre-commit .git/hooks/pre-push
+  for cmd in "create" "empty"; do
+    if [ "$cmd" = empty ]; then
+      : > .git/hooks/pre-commit
+      : > .git/hooks/pre-push
+      chmod 755 .git/hooks/pre-commit .git/hooks/pre-push
+    fi
+    cp "$TMP/mktemp.log" "$TMP/mktemp.before"
+    run env TMPDIR="$TMP/priv" PATH="$TMP/shim:$PATH" "$G" install-hooks
+    runs=$((runs + 1))
+    assert_eq 0 "$STATUS" "gauntlet install-hooks ($cmd): $OUT"
+    if cmp -s "$TMP/mktemp.before" "$TMP/mktemp.log"; then fail "gauntlet install-hooks ($cmd) made no temp file at all: $OUT"; fi
   done
   local line template roots=0 stray=
   while IFS= read -r line; do

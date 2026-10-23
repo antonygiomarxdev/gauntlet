@@ -141,7 +141,12 @@ exit "${gauntlet_ps[gauntlet_n - 1]}"'
 # crash in any stage of its last pipeline counts, not only the last stage's status
 # (`rg ... | grep ...` cannot hide an rg that did not run). That covers the last pipeline
 # of the command text only: `a | b; c | d` is judged by `c | d`, and so is a loop by the
-# pipeline it ran last. A command that calls `exit` itself is judged by that status. The
+# pipeline it ran last. A command that calls `exit` itself is judged by that status. Three more
+# forms hide a crash: a subshell `(a | grep x)` (its status, which pipefail makes the filter's 1,
+# is all the check sees), `set -e` (the shell ends on that 1 before the check runs) and
+# `a | grep x || true`. They are documented limits and pinned by tests. `-o pipefail` is not
+# redundant: in `a | b && c` it is what makes the failed pipeline skip c, so the check sees the
+# pipeline and not c's own status. The
 # subshell drops RIPGREP_CONFIG_PATH: a developer's ripgrep flags (--smart-case,
 # --hidden) would change the rows on one machine and not on CI.
 detect_batch() {
