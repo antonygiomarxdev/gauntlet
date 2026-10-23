@@ -98,19 +98,39 @@ skip_names() {
 # names with `"`, `\` or tabs unless -z is given, and such names would never
 # match a path the working tree reports. The output goes to a temp file first,
 # because command substitution drops NUL bytes and a pipe would hide git's status.
-# Every listing of paths passes through here, so this is the one place that refuses
-# a path with a tab or a newline (R31): the baseline and the fingerprints are tab
-# and line separated files, and such a name would corrupt them.
+# This is for listings of the tree that survives (tracked_files, staged_files, all_files):
+# it is the one place that refuses a path with a tab or a newline (R31), because the
+# baseline and the fingerprints are tab and line separated files, and such a name
+# would corrupt them.
 git_nul_lines() {
-  local tmp rc=0 tagged=0 arg
+  git_nul_run refuse "$@"
+}
+
+# git_nul_diff_lines <git-args...>: git_nul_lines for a diff or a tree listing, which also
+# names the paths a change removes (the old side of a rename, a deletion, the base's own
+# files). Those lists only scope checks and re-key renames, and no baseline row holds an
+# odd path, so an odd name is not refused: refusing it would fail the very change that
+# renames or deletes the file. Its tab and newline become ?, one name still one line.
+git_nul_diff_lines() {
+  git_nul_run neutralise "$@"
+}
+
+# git_nul_run <refuse|neutralise> <git-args...>: the work of the two above.
+git_nul_run() {
+  local mode=$1 tmp rc=0 tagged=0 arg
+  shift
   # ls-files -t puts "<tag> " in front of each name; the message leaves it out.
   for arg in "$@"; do
     if [ "$arg" = -t ]; then tagged=1; fi
   done
   tmp=$(tmp_new) || return 2
   git "$@" > "$tmp" || rc=2
-  if [ "$rc" -eq 0 ]; then odd_paths_refuse "$tmp" "$tagged" || rc=2; fi
-  if [ "$rc" -eq 0 ]; then tr '\0' '\n' < "$tmp" || rc=2; fi
+  if [ "$rc" -eq 0 ] && [ "$mode" = refuse ]; then odd_paths_refuse "$tmp" "$tagged" || rc=2; fi
+  if [ "$rc" -eq 0 ]; then
+    # One pass: NUL ends a name (becomes a newline); in neutralise mode a tab or newline
+    # inside a name becomes ?. In refuse mode there is none left to touch.
+    LC_ALL=C tr '\t\n\0' '??\n' < "$tmp" || rc=2
+  fi
   rm -f "$tmp"
   return "$rc"
 }

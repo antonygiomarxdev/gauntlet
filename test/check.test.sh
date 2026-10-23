@@ -1379,6 +1379,127 @@ test_gates_refuse_a_newline_in_a_path() {
   odd_path_refused 'c\nd.ts'
 }
 
+# C1: R31 refuses an odd path that is still in the tree, never the change that removes it.
+# odd_base_repo: main tracks 'a<TAB>b.ts' (committed before the gate existed, so the baseline
+# was written without it) and r.ts with one violation; branch feat is checked out, clean.
+odd_base_repo() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  printf 'TODO old\n' > r.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  rebaseline
+  assert_eq 0 "$STATUS" "main baseline"
+  printf 'x\n' > "$(printf 'a\tb.ts')"
+  commit_all main
+  must git checkout -q -b feat
+}
+
+# odd_path_gone: after the change, no odd path is left in the tree.
+odd_path_gone() {
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "rename the file"
+  assert_not_contains "$OUT" "path with a tab"
+}
+
+test_a_branch_can_rename_an_odd_path_away() {
+  odd_base_repo
+  must git mv "$(printf 'a\tb.ts')" ab.ts
+  must git mv r.ts r2.ts
+  rebaseline
+  assert_eq 0 "$STATUS" "feat baseline: $OUT"
+  run "$G" check --staged
+  odd_path_gone
+  commit_all rename
+  gate
+  odd_path_gone
+  assert_contains "$OUT" "gauntlet: ok"
+  assert_not_contains "$OUT" "[new]"
+}
+
+test_a_branch_can_delete_an_odd_path() {
+  odd_base_repo
+  must git rm -q "$(printf 'a\tb.ts')"
+  rebaseline
+  assert_eq 0 "$STATUS" "feat baseline: $OUT"
+  run "$G" check --staged
+  odd_path_gone
+  commit_all delete
+  gate
+  odd_path_gone
+  assert_contains "$OUT" "gauntlet: ok"
+}
+
+test_a_branch_can_delete_a_newline_path() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  rebaseline
+  printf 'x\n' > "$(printf 'c\nd.ts')"
+  commit_all main
+  must git checkout -q -b feat
+  must git rm -q "$(printf 'c\nd.ts')"
+  rebaseline
+  run "$G" check --staged
+  odd_path_gone
+  commit_all delete
+  gate
+  odd_path_gone
+  assert_contains "$OUT" "gauntlet: ok"
+}
+
+# The base's own rule listing is a tree listing too: a rule file with an odd name that the
+# branch removes does not make the gate refuse the change. The removal is read as a removal.
+test_a_branch_can_remove_a_rule_file_with_an_odd_name() {
+  gate_setup 'ok'
+  must git checkout -q main
+  printf 'junk\n' > ".gauntlet/rules/$(printf 'x\ty').md"
+  commit_all odd-rule
+  must git checkout -q -b feat2
+  must git rm -q ".gauntlet/rules/$(printf 'x\ty').md"
+  rebaseline
+  commit_all remove-odd-rule
+  gate
+  assert_not_contains "$OUT" "path with a tab"
+  assert_contains "$OUT" "rule file removed"
+}
+
+# An unstaged edit of a tracked odd file is in the unstaged diff only to be compared with the
+# staged paths; the commit that does not stage it goes through.
+test_an_unstaged_edit_of_an_odd_path_does_not_stop_a_commit() {
+  odd_base_repo
+  printf 'more\n' >> "$(printf 'a\tb.ts')"
+  printf 'more\n' >> a.ts
+  must git add a.ts
+  run "$G" check --staged
+  assert_eq 0 "$STATUS" "check --staged: $OUT"
+  assert_not_contains "$OUT" "path with a tab"
+}
+
+test_renaming_into_an_odd_name_is_still_refused() {
+  odd_base_repo
+  must git mv a.ts "$(printf 'e\tf.ts')"
+  run "$G" check --staged
+  odd_path_refused 'e\tf.ts'
+  commit_all rename
+  gate
+  odd_path_refused 'e\tf.ts'
+}
+
+test_an_odd_path_that_survives_is_still_refused() {
+  odd_base_repo
+  printf 'more\n' >> a.ts
+  must git add -A
+  run "$G" check --staged
+  assert_eq 0 "$STATUS" "check --staged ignores a tracked odd path it does not stage: $OUT"
+  run "$G" baseline
+  odd_path_refused 'a\tb.ts'
+  commit_all edit
+  gate
+  odd_path_refused 'a\tb.ts'
+}
+
 # Counts read as English: 1 rule, 2 rules; 1 problem, 2 problems.
 test_report_counts_are_singular_for_one() {
   gate_setup 'ok'

@@ -89,6 +89,38 @@ test_listing_names_a_few_odd_paths_and_counts_the_rest() {
   assert_contains "$OUT" "and 2 more"
 }
 
+# A diff or a tree listing also names what a change removes, so it does not refuse an odd
+# path: the tab and the newline become ?, and one name stays one line (C1).
+test_diff_listing_neutralises_an_odd_path_instead_of_refusing() {
+  mkrepo
+  paths_lib
+  printf 'x\n' > "$(printf 'a\tb.ts')"
+  printf 'y\n' > "$(printf 'c\nd.ts')"
+  printf 'z\n' > plain.ts
+  must git add -A
+  must git commit -q -m base
+  must git rm -q "$(printf 'a\tb.ts')"
+  must git mv "$(printf 'c\nd.ts')" cd.ts
+  must git add -A
+  run git_nul_diff_lines -c core.quotepath=off diff --cached -M -z --name-status
+  assert_eq 0 "$STATUS" "diff listing: $OUT"
+  assert_eq 'D
+a?b.ts
+R100
+c?d.ts
+cd.ts' "$OUT" "name-status tokens, one per line"
+  run git_nul_diff_lines -c core.quotepath=off ls-tree --full-tree -r --name-only -z HEAD
+  assert_eq 0 "$STATUS" "tree listing: $OUT"
+  assert_contains "$OUT" 'a?b.ts'
+  assert_contains "$OUT" 'plain.ts'
+  # The surviving-tree listing still refuses what is left of the change.
+  printf 'x\n' > "$(printf 'e\tf.ts')"
+  must git add -A
+  run staged_files
+  assert_eq 2 "$STATUS" "staged_files: $OUT"
+  assert_contains "$OUT" 'e\tf.ts'
+}
+
 # The names that are fine stay fine: spaces, quotes, a backslash, unicode.
 test_listing_accepts_names_without_a_tab_or_newline() {
   mkrepo

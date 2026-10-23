@@ -52,7 +52,7 @@ check_run() {
   sha=$(merge_base "$base") || return 2
   # Every file the branch changes, deletions included: the scope of declared checks.
   # --no-renames: a rename lists both its old path (deleted) and its new one.
-  git_nul_lines -c core.quotepath=off diff --name-only --no-renames -z "$sha" HEAD > "$scratch/changed" || return 2
+  git_nul_diff_lines -c core.quotepath=off diff --name-only --no-renames -z "$sha" HEAD > "$scratch/changed" || return 2
   measure all "$scratch/now" || return 2
   rule_ids > "$scratch/ids" || return 2
   n_rules=$(awk 'END { print NR }' "$scratch/ids") || return 2
@@ -97,7 +97,7 @@ check_run() {
   else
     # One diff per run (R23). The rename map re-keys the base rows before the
     # new-violation comparison; the touched gate reads the same diff.
-    git_nul_lines -c core.quotepath=off diff -M -z --name-status "$sha" HEAD > "$scratch/name-status" || return 2
+    git_nul_diff_lines -c core.quotepath=off diff -M -z --name-status "$sha" HEAD > "$scratch/name-status" || return 2
     rename_pairs "$scratch/name-status" > "$scratch/renames.tsv" || return 2
     rekey_base "$scratch/renames.tsv" "$scratch/base.tsv" > "$scratch/base.rekeyed.tsv" || return 2
     new_rows block "$scratch" "$scratch/base.rekeyed.tsv" > "$scratch/new.rows" || return 2
@@ -367,7 +367,7 @@ check_in_scope() {
 }
 
 # diff_entries <name-status-file>: one row per entry of a `git diff -M -z
-# --name-status` output (one token per line, as git_nul_lines writes it): status,
+# --name-status` output (one token per line, as git_nul_diff_lines writes it): status,
 # old path, new path (the old path again when there is no second path). Entries
 # under .gauntlet/ are dropped (R15). The parser the touched gate and the rename
 # map share, so the -z handling lives in one place.
@@ -516,7 +516,7 @@ touched_mode() {
 
 # cmp_touched <diff> <base.tsv> <measure.tsv> <rules.tsv> <waived>: the touched
 # gate (opt-in via config touched=on). <diff> is `git diff -M -z --name-status`
-# output, one token per line (git_nul_lines): the base-to-tree diff the caller
+# output, one token per line (git_nul_diff_lines): the base-to-tree diff the caller
 # judges, the merge-base to HEAD in check --ci, the index against HEAD at commit.
 # Each file it changes must come out with less block debt than it had at base.
 # Prints one tab row per file that breaks that rule (path, base, now, reason) and
@@ -608,7 +608,7 @@ cmp_loosened_in() {
   exc_new_rows "$mb" "$scratch/exc.new" || return 2
   awk -F "$DETECT_TAB" '$1 == "loosen" { print $2 }' "$scratch/exc.new" > "$scratch/new.loosen" || return 2
   awk -F "$DETECT_TAB" '$1 == "remove" { print $2 }' "$scratch/exc.new" > "$scratch/new.remove" || return 2
-  git_nul_lines -c core.quotepath=off ls-tree --full-tree -r --name-only -z "$mb" -- .gauntlet/rules > "$scratch/base.rules" || return 2
+  git_nul_diff_lines -c core.quotepath=off ls-tree --full-tree -r --name-only -z "$mb" -- .gauntlet/rules > "$scratch/base.rules" || return 2
 
   : > "$scratch/out"
   while IFS= read -r name; do
@@ -865,7 +865,7 @@ check_staged_run() {
 
   # staged.diff: HEAD against the index, renames followed. staged.paths: every
   # path it names, both sides of a rename and deletions included.
-  git_nul_lines -c core.quotepath=off diff --cached -M -z --name-status > "$scratch/staged.diff" || return 2
+  git_nul_diff_lines -c core.quotepath=off diff --cached -M -z --name-status > "$scratch/staged.diff" || return 2
   awk '
     BEGIN { need = 0 }
     need == 0 { need = ($0 ~ /^[RC]/) ? 2 : 1; next }
@@ -874,7 +874,7 @@ check_staged_run() {
 
   # Partial staging (decision 3): a staged path that also has unstaged changes.
   # The baseline is left out: this hook is the one that writes it.
-  git_nul_lines -c core.quotepath=off diff --name-only --no-renames -z > "$scratch/unstaged" || return 2
+  git_nul_diff_lines -c core.quotepath=off diff --name-only --no-renames -z > "$scratch/unstaged" || return 2
   partial=$(GL_STAGED="$scratch/staged.paths" GL_BASELINE=.gauntlet/baseline.tsv awk '
     FILENAME == ENVIRON["GL_STAGED"] { if ($0 != ENVIRON["GL_BASELINE"]) staged[$0] = 1; next }
     $0 in staged { hit = 1 }
