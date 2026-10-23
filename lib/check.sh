@@ -47,7 +47,7 @@ check_ci() {
 # collected in a body file so the header can carry the whole-run time.
 check_run() {
   local scratch=$1 base_ref=$2 start=$3 root base sha id rf sev fix atb
-  local known=0 n_rules ms end n body problems
+  local known=0 n_rules ms end n body new_n=0 global_n=0 baseline_n=0
   root=$(repo_root) || return 2
   base=$(resolve_base "$base_ref") || return 2
   sha=$(merge_base "$base") || return 2
@@ -61,6 +61,11 @@ check_run() {
   while IFS= read -r id; do
     rf="$root/.gauntlet/rules/$id.md"
     sev=$(rule_get "$rf" severity) || return 2
+    # Fail closed: an unknown severity would otherwise match no comparison.
+    if ! severity_rank "$sev" > /dev/null; then
+      printf 'gauntlet: rule %s: bad severity [%s]\n' "$id" "$sev" >&2
+      return 2
+    fi
     fix=$(rule_get "$rf" fix) || return 2
     atb=0
     if git cat-file -e "$sha:.gauntlet/rules/$id.md" 2>/dev/null; then atb=1; fi
@@ -80,9 +85,7 @@ check_run() {
   LC_ALL=C sort -t "$DETECT_TAB" -k3,3n "$scratch/now/located.tsv" > "$scratch/located.byline" || return 2
 
   body="$scratch/body"
-  problems="$scratch/problems"
   : > "$body"
-  : > "$problems"
   if [ "$known" -eq 0 ]; then
     printf 'note: no baseline at base; new, global, shadow and track checks skipped\n' >> "$body"
   else
@@ -90,22 +93,29 @@ check_run() {
     if [ -s "$scratch/new.rows" ]; then
       printf '[new]\n' >> "$body"
       violation_lines "$scratch/new.rows" >> "$body"
-      cut -f1 "$scratch/new.rows" >> "$problems"
     fi
+    new_n=$(awk 'END { print NR }' "$scratch/new.rows") || return 2
     global_rows block "$scratch" > "$scratch/global.rows" || return 2
     if [ -s "$scratch/global.rows" ]; then
       printf '[global]\n' >> "$body"
       awk -F '\t' '{ printf "  %s  %s → %s\n", $1, $2, $3 }' "$scratch/global.rows" >> "$body"
-      cut -f1 "$scratch/global.rows" >> "$problems"
     fi
+    global_n=$(count_global_extra "$scratch/new.rows" "$scratch/global.rows") || return 2
   fi
 
   # Exact: the committed baseline must be byte-equal to what the code measures.
   if ! cmp -s "$root/.gauntlet/baseline.tsv" "$scratch/now/measure.tsv"; then
-    printf '[baseline]\n  baseline differs from the code; run gauntlet baseline and commit it\n' >> "$body"
-    diff -u "$root/.gauntlet/baseline.tsv" "$scratch/now/measure.tsv" > "$scratch/diff" || true
-    awk 'NR <= 20' "$scratch/diff" >> "$body"
-    printf 'baseline\n' >> "$problems"
+    printf '[baseline]\n' >> "$body"
+    if [ -f "$root/.gauntlet/baseline.tsv" ]; then
+      printf '  baseline differs from the code; run gauntlet baseline and commit it\n' >> "$body"
+      # Labels, not paths: the output must be identical on every run.
+      diff -u -L .gauntlet/baseline.tsv -L measured "$root/.gauntlet/baseline.tsv" \
+        "$scratch/now/measure.tsv" > "$scratch/diff" || true
+      awk 'NR <= 20' "$scratch/diff" >> "$body"
+    else
+      printf '  .gauntlet/baseline.tsv is missing; run gauntlet baseline and commit it\n' >> "$body"
+    fi
+    baseline_n=1
   fi
 
   if [ "$known" -eq 1 ]; then
@@ -125,8 +135,9 @@ check_run() {
   printf '[time]\n' >> "$body"
   awk -F '\t' '{ printf "  %s  %s ms\n", $1, $2 }' "$scratch/now/time.tsv" >> "$body"
 
-  LC_ALL=C sort -u "$problems" > "$scratch/problems.u" || return 2
-  n=$(awk 'END { print NR }' "$scratch/problems.u") || return 2
+  # R18: one problem per [new] line, one per [global] rule whose rise its [new]
+  # lines do not account for, one for [baseline]. Shadow and track count nothing.
+  n=$((new_n + global_n + baseline_n))
 
   end=$(now_ms)
   ms=$((end - start))
@@ -194,6 +205,16 @@ global_rows() {
     }
   ' "$scratch/rules.tsv" "$scratch/base.tsv" "$scratch/now/measure.tsv" > "$scratch/global.raw" || return 2
   LC_ALL=C sort "$scratch/global.raw"
+}
+
+# count_global_extra <new-rows> <global-rows>: print how many [global] rules rose
+# further than their [new] lines account for (the rise came from waived paths).
+count_global_extra() {
+  GL_NEW=$1 awk -F '\t' '
+    FILENAME == ENVIRON["GL_NEW"] { newc[$1]++; next }
+    $3 - $2 > newc[$1] + 0 { n++ }
+    END { print n + 0 }
+  ' "$1" "$2"
 }
 
 # violation_lines <rows>: print each new_rows row as a violation line and its

@@ -23,9 +23,11 @@ test_fingerprint_ignores_line_shift() {
   measure_lib
   printf 'ok\nTODO here\n' > a.ts
   rule todo paths='**/*.ts'
+  must git add -A
   must measure all "$TMP/m1" todo
   printf '\n\n\n' | cat - a.ts > "$TMP/shifted.ts"
   must mv "$TMP/shifted.ts" a.ts
+  must git add -A
   must measure all "$TMP/m2" todo
   must cmp "$TMP/m1/measure.tsv" "$TMP/m2/measure.tsv"
   assert_eq "$(printf 'todo\ta.ts\tTODO here\t1')" "$(cat "$TMP/m2/measure.tsv")" "rows"
@@ -36,8 +38,10 @@ test_reformat_whole_file_same_fingerprints() {
   measure_lib
   printf '  TODO  a\n    TODO b\n' > a.ts
   rule todo paths='**/*.ts'
+  must git add -A
   must measure all "$TMP/m1" todo
   printf '\tTODO\ta\n\t\tTODO\tb\n' > a.ts
+  must git add -A
   must measure all "$TMP/m2" todo
   must cmp "$TMP/m1/measure.tsv" "$TMP/m2/measure.tsv"
   assert_eq "$(printf 'todo\ta.ts\tTODO a\t1\ntodo\ta.ts\tTODO b\t1')" "$(cat "$TMP/m1/measure.tsv")" "rows"
@@ -48,8 +52,10 @@ test_crlf_equals_lf() {
   measure_lib
   printf 'ok\nTODO here\n' > a.ts
   rule todo paths='**/*.ts'
+  must git add -A
   must measure all "$TMP/m1" todo
   printf 'ok\r\nTODO here\r\n' > a.ts
+  must git add -A
   must measure all "$TMP/m2" todo
   must cmp "$TMP/m1/measure.tsv" "$TMP/m2/measure.tsv"
 }
@@ -59,6 +65,7 @@ test_count_duplicates() {
   measure_lib
   printf 'TODO x\nTODO x\n' > a.ts
   rule todo paths='**/*.ts'
+  must git add -A
   must measure all "$TMP/m1" todo
   assert_eq "$(printf 'todo\ta.ts\tTODO x\t2')" "$(cat "$TMP/m1/measure.tsv")" "rows"
 }
@@ -69,6 +76,7 @@ test_baseline_command_writes_file() {
   printf 'TODO\n' > "my dir/ä b.ts"
   rule todo paths='**/*.ts'
   rule nothing paths='**/*.ts' "detector=rg --with-filename --line-number --no-heading 'NOPE_NEVER' {files}"
+  must git add -A
   run "$G" baseline
   assert_eq 0 "$STATUS" "status"
   assert_eq "$(printf 'todo\tmy dir/ä b.ts\tTODO\t1')" "$(cat .gauntlet/baseline.tsv)" "baseline"
@@ -78,6 +86,7 @@ test_baseline_rule_without_matches() {
   mkrepo
   printf 'ok\n' > a.ts
   rule nothing paths='**/*.ts' "detector=rg --with-filename --line-number --no-heading 'NOPE_NEVER' {files}"
+  must git add -A
   run "$G" baseline
   assert_eq 0 "$STATUS" "status"
   assert_eq "" "$(cat .gauntlet/baseline.tsv)" "baseline"
@@ -88,6 +97,7 @@ test_gauntlet_files_never_measured() {
   measure_lib
   printf 'TODO here\n' > a.ts
   rule todo
+  must git add -A
   must measure all "$TMP/m1" todo
   assert_eq "$(printf 'todo\ta.ts\tTODO here\t1')" "$(cat "$TMP/m1/measure.tsv")" "rows"
 }
@@ -96,9 +106,11 @@ test_baseline_twice_is_identical() {
   mkrepo
   printf 'TODO here\n' > a.ts
   rule todo
+  must git add -A
   run "$G" baseline
   assert_eq 0 "$STATUS" "first status"
   cp .gauntlet/baseline.tsv "$TMP/first.tsv"
+  must git add -A
   run "$G" baseline
   assert_eq 0 "$STATUS" "second status"
   must cmp "$TMP/first.tsv" .gauntlet/baseline.tsv
@@ -110,6 +122,7 @@ test_whole_program_gauntlet_rows_dropped() {
   measure_lib
   printf 'TODO here\n' > a.ts
   rule todo engine=linter paths='**' "detector=printf '.gauntlet/rules/todo.md:1:TODO\na.ts:1:TODO\n'"
+  must git add -A
   must measure all "$TMP/m1" todo
   assert_eq "$(printf 'todo\ta.ts\tTODO here\t1')" "$(cat "$TMP/m1/measure.tsv")" "rows"
 }
@@ -147,6 +160,7 @@ test_located_columns_message_to_eol() {
   measure_lib
   printf 'x\nTODO\tx\n' > a.ts
   rule todo paths='**/*.ts'
+  must git add -A
   must measure all "$TMP/m1" todo
   assert_eq "$(printf 'todo\ta.ts\t2\tTODO x\tTODO\tx')" "$(cat "$TMP/m1/located.tsv")" "located"
 }
@@ -159,6 +173,7 @@ test_baseline_skips_deleted_tracked_file() {
   must git commit -q -m "add b"
   must rm b.ts
   rule todo paths='**/*.ts'
+  must git add -A
   run "$G" baseline
   assert_eq 0 "$STATUS" "status"
   assert_eq "$(printf 'todo\ta.ts\tTODO here\t1')" "$(cat .gauntlet/baseline.tsv)" "baseline"
@@ -170,6 +185,7 @@ test_measure_writes_time_per_rule() {
   printf 'TODO here\n' > a.ts
   rule todo paths='**/*.ts'
   rule nothing paths='**/*.ts' "detector=rg --with-filename --line-number --no-heading 'NOPE_NEVER' {files}"
+  must git add -A
   must measure all "$TMP/m1" todo nothing
   assert_eq 2 "$(awk 'END { print NR }' "$TMP/m1/time.tsv")" "one row per rule"
   assert_eq "todo" "$(awk -F '\t' 'NR == 1 { print $1 }' "$TMP/m1/time.tsv")" "first rule"

@@ -25,7 +25,7 @@ measure_in() {
   local mode=$1 work=$2 root=$3 scratch=$4 id rf paths exclude t0 t1
   shift 4
   case "$mode" in
-    all) (cd "$root" && all_files) > "$scratch/inputs" || return 2 ;;
+    all) (cd "$root" && tracked_files) > "$scratch/inputs" || return 2 ;;
     staged) (cd "$root" && staged_files) > "$scratch/inputs" || return 2 ;;
     *)
       printf 'gauntlet: measure mode must be all or staged, got [%s]\n' "$mode" >&2

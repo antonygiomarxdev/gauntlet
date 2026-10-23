@@ -44,14 +44,29 @@ select_files() {
 }
 
 # all_files: print every tracked or untracked-but-not-ignored file that exists
-# in the working tree, once each. One git call tags every path: "R name" marks a
-# tracked file deleted from disk (it also appears as tracked), "? name" untracked,
-# any other tag tracked. An unmerged path appears once per stage, so names are
-# de-duplicated. No file is opened.
+# in the working tree, once each. Used by test-rules case discovery; the
+# measurement reads tracked_files instead.
 all_files() {
   local list
   list=$(git -c core.quotepath=off ls-files -t -c -d -o --exclude-standard) || return 2
-  printf '%s\n' "$list" | awk '
+  printf '%s\n' "$list" | files_from_listing
+}
+
+# tracked_files: print every file in the index that exists in the working tree,
+# once each. Untracked files are left out, so a local measurement equals what
+# CI sees (decision 2, R19).
+tracked_files() {
+  local list
+  list=$(git -c core.quotepath=off ls-files -t -c -d) || return 2
+  printf '%s\n' "$list" | files_from_listing
+}
+
+# files_from_listing: read `git ls-files -t` output on stdin. One tag marks each
+# line: "R name" marks a tracked file deleted from disk (it also appears as
+# tracked), any other tag is a live path. An unmerged path appears once per
+# stage, so names are de-duplicated. No file is opened.
+files_from_listing() {
+  awk '
     $0 == "" { next }
     {
       name = substr($0, 3)

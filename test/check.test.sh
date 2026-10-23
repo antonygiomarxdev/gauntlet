@@ -19,10 +19,17 @@ gate_setup() {
   mkrepo
   printf '%s\n' "$content" > a.ts
   rule todo paths='**/*.ts' "$@"
-  run "$G" baseline
+  rebaseline
   assert_eq 0 "$STATUS" "main baseline"
   commit_all main
   must git checkout -q -b feat
+}
+
+# rebaseline: stage everything, then regenerate the baseline. A file only
+# counts once it is in the index (R19), so stage before measuring.
+rebaseline() {
+  must git add -A
+  run "$G" baseline
 }
 
 # gate: run check --ci against main; result in $OUT and $STATUS.
@@ -33,7 +40,7 @@ gate() {
 test_new_violation_fails() {
   gate_setup 'ok'
   printf 'TODO fix\n' > a.ts
-  run "$G" baseline
+  rebaseline
   assert_eq 0 "$STATUS" "feat baseline"
   commit_all feat
   gate
@@ -48,7 +55,7 @@ test_new_violation_path_with_space() {
   gate_setup 'ok'
   mkdir -p "my dir"
   printf 'TODO\n' > "my dir/ä b.ts"
-  run "$G" baseline
+  rebaseline
   commit_all feat
   gate
   assert_eq 1 "$STATUS" "status"
@@ -58,7 +65,7 @@ test_new_violation_path_with_space() {
 test_moved_line_passes() {
   gate_setup 'TODO here'
   printf 'ok\nTODO here\n' > a.ts
-  run "$G" baseline
+  rebaseline
   commit_all moved
   gate
   assert_eq 0 "$STATUS" "status"
@@ -68,7 +75,7 @@ test_moved_line_passes() {
 test_global_rise_fails() {
   gate_setup 'TODO x'
   printf 'TODO x\n' > b.ts
-  run "$G" baseline
+  rebaseline
   commit_all second
   gate
   assert_eq 1 "$STATUS" "status"
@@ -89,7 +96,7 @@ test_baseline_lie_fails() {
 test_shadow_never_fails() {
   gate_setup 'ok' severity=shadow
   printf 'TODO fix\n' > a.ts
-  run "$G" baseline
+  rebaseline
   commit_all feat
   gate
   assert_eq 0 "$STATUS" "status"
@@ -99,7 +106,7 @@ test_shadow_never_fails() {
 test_track_rise_reports() {
   gate_setup 'ok' severity=track
   printf 'TODO fix\n' > a.ts
-  run "$G" baseline
+  rebaseline
   commit_all feat
   gate
   assert_eq 0 "$STATUS" "status"
@@ -124,7 +131,7 @@ test_onboarding_branch_skips_1_to_3() {
   commit_all main-no-baseline
   must git checkout -q -b feat5
   printf 'TODO here\n' > a.ts
-  run "$G" baseline
+  rebaseline
   commit_all feat
   gate
   assert_eq 0 "$STATUS" "status"
@@ -137,7 +144,7 @@ test_new_rule_exempt() {
   commit_all main-debt
   must git checkout -q -b feat6
   rule todo paths='**/*.ts'
-  run "$G" baseline
+  rebaseline
   assert_eq 0 "$STATUS" "feat baseline"
   commit_all feat
   gate
@@ -151,4 +158,142 @@ test_dirty_tree_refuses() {
   gate
   assert_eq 2 "$STATUS" "status"
   assert_contains "$OUT" "commit or stash first"
+}
+
+# section_of <name> <output>: the lines of one report section, from its header
+# up to the [time] section.
+section_of() {
+  printf '%s\n' "$2" | awk -v want="$1" '
+    $0 == want { on = 1; next }
+    $0 == "[time]" { on = 0 }
+    on
+  '
+}
+
+test_bad_severity_fails_closed() {
+  gate_setup 'ok' severity=blok
+  printf 'TODO fix\n' > a.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 2 "$STATUS" "status"
+  assert_contains "$OUT" "bad severity [blok]"
+}
+
+test_four_new_occurrences_count_four() {
+  gate_setup 'ok'
+  printf 'TODO 1\nTODO 2\nTODO 3\nTODO 4\n' > a.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "FAIL (4 problems)"
+}
+
+test_rule_named_baseline_counts_as_a_rule() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule baseline paths='**/*.ts'
+  rebaseline
+  commit_all main
+  must git checkout -q -b feat
+  printf 'TODO fix\n' > a.ts
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "FAIL (2 problems)"
+}
+
+test_baseline_diff_is_reproducible() {
+  gate_setup 'TODO here'
+  : > .gauntlet/baseline.tsv
+  commit_all lie
+  gate
+  first=$(section_of "[baseline]" "$OUT")
+  gate
+  second=$(section_of "[baseline]" "$OUT")
+  assert_eq "$first" "$second" "baseline section"
+  assert_contains "$first" "--- .gauntlet/baseline.tsv"
+  assert_contains "$first" "+++ measured"
+  assert_not_contains "$first" "/tmp"
+}
+
+test_baseline_diff_capped_at_20_lines() {
+  gate_setup 'ok'
+  i=1
+  while [ "$i" -le 30 ]; do
+    printf 'TODO %s\n' "$i"
+    i=$((i + 1))
+  done > a.ts
+  commit_all feat
+  gate
+  section=$(section_of "[baseline]" "$OUT")
+  diff_lines=$(printf '%s\n' "$section" | awk 'NR > 1 { n++ } END { print n + 0 }')
+  assert_eq 20 "$diff_lines" "diff lines"
+}
+
+test_missing_baseline_prints_message() {
+  gate_setup 'TODO here'
+  must git rm -q .gauntlet/baseline.tsv
+  commit_all drop-baseline
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" ".gauntlet/baseline.tsv is missing; run gauntlet baseline and commit it"
+  assert_not_contains "$OUT" "--- .gauntlet/baseline.tsv"
+}
+
+test_stacked_branch_judged_on_own_changes() {
+  gate_setup 'ok'
+  must git checkout -q -b layer-a
+  printf 'TODO a\n' > a.ts
+  rebaseline
+  commit_all layer-a
+  must git checkout -q -b layer-b
+  printf 'ok\n' > b.txt
+  rebaseline
+  commit_all layer-b
+  run "$G" check --ci --base layer-a
+  assert_eq 0 "$STATUS" "against its own base"
+  run "$G" check --ci --base main
+  assert_eq 1 "$STATUS" "against main"
+}
+
+test_deleted_rule_passes() {
+  gate_setup 'TODO here'
+  must git rm -q .gauntlet/rules/todo.md
+  rebaseline
+  commit_all drop-rule
+  gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[new]"
+}
+
+test_failing_run_leaves_no_temp_dir() {
+  gate_setup 'ok'
+  printf 'TODO fix\n' > a.ts
+  commit_all feat
+  mkdir -p "$TMP/tt"
+  export TMPDIR="$TMP/tt"
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_eq "" "$(ls -A "$TMP/tt")" "leftover temp entries"
+}
+
+test_untracked_file_not_measured() {
+  gate_setup 'ok'
+  printf 'TODO u\n' > u.ts
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline status"
+  assert_eq "" "$(cat .gauntlet/baseline.tsv)" "baseline"
+  gate
+  assert_eq 0 "$STATUS" "check status"
+  assert_not_contains "$OUT" "u.ts"
+}
+
+test_added_file_is_measured() {
+  gate_setup 'ok'
+  printf 'TODO v\n' > v.ts
+  must git add v.ts
+  rebaseline
+  assert_contains "$(cat .gauntlet/baseline.tsv)" "v.ts"
 }
