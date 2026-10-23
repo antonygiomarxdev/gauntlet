@@ -17,6 +17,8 @@ current_branch() {
 
 # resolve_base [ref]: print the base ref. The first of these that is set wins:
 # the explicit ref, branch.<cur>.gauntletBase, config base, origin/HEAD, main.
+# Exits via die when outside a repo. Callers must use a plain x=$(...) or
+# || exit; never local x=$(...), if x=$(...) or a bare "$(...)", which mask it.
 resolve_base() {
   local branch ref
   if [ -n "${1:-}" ]; then
@@ -38,13 +40,16 @@ resolve_base() {
 # merge_base <ref>: print the sha where HEAD forked from ref. An origin/ ref is
 # fetched first; a failed fetch warns and uses the local ref. Exits 2 when ref
 # does not exist or no merge-base is found. A shallow clone is named as the
-# cause; the merge-base is never guessed.
+# cause; the merge-base is never guessed. Exits via die on every failure. Callers
+# must use a plain x=$(...) or || exit; never local x=$(...), if x=$(...) or a
+# bare "$(...)", which mask the exit.
 merge_base() {
   local ref=$1 sha
   case "$ref" in
     origin/*)
-      # An explicit refspec stores the ref even in a single-branch clone.
-      if ! git fetch --quiet origin "+refs/heads/${ref#origin/}:refs/remotes/$ref"; then
+      # An explicit refspec stores the ref even in a single-branch clone. The
+      # prompt is off so a credential request cannot stall a hook or CI.
+      if ! GIT_TERMINAL_PROMPT=0 git fetch --quiet origin "+refs/heads/${ref#origin/}:refs/remotes/$ref"; then
         printf 'gauntlet: fetch of %s failed; using the local ref\n' "$ref" >&2
       fi
       ;;
@@ -60,7 +65,11 @@ merge_base() {
   die "no merge-base between HEAD and $ref"
 }
 
-# at_base <sha> <path>: print the file as it was at sha; nothing when absent.
+# at_base <sha> <path>: print the file as it was at sha; nothing when the path is
+# absent. An sha that is not a commit dies with exit 2.
 at_base() {
-  git show "$1:$2" 2>/dev/null || true
+  git cat-file -e "$1^{commit}" 2>/dev/null || die "bad sha: $1"
+  if git cat-file -e "$1:$2" 2>/dev/null; then
+    git show "$1:$2"
+  fi
 }

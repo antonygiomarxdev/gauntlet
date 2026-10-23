@@ -23,7 +23,9 @@ case "${1:-}" in
     # Outside a repo, repo_root exits 2 before any lookup can fall back to main.
     repo_root >/dev/null
     if [ -n "${2:-}" ]; then
-      git config "branch.$(current_branch).gauntletBase" "$2"
+      branch=$(current_branch)
+      if [ "$branch" = HEAD ]; then die "detached HEAD: check out a branch first"; fi
+      git config "branch.$branch.gauntletBase" "$2"
     else
       resolve_base ""
     fi

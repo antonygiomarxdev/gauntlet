@@ -120,3 +120,57 @@ test_base_outside_repo_exits_2() {
   assert_eq 2 "$STATUS" "status"
   assert_contains "$OUT" "not inside a git repository"
 }
+
+test_base_refuses_detached_head() {
+  mkrepo
+  must git checkout -q --detach
+  run "$G" base feature-a
+  assert_eq 2 "$STATUS" "status"
+  assert_contains "$OUT" "detached HEAD: check out a branch first"
+  assert_not_contains "$(git config --local --list)" "gauntletbase"
+}
+
+test_fetch_never_prompts() {
+  unset GIT_TERMINAL_PROMPT
+  mkrepo
+  base_lib
+  must git update-ref refs/remotes/origin/main HEAD
+  must git remote add origin "$TMP/nonexistent"
+  mkdir -p "$TMP/stub" || fail "mkdir failed"
+  real_git=$(command -v git)
+  cat > "$TMP/stub/git" <<EOS
+#!/bin/bash
+if [ "\$1" = fetch ]; then printf '%s' "\$GIT_TERMINAL_PROMPT" > "$TMP/prompt"; fi
+exec "$real_git" "\$@"
+EOS
+  must chmod +x "$TMP/stub/git"
+  run env PATH="$TMP/stub:$PATH" bash -c ". '$ROOT/lib/core.sh'; . '$ROOT/lib/base.sh'; merge_base origin/main"
+  assert_eq "0" "$(cat "$TMP/prompt")" "GIT_TERMINAL_PROMPT during fetch"
+}
+
+test_resolve_explicit_ref_wins() {
+  mkrepo
+  base_lib
+  must git checkout -q -b feature-b
+  must git config branch.feature-b.gauntletBase feature-a
+  assert_eq "feature-z" "$(resolve_base feature-z)" "explicit ref"
+}
+
+test_config_base_beats_origin_head_and_main() {
+  mkrepo
+  base_lib
+  must git update-ref refs/remotes/origin/main HEAD
+  must git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+  echo "base=team-base" > .gauntlet/config
+  assert_eq "team-base" "$(resolve_base "")" "config base"
+}
+
+test_at_base_bad_sha_dies() {
+  mkrepo
+  run bash -c ". '$ROOT/lib/core.sh'; . '$ROOT/lib/base.sh'; at_base deadbeef f.txt"
+  assert_eq 2 "$STATUS" "bad sha status"
+  assert_contains "$OUT" "bad sha: deadbeef"
+  run bash -c ". '$ROOT/lib/core.sh'; . '$ROOT/lib/base.sh'; at_base '' f.txt"
+  assert_eq 2 "$STATUS" "empty sha status"
+  assert_contains "$OUT" "bad sha:"
+}
