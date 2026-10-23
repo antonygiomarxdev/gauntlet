@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# gauntlet: a code-quality ratchet. Entry point; libraries live in lib/.
+set -eu
+
+# shellcheck source=lib/core.sh
+. "$(dirname "$0")/../lib/core.sh"
+
+case "${1:-}" in
+  --version) printf 'gauntlet %s\n' "$GAUNTLET_VERSION" ;;
+  *) die "unknown command: ${1:-}" ;;
+esac

@@ -1,0 +1,32 @@
+name: test
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install tools (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep shellcheck
+          pipx install ast-grep-cli
+
+      - name: Install tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ripgrep ast-grep shellcheck
+
+      - name: Shellcheck
+        run: shellcheck -x bin/gauntlet lib/*.sh test/*.sh
+
+      - name: Test
+        run: bash test/run.sh
