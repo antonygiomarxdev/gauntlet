@@ -887,3 +887,79 @@ test_two_renames_in_one_commit_pass() {
   assert_not_contains "$OUT" "[new]"
   assert_eq "$(printf 'todo\tb.ts\tTODO one\t1\ntodo\td.ts\tTODO two\t1')" "$(cat .gauntlet/baseline.tsv)" "exact"
 }
+
+# A second copy of a line the baseline already holds is the new occurrence; the first
+# copy is the one that was there before.
+test_second_copy_of_a_baselined_line_is_the_new_one() {
+  gate_setup 'TODO fix'
+  printf 'TODO fix\nTODO fix\n' > a.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  a.ts:2  todo  TODO fix"
+  assert_not_contains "$OUT" "a.ts:1"
+  assert_contains "$OUT" "FAIL (1 problems)"
+}
+
+# A declared check's paths match from the start of the path: x/src/a and mysrc/a are not
+# under src/, so the failing check does not run for them.
+test_scope_prefix_is_not_a_substring_match() {
+  gate_setup 'x'
+  printf 'check.t=false\ncheck.t.paths=src/\n' > .gauntlet/config
+  mkdir -p x/src mysrc
+  printf 'y\n' > x/src/a
+  printf 'y\n' > mysrc/a
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[checks]"
+}
+
+# A change staged but not committed is a dirty tree too: check --ci measures what HEAD
+# holds, so it refuses.
+test_staged_only_change_refuses() {
+  gate_setup 'ok'
+  printf 'TODO fix\n' > a.ts
+  must git add a.ts
+  gate
+  assert_eq 2 "$STATUS" "status"
+  assert_contains "$OUT" "commit or stash first"
+}
+
+# A baseline row left on a path the base does not have (a file deleted without a new
+# baseline) must not hide a new occurrence in the file a rename creates at that path.
+test_stale_base_row_on_rename_destination_is_dropped() {
+  mkrepo
+  printf 'alpha\nbeta\ngamma\nTODO x\n' > a.ts
+  # Two copies, so the stale row is the larger count: the base holds one count per key,
+  # and a kept stale row would hide the new copy.
+  printf 'TODO x\nTODO x\n' > b.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  rebaseline
+  commit_all main
+  must git rm -q b.ts
+  commit_all "drop b without a new baseline"
+  must git checkout -q -b feat
+  must git mv a.ts b.ts
+  printf 'alpha\nbeta\ngamma\nTODO x\nTODO x\n' > b.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  b.ts:5  todo  TODO x"
+  assert_contains "$OUT" "[new]"
+}
+
+# A pure rename of shadow-rule debt is still the same debt: nothing is reported as
+# would-have-failed at the new path.
+test_pure_rename_of_shadow_debt_prints_no_shadow_line() {
+  gate_setup 'TODO here' severity=shadow
+  must git mv a.ts b.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "would have failed"
+}

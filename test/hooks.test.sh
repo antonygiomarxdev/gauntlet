@@ -1045,13 +1045,15 @@ test_print_only_hook_warns_when_not_executable() {
 # The gate goes first in an editable hook: on the line after the shebang, before
 # anything the project's own hook does. An early exit, exec, a continuation or a
 # failing tail cannot get past it. The helper commits a violation after install.
+# top_gate_case <hook> [line]: the gate is on <line> (2 after a shebang, 1 without one).
 top_gate_case() {
+  local line=${2:-2}
   hooks_repo "$TMP/my repo"
   printf '%s' "$1" > .git/hooks/pre-commit
   chmod 755 .git/hooks/pre-commit
   run "$G" install
   assert_eq 0 "$STATUS" "install"
-  assert_eq "$HOOK_TEST_GATE_STAGED" "$(sed -n 2p .git/hooks/pre-commit)" "the gate is the second line"
+  assert_eq "$HOOK_TEST_GATE_STAGED" "$(sed -n "${line}p" .git/hooks/pre-commit)" "the gate is line $line"
   run sh -n .git/hooks/pre-commit
   assert_eq 0 "$STATUS" "the edited hook still parses"
   rule todo format=path-line
@@ -1262,4 +1264,52 @@ test_push_blocked_by_gate_first_in_existing_pre_push() {
   if git -C "$TMP/remote.git" rev-parse -q --verify refs/heads/feat > /dev/null; then
     fail "the refused branch reached the remote"
   fi
+}
+
+# The gate follows the shebang whatever shell it names, not only #!/bin/sh.
+gate_after_shebang_case() {
+  hooks_repo "$TMP/$1"
+  printf '%s\necho x\n' "$2" > .git/hooks/pre-commit
+  chmod 755 .git/hooks/pre-commit
+  run "$G" install
+  assert_eq 0 "$STATUS" "install: $OUT"
+  assert_eq "$2" "$(sed -n 1p .git/hooks/pre-commit)" "the shebang stays on line 1"
+  assert_eq "$HOOK_TEST_GATE_STAGED" "$(sed -n 2p .git/hooks/pre-commit)" "the gate is the second line"
+}
+
+test_gate_after_bash_env_shebang_is_second_line() {
+  gate_after_shebang_case bash-env '#!/usr/bin/env bash'
+}
+
+test_gate_after_zsh_shebang_is_second_line() {
+  gate_after_shebang_case zsh-path '#!/bin/zsh'
+}
+
+# A hook with no shebang is sh: its first line runs first, so the gate is line 1 and
+# gets to block before a leading exit 0 can end the hook.
+test_gate_without_shebang_is_first_line_and_blocks() {
+  top_gate_case $'exit 0\n' 1
+}
+
+# The state a swap killed after moving the old lib aside leaves: the live lib is
+# .lib.old and a new copy waits in .lib.new. A later install whose copy fails must put
+# the old lib back, not drop it.
+test_failed_copy_after_kill_restores_the_live_lib() {
+  hooks_repo "$TMP/repo"
+  if hooks_as_root; then
+    skip "running as root: unreadable and read-only files are still readable here"
+    return 77
+  fi
+  run "$G" install
+  assert_eq 0 "$STATUS" "install"
+  local lib status=0
+  lib=$(hooks_sum .gauntlet/lib)
+  must mv .gauntlet/lib .gauntlet/.lib.old
+  must cp -R "$ROOT/lib" .gauntlet/.lib.new
+  must mkdir -p "$TMP/broken"
+  must cp -R "$ROOT/bin" "$ROOT/lib" "$TMP/broken/"
+  must chmod 000 "$TMP/broken/lib/formats/github.md"
+  bash "$TMP/broken/bin/gauntlet" install > "$TMP/out" 2>&1 || status=$?
+  assert_eq 2 "$status" "install fails on an unreadable source file"
+  assert_eq "$lib" "$(hooks_sum .gauntlet/lib)" "the live lib is the old one, restored"
 }

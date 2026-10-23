@@ -534,3 +534,103 @@ test_format_file_deleted_is_loosening() {
   assert_eq 1 "$STATUS" "status"
   assert_contains "$OUT" "  todo  format file .gauntlet/formats/path-line.md removed"
 }
+
+# waive refuses a detached HEAD: a row needs a branch to belong to.
+test_waive_refused_on_detached_head() {
+  exc_setup 'ok'
+  must git checkout -q --detach
+  run "$G" waive a.ts "rewrite scheduled"
+  assert_eq 2 "$STATUS" "waive on a detached HEAD: $OUT"
+  assert_contains "$OUT" "detached HEAD: check out a branch first"
+  assert_eq "" "$(cat .gauntlet/exceptions.tsv)" "no row was written"
+}
+
+# A directory is not a file: waive names a file, so a directory path is refused even
+# though it exists.
+test_waive_existing_directory_rejected() {
+  exc_setup 'ok'
+  mkdir -p d
+  printf 'x\n' > d/f
+  run "$G" waive d/ "rewrite scheduled"
+  assert_eq 2 "$STATUS" "waive of a directory: $OUT"
+  assert_contains "$OUT" "must name a file"
+  assert_eq "" "$(cat .gauntlet/exceptions.tsv)" "no row was written"
+}
+
+# A format is named by the rule, so a rule that reads another format loosens even when
+# the two format files hold the same bytes and no format file changed.
+test_format_name_change_alone_is_loosening() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' format=alpha
+  cases_of todo 'TODO x'
+  mkdir -p .gauntlet/formats
+  cp "$ROOT/lib/formats/path-line.md" .gauntlet/formats/alpha.md
+  cp "$ROOT/lib/formats/path-line.md" .gauntlet/formats/beta.md
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  rule todo paths='**/*.ts' format=beta
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  format alpha → beta"
+}
+
+# An engine change alone is loosening: a linter that becomes a script runs a different
+# kind of check, whatever its detector says.
+test_engine_only_change_is_loosening() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=linter
+  cases_of todo 'TODO x'
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  rule todo paths='**/*.ts' engine=script
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  engine linter → script"
+}
+
+# A ./ prefix names the same file: a detector that runs ./tools/find.sh is judged by that
+# file, and the report names it as tools/find.sh.
+test_dot_slash_detector_file_change_is_loosening() {
+  mkrepo
+  mkdir -p tools
+  printf '#!/bin/sh\nrg --with-filename --line-number --no-heading TODO "$@"\n' > tools/find.sh
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script "detector=bash ./tools/find.sh {files}"
+  cases_of todo 'TODO x'
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf '#!/bin/sh\nrg --with-filename --line-number --no-heading "TO" "$@" | rg -v "x"\n' > tools/find.sh
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
+}
+
+# A detector word is a plain word: *.md in a detector does not name the README that the
+# branch changes, so the detector is unchanged and nothing is loosened.
+test_glob_word_in_detector_names_no_file() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  printf 'hello\n' > README.md
+  rule todo paths='**/*.ts' "detector=rg --with-filename --line-number --no-heading 'TODO' {files} *.md"
+  cases_of todo 'TODO x'
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf 'hello again\n' > README.md
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "detector file"
+}

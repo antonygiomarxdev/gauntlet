@@ -396,3 +396,47 @@ test_promote_and_status() {
   assert_eq 0 "$STATUS" "doctor: $OUT"
   e2e_every_line_ok "$OUT"
 }
+
+# EXC-AC7 end to end: a loosen row committed on the base is old, so it does not cover a
+# second loosening of the same rule. The second branch stacks on the first, so the row is
+# in its base; only a row committed on the second branch covers the new change.
+test_old_loosen_row_does_not_cover_a_new_loosening() {
+  e2e_repo
+  e2e_install
+  e2e_todo
+  printf 'TODO legacy\n' > legacy.ts
+  e2e_baseline
+  run git commit -q -m "chore: add the gate"
+  assert_eq 0 "$STATUS" "commit of the gate: $OUT"
+
+  must git checkout -q -b first
+  e2e_todo severity=shadow
+  must git add -A
+  run git commit -q -m "chore: lower todo to shadow"
+  assert_eq 0 "$STATUS" "commit that lowers the severity: $OUT"
+  e2e_gl loosen todo "stays shadow for one sprint" "the rule needs a week of data"
+  assert_eq 0 "$STATUS" "loosen: $OUT"
+  must git add -A
+  run git commit -q -m "chore: record the first loosening"
+  assert_eq 0 "$STATUS" "commit of the first row: $OUT"
+  e2e_gl check --ci --base main
+  assert_eq 0 "$STATUS" "check --ci for the first loosening: $OUT"
+
+  must git checkout -q -b second
+  e2e_todo severity=shadow paths='src/**'
+  e2e_baseline
+  run git commit -q -m "chore: narrow todo to src"
+  assert_eq 0 "$STATUS" "commit that narrows the paths: $OUT"
+  e2e_gl check --ci --base first
+  assert_eq 1 "$STATUS" "check --ci: the old row must not cover the new loosening: $OUT"
+  assert_contains "$OUT" "[loosened]"
+  assert_contains "$OUT" "  todo  paths narrowed: **/*.ts"
+
+  e2e_gl loosen todo "only src for now" "legacy files move later"
+  assert_eq 0 "$STATUS" "second loosen: $OUT"
+  must git add -A
+  run git commit -q -m "chore: record the second loosening"
+  assert_eq 0 "$STATUS" "commit of the second row: $OUT"
+  e2e_gl check --ci --base first
+  assert_eq 0 "$STATUS" "check --ci with the second row: $OUT"
+}
