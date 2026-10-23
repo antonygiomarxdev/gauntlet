@@ -294,8 +294,9 @@ detect_rule() {
     want=$files
   else
     want="$scratch/want"
-    awk -F "$DETECT_TAB" 'NF { print $1 }' "$scratch/rows" |
-      LC_ALL=C sort -u | select_files "$paths" "$exclude" > "$want" || return 2
+    # rows holds no empty line (the awk above drops them), so the path is the text up to
+    # the first tab. A path listed twice is harmless: the keep array below is a set.
+    cut -f1 "$scratch/rows" | select_files "$paths" "$exclude" > "$want" || return 2
   fi
   bad=0
   GL_WANT_FILE="$want" GL_RULE="$id" awk -F "$DETECT_TAB" '

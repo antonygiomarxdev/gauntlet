@@ -173,6 +173,18 @@ test_whole_program_filtered_by_paths() {
   assert_eq "$(printf 'r\tsrc/a.ts\t1\tx')" "$(cat "$TMP/out.tsv")" "rows"
 }
 
+# Every row of a selected path is kept, however many a file has; a path the rule's paths do
+# not select loses all of them.
+test_whole_program_rows_keep_every_row_of_a_selected_path() {
+  mkrepo
+  detect_lib
+  : > "$TMP/files.txt"
+  rule r engine=linter paths='src/**' exclude='src/gen/**' "detector=printf 'src/a.ts:1:x\\nsrc/a.ts:2:y\\nsrc/a.ts:2:y\\nsrc/gen/g.ts:1:z\\nlib/x.ts:2:w\\nsrc/b.ts:7:v\\n'"
+  run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_eq "$(printf 'r\tsrc/a.ts\t1\tx\nr\tsrc/a.ts\t2\ty\nr\tsrc/a.ts\t2\ty\nr\tsrc/b.ts\t7\tv')" "$(cat "$TMP/out.tsv")" "rows"
+}
+
 test_column_output_keeps_message() {
   mkrepo
   detect_lib
