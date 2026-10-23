@@ -397,12 +397,13 @@ test_dash_names_are_measured_by_the_gates() {
   assert_eq "$(printf 'prog\t-\tTODO z\t1\nprog\t-x.txt\tTODO x\t1\ntodo\t-\tTODO z\t1\ntodo\t-x.txt\tTODO x\t1')" "$(cat .gauntlet/baseline.tsv)" "rows"
 }
 
-# bash -o pipefail: the exit code of a pipeline is the failure of any stage, not just the last.
+# A stage that crashes is a broken detector whatever the stages after it say: the filter
+# at the end (grep, rg) exits 1 on empty input, which alone would read as "no matches".
 test_pipeline_failure_in_the_first_stage_is_a_broken_detector() {
   mkrepo
   detect_lib
   : > "$TMP/files.txt"
-  rule r engine=linter "detector=sh -c 'echo boom >&2; exit 2' | cat"
+  rule r engine=linter "detector=sh -c 'echo boom >&2; exit 2' | grep -v nothing-here"
   run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
   assert_eq 2 "$STATUS" "status"
   assert_contains "$OUT" "broken detector: r: exit 2"
@@ -413,10 +414,51 @@ test_pipeline_with_a_missing_first_tool_names_the_tool() {
   mkrepo
   detect_lib
   : > "$TMP/files.txt"
-  rule r engine=linter "detector=nosuchtool-gauntlet | cat"
+  rule r engine=linter "detector=nosuchtool-gauntlet | grep -v nomatch"
   run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
   assert_eq 2 "$STATUS" "status"
   assert_contains "$OUT" "missing tool nosuchtool-gauntlet"
+}
+
+test_pipeline_crash_in_a_middle_stage_before_a_filter_is_a_broken_detector() {
+  mkrepo
+  detect_lib
+  printf 'TODO here\n' > a.ts
+  printf 'a.ts\n' > "$TMP/files.txt"
+  rule r engine=linter "detector=rg --with-filename --line-number --no-heading TODO {files} | sh -c 'cat >/dev/null; echo mid-boom >&2; exit 3' | grep -v nomatch"
+  run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "broken detector: r: exit 3"
+  assert_contains "$OUT" "mid-boom"
+}
+
+test_pipeline_with_a_bad_rg_flag_before_a_filter_is_a_broken_detector() {
+  mkrepo
+  detect_lib
+  printf 'TODO here\n' > a.ts
+  printf 'a.ts\n' > "$TMP/files.txt"
+  rule r engine=linter "detector=rg --no-such-flag {files} | rg zzzz"
+  run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "broken detector: r: exit 2"
+  assert_contains "$OUT" "no-such-flag"
+}
+
+# A stage cut off because a later stage closed the pipe early (head) is not a failure: grep
+# is killed by SIGPIPE (141) and the rows head let through are the rows of the rule. The file
+# is far bigger than a pipe buffer, so grep is still writing when head exits.
+test_pipeline_cut_off_by_head_is_not_a_failure() {
+  # With SIGPIPE ignored (a job started from a Python or node parent that did not restore it) grep
+  # gets a write error and exits 2 instead of dying with 141: another story, not this one.
+  [ "$(bash -c 'kill -PIPE $$; echo alive' 2> /dev/null)" != alive ] || { skip "SIGPIPE is ignored here"; return 77; }
+  mkrepo
+  detect_lib
+  awk 'BEGIN { for (i = 1; i <= 30000; i++) print "TODO line " i }' > big.ts
+  printf 'big.ts\n' > "$TMP/files.txt"
+  rule r engine=linter "detector=grep -Hn TODO {files} | head -n 1"
+  run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_eq "$(printf 'r\tbig.ts\t1\tTODO line 1')" "$(cat "$TMP/out.tsv")" "the row head let through"
 }
 
 # Exit 1 from a stage still means "no matches", and rows still come through a pipe.
@@ -433,6 +475,10 @@ test_pipeline_keeps_exit_1_as_no_matches_and_passes_rows() {
   run run_detector .gauntlet/rules/some.md "$TMP/files.txt" "$TMP/out.tsv"
   assert_eq 0 "$STATUS" "matches through a pipe: $OUT"
   assert_eq "$(printf 'some\ta.ts\t1\tTODO here')" "$(cat "$TMP/out.tsv")" "rows"
+  rule last engine=linter "detector=rg --with-filename --line-number --no-heading TODO {files} | rg zzzz"
+  run run_detector .gauntlet/rules/last.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 0 "$STATUS" "rg exit 1 as the last stage is no matches: $OUT"
+  assert_eq "" "$(cat "$TMP/out.tsv")" "no rows"
   rule fail engine=linter "detector=rg --with-filename --line-number --no-heading NOPE {files} | sh -c 'cat; exit 2'"
   run run_detector .gauntlet/rules/fail.md "$TMP/files.txt" "$TMP/out.tsv"
   assert_eq 2 "$STATUS" "a failing later stage after an exit-1 first stage: $OUT"

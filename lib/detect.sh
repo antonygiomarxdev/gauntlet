@@ -118,17 +118,35 @@ tool_present() {
   esac
 }
 
+# DETECT_PIPE_CHECK: shell text run after the detector command, inside the same bash -c. It
+# reads PIPESTATUS of the last pipeline the command ran. A stage other than the last that
+# exited 2 or more ends the run with that status, whatever the last stage says: pipefail
+# alone reports the rightmost failure, and a filter at the end (grep, rg) exits 1 on empty
+# input, which would turn a crashed first stage into "no matches". 141 is not a crash: it is
+# a stage killed by SIGPIPE because a later stage (head) closed the pipe on purpose. Exit 1
+# of a stage before the last is "no matches" there, as before. Otherwise the status is the
+# last stage's.
+# shellcheck disable=SC2016 # the text is expanded by the detector's own bash -c, not here
+DETECT_PIPE_CHECK='gauntlet_ps=("${PIPESTATUS[@]}"); gauntlet_n=${#gauntlet_ps[@]}; gauntlet_k=0
+while [ "$gauntlet_k" -lt "$((gauntlet_n - 1))" ]; do
+  case "${gauntlet_ps[gauntlet_k]}" in 0|1|141) ;; *) exit "${gauntlet_ps[gauntlet_k]}" ;; esac
+  gauntlet_k=$((gauntlet_k + 1))
+done
+exit "${gauntlet_ps[gauntlet_n - 1]}"'
+
 # detect_batch <root> <cmd> <id> <errf>: run one detector command in <root>,
 # append its stdout to DETECT_RAW and its stderr to <errf>. Exit 0 and 1 are
 # results (1 is "no matches" for rg and grep); a missing tool (127) or any exit
-# code above 1 returns 2 after a message. The command runs under pipefail, so
-# the status is the last stage that failed: `rg ... | sed ...` cannot hide an rg
-# that did not run. The subshell drops RIPGREP_CONFIG_PATH: a developer's
-# ripgrep flags (--smart-case, --hidden) would change the rows on one machine
-# and not on CI.
+# code above 1 returns 2 after a message. DETECT_PIPE_CHECK follows the command, so a
+# crash in any stage of its last pipeline counts, not only the last stage's status
+# (`rg ... | grep ...` cannot hide an rg that did not run). That covers the last pipeline
+# of the command text only: `a | b; c | d` is judged by `c | d`, and so is a loop by the
+# pipeline it ran last. A command that calls `exit` itself is judged by that status. The
+# subshell drops RIPGREP_CONFIG_PATH: a developer's ripgrep flags (--smart-case,
+# --hidden) would change the rows on one machine and not on CI.
 detect_batch() {
   local out status tool=${2%% *} hint=
-  out=$(cd "$1" && unset RIPGREP_CONFIG_PATH && bash -o pipefail -c "$2" </dev/null 2>>"$4") && status=0 || status=$?
+  out=$(cd "$1" && unset RIPGREP_CONFIG_PATH && bash -o pipefail -c "$2"$'\n'"$DETECT_PIPE_CHECK" </dev/null 2>>"$4") && status=0 || status=$?
   case "$status" in
     0|1)
       DETECT_RAW="$DETECT_RAW$out
