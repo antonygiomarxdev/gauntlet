@@ -106,10 +106,12 @@ tool_present() {
 
 # detect_batch <root> <cmd> <id> <errf>: run one detector command in <root>,
 # append its stdout to DETECT_RAW and its stderr to <errf>. Returns 2 after a
-# message for a missing tool (127) or any exit code above 1.
+# message for a missing tool (127) or any exit code above 1. The subshell drops
+# RIPGREP_CONFIG_PATH: a developer's ripgrep flags (--smart-case, --hidden) would
+# change the rows on one machine and not on CI.
 detect_batch() {
   local out status tool=${2%% *} hint=
-  out=$(cd "$1" && bash -c "$2" </dev/null 2>>"$4") && status=0 || status=$?
+  out=$(cd "$1" && unset RIPGREP_CONFIG_PATH && bash -c "$2" </dev/null 2>>"$4") && status=0 || status=$?
   case "$status" in
     0|1)
       DETECT_RAW="$DETECT_RAW$out

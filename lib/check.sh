@@ -146,7 +146,7 @@ check_run() {
   check_table "$root" "$scratch" || return 2
   if rule_tests_due "$scratch/changed"; then
     t0=$(now_ms)
-    run_rule_tests > "$scratch/rule-tests.out" && rt_rc=0 || rt_rc=$?
+    run_rule_tests tracked > "$scratch/rule-tests.out" && rt_rc=0 || rt_rc=$?
     t1=$(now_ms)
     printf 'rule-tests\t%s\n' "$((t1 - t0))" >> "$scratch/check.time"
     # A setup that cannot run the tests still prints what it found, then exits 2.
@@ -818,11 +818,6 @@ check_staged_run() {
     { print; need-- }
   ' "$scratch/staged.diff" > "$scratch/staged.paths" || return 2
 
-  # A whole-program detector reports every file: only the staged paths' rows are
-  # kept, before any check or tighten reads them.
-  filter_to_staged "$scratch" "$scratch/now/measure.tsv" || return 2
-  filter_to_staged "$scratch" "$scratch/now/located.tsv" || return 2
-
   # Partial staging (decision 4): a staged path that also has unstaged changes.
   # The baseline is left out: this hook is the one that writes it.
   git_nul_lines -c core.quotepath=off diff --name-only --no-renames -z > "$scratch/unstaged" || return 2
@@ -941,17 +936,6 @@ check_staged_run() {
   fi
   printf 'gauntlet: FAIL (%s problems)\n' "$problems"
   return 1
-}
-
-# filter_to_staged <scratch> <file>: keep the rows of <file> whose path (field 2)
-# is a staged path, in place and in order. Both measured files have the path there.
-filter_to_staged() {
-  local scratch=$1 file=$2
-  GL_STAGED="$scratch/staged.paths" awk -F "$DETECT_TAB" '
-    FILENAME == ENVIRON["GL_STAGED"] { staged[$0] = 1; next }
-    ($2 in staged) { print }
-  ' "$scratch/staged.paths" "$file" > "$scratch/filter.tmp" || return 2
-  cp "$scratch/filter.tmp" "$file" || return 2
 }
 
 # tighten_baseline <root> <scratch>: when tight.tsv differs from the index's

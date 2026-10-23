@@ -1064,3 +1064,85 @@ test_gates_report_every_broken_rule() {
   assert_contains "$OUT" "rule bad: detector must not be empty; run gauntlet doctor"
   assert_contains "$OUT" "rule worse: severity must be block, shadow or track, got [hard]; run gauntlet doctor"
 }
+
+# R28: a gate result is the one a fresh clone produces. clone_gate <branch>: clone
+# the repo at $TMP/repo (what a push publishes) into $TMP/clone and run check --ci there.
+clone_gate() {
+  must git clone -q --branch "$1" "$TMP/repo" "$TMP/clone"
+  must cd "$TMP/clone"
+  run "$G" check --ci --base origin/main
+}
+
+# A detector with no {files} walks the disk. Its rows are kept only for tracked
+# files, so an ignored build output and an untracked scratch file leave no debt that
+# a clone cannot reproduce, and `gauntlet baseline` does not write it again.
+test_whole_program_rows_skip_untracked_and_ignored_files() {
+  mkrepo
+  printf 'dist/\n' > .gitignore
+  printf 'TODO tracked\n' > b.ts
+  must mkdir dist
+  printf 'TODO generated\n' > dist/gen.txt
+  printf 'TODO loose\n' > "loose file.txt"
+  rule prog stage=push "detector=rg --no-ignore --with-filename --line-number --no-heading TODO ."
+  must git add .gitignore b.ts .gauntlet
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  want=$(cat .gauntlet/baseline.tsv)
+  assert_contains "$want" "b.ts"
+  assert_not_contains "$want" "dist/gen.txt"
+  assert_not_contains "$want" "loose file.txt"
+  # Commit by name: git add -A would track the loose file and change the answer.
+  must git add .gauntlet/baseline.tsv
+  must git commit -q -m main
+  must git checkout -q -b feat
+  printf 'fine\n' > c.ts
+  must git add c.ts
+  must git commit -q -m feat
+  gate
+  assert_eq 0 "$STATUS" "check --ci in the dev checkout: $OUT"
+  clone_gate feat
+  assert_eq 0 "$STATUS" "check --ci in a fresh clone: $OUT"
+}
+
+# The rule tests of the gate read the cases git tracks: untracked case files exist
+# only on this machine, so a rule committed without them fails in a clone and here.
+test_ci_rule_tests_read_tracked_case_files_only() {
+  gate_setup 'ok'
+  rule newrule paths='**/*.ts'
+  cases_of newrule 'TODO y'
+  must git add .gauntlet/rules/newrule.md
+  must git commit -q -m "feat: newrule without its cases"
+  gate
+  assert_eq 1 "$STATUS" "check --ci: $OUT"
+  assert_contains "$OUT" "[rule-tests]"
+  assert_contains "$OUT" "newrule  bad  no cases"
+  clone_gate feat
+  assert_eq 1 "$STATUS" "check --ci in a fresh clone: $OUT"
+  assert_contains "$OUT" "newrule  bad  no cases"
+}
+
+# Authoring is the other way round: standalone test-rules reads untracked cases, so a
+# rule can be tried before anything is committed.
+test_standalone_test_rules_reads_untracked_case_files() {
+  gate_setup 'ok'
+  rule newrule paths='**/*.ts'
+  cases_of newrule 'TODO y'
+  run "$G" test-rules
+  assert_eq 0 "$STATUS" "test-rules: $OUT"
+}
+
+# A developer's ripgrep config (smart-case here) must not change what a detector finds.
+test_ripgrep_config_does_not_change_the_baseline() {
+  mkrepo
+  printf 'TODO upper\ntodo lower\n' > a.ts
+  rule low paths='**/*.ts' "detector=rg --with-filename --line-number --no-heading todo {files}"
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  must cp .gauntlet/baseline.tsv "$TMP/plain.tsv"
+  assert_eq 1 "$(wc -l < "$TMP/plain.tsv" | tr -d ' ')" "one row without the config"
+  printf -- '--smart-case\n' > "$TMP/rg.conf"
+  run env RIPGREP_CONFIG_PATH="$TMP/rg.conf" "$G" baseline
+  assert_eq 0 "$STATUS" "baseline with a ripgrep config: $OUT"
+  must cmp "$TMP/plain.tsv" .gauntlet/baseline.tsv
+}

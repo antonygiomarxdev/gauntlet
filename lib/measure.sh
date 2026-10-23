@@ -64,13 +64,21 @@ measure_in() {
     run_detector "$rf" "$scratch/files" "$scratch/rule.tsv" || return 2
     t1=$(now_ms)
     printf '%s\t%s\n' "$id" "$((t1 - t0))" >> "$work/time.tsv" || return 2
-    # R15 again for whole-program detectors, whose rows are not limited to the input list.
-    awk -F "$DETECT_TAB" 'index($2, ".gauntlet/") != 1' "$scratch/rule.tsv" >> "$scratch/raw" || return 2
+    cat "$scratch/rule.tsv" >> "$scratch/raw" || return 2
   done < "$scratch/ids"
+
+  # R28: only rows of kept paths count, whichever way the detector found them. A
+  # whole-program detector walks the disk and also reports untracked and ignored
+  # files, which a fresh clone does not have; kept holds the tracked paths (the
+  # staged ones at commit) and never a .gauntlet/ path (R15).
+  GL_KEPT="$scratch/kept" awk -F "$DETECT_TAB" '
+    FILENAME == ENVIRON["GL_KEPT"] { keep[$0] = 1; next }
+    $2 in keep
+  ' "$scratch/kept" "$scratch/raw" > "$scratch/raw.kept" || return 2
 
   # Group the rows by path so each file is read once, then take each matched
   # line from the working tree and normalize it into the fingerprint.
-  LC_ALL=C sort -t "$DETECT_TAB" -k2,2 "$scratch/raw" > "$scratch/sorted" || return 2
+  LC_ALL=C sort -t "$DETECT_TAB" -k2,2 "$scratch/raw.kept" > "$scratch/sorted" || return 2
   GL_ROOT="$root" awk -F "$DETECT_TAB" '
     function normalize(s) {
       gsub(/\r/, "", s)

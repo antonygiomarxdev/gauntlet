@@ -4,22 +4,32 @@
 # Sourced, never executed. Bash 3.2 compatible; awk, git and coreutils only.
 # Needs core.sh, rules.sh, paths.sh and detect.sh sourced first.
 
-# run_rule_tests: test every rule's cases and every format's sample in the repo at
-# the working directory, which is the repo root. Prints one "  <id>  <case>  <problem>"
-# line per failure. Returns 0 when all pass, 1 when any fails, 2 when the setup is
-# broken.
+# run_rule_tests [tracked]: test every rule's cases and every format's sample in the
+# repo at the working directory, which is the repo root. Case files come from every
+# file that is not ignored (a rule being written has untracked cases), or, with
+# "tracked", from the tracked files only: the gate judges what a clone has (R28).
+# Prints one "  <id>  <case>  <problem>" line per failure. Returns 0 when all pass,
+# 1 when any fails, 2 when the setup is broken.
 run_rule_tests() {
   local scratch rc=0
   scratch=$(mktemp -d) || return 2
-  cases_check "$scratch" || rc=$?
+  cases_check "$scratch" "${1:-all}" || rc=$?
   rm -rf "$scratch"
   return "$rc"
 }
 
-# cases_check <scratch>: check every rule, then every format, from the repo root.
+# cases_check <scratch> <all|tracked>: check every rule, then every format, from the
+# repo root. The mode picks the files the cases are found among.
 cases_check() {
-  local scratch=$1 id name rc st=0
-  all_files > "$scratch/listing" || return 2
+  local scratch=$1 mode=$2 id name rc st=0
+  case "$mode" in
+    all) all_files > "$scratch/listing" || return 2 ;;
+    tracked) tracked_files > "$scratch/listing" || return 2 ;;
+    *)
+      printf 'gauntlet: rule tests mode must be all or tracked, got [%s]\n' "$mode" >&2
+      return 2
+      ;;
+  esac
   rule_ids > "$scratch/ids" || return 2
   format_names > "$scratch/formats" || return 2
   while IFS= read -r id; do
