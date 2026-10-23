@@ -232,6 +232,22 @@ test_at_base_fails_on_an_unreadable_blob() {
   [ "$STATUS" -ne 0 ] || fail "at_base printed an unreadable blob as if it were absent: $OUT"
 }
 
+# The failed read is named the way a failed listing is: path, sha, and gauntlet's prefix,
+# not git's raw "fatal: bad object" with no hint which read it was.
+test_at_base_names_the_read_that_failed() {
+  mkrepo
+  base_lib
+  printf 'unique content\n' > f.txt
+  must git add -A
+  must git commit -q -m two
+  sha=$(git rev-parse HEAD)
+  unreadable_object "$sha:f.txt"
+  run at_base "$sha" f.txt
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot read f.txt at $sha"
+  assert_not_contains "$OUT" "fatal:"
+}
+
 test_index_has_present_absent_and_error() {
   mkrepo
   base_lib

@@ -1158,6 +1158,8 @@ test_ci_unreadable_base_baseline_is_exit_2_not_onboarding() {
   unreadable_object main:.gauntlet/baseline.tsv
   gate
   assert_eq 2 "$STATUS" "check --ci: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot read .gauntlet/baseline.tsv at $(git rev-parse main)"
+  assert_not_contains "$OUT" "fatal:"
   assert_not_contains "$OUT" "no baseline at base"
   assert_not_contains "$OUT" "gauntlet: ok"
 }

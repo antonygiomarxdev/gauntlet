@@ -105,13 +105,19 @@ index_has() {
 
 # at_base <sha> <path>: print the file as it was at sha; nothing when the path is
 # absent. An sha that is not a commit dies with exit 2, and so does a path that is
-# listed but cannot be read: only an absent path is silent.
+# listed but cannot be read (the message names the path and the sha): only an absent
+# path is silent.
 at_base() {
   local rc=0
   git cat-file -e "$1^{commit}" 2>/dev/null || die "bad sha: $1"
   base_has "$1" "$2" || rc=$?
   case "$rc" in
-    0) git show "$1:$2" ;;
+    0)
+      git show "$1:$2" 2>/dev/null || {
+        printf 'gauntlet: cannot read %s at %s\n' "$2" "$1" >&2
+        return 2
+      }
+      ;;
     1) ;;
     *) return 2 ;;
   esac

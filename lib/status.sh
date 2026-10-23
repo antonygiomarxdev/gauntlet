@@ -566,14 +566,21 @@ doctor_config() {
 
 # doctor_rules <root> <scratch>: every rule must pass rule_validate. One line per rule.
 doctor_rules() {
-  local root=$1 scratch=$2 id file line
+  local root=$1 scratch=$2 id file line fix
   while IFS= read -r id; do
     file="$root/.gauntlet/rules/$id.md"
     if rule_validate "$file" > "$scratch/problems"; then
       doctor_ok "rule $id"
     else
       while IFS= read -r line; do
-        doctor_fail "rule $id: ${line#"$file: "}; fix .gauntlet/rules/$id.md"
+        line=${line#"$file: "}
+        # The script-row problem (rules.sh rule_validate) is fixed in exceptions.tsv;
+        # every other problem is fixed in the rule file.
+        case "$line" in
+          "engine=script needs a script row"*) fix=$(exc_script_hint "$id") ;;
+          *) fix=.gauntlet/rules/$id.md ;;
+        esac
+        doctor_fail "rule $id: $line; fix $fix"
       done < "$scratch/problems"
     fi
   done < "$scratch/ids"

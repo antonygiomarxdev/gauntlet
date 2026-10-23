@@ -38,6 +38,13 @@ exc_append() {
   printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$today" "$4" >> "$file" || return 2
 }
 
+# exc_script_hint <rule-id>: print how to approve a script rule: the row to add by hand
+# to exceptions.tsv, in the columns exc_append writes in its header. No command writes
+# a script row.
+exc_script_hint() {
+  printf '.gauntlet/exceptions.tsv: add the row script<TAB>%s<TAB><reason><TAB><YYYY-MM-DD><TAB>- (columns: type, target, reason, date, branch)\n' "$1"
+}
+
 # exc_waive <path> <reason>: waive a path on the current branch. The path is
 # relative to the repo root and must exist in git or in the working tree.
 exc_waive() {

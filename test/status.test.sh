@@ -801,6 +801,25 @@ test_doctor_unknown_engine_is_one_fail() {
   doctor_one_fail "FAIL rule weird: engine must be linter, ast-grep, rg or script, got [weird]"
 }
 
+# The fix for a script rule without its row is a row in exceptions.tsv: no command
+# writes it and the rule file cannot hold it. Every other problem still points at the rule.
+test_doctor_script_row_problem_points_at_exceptions_tsv() {
+  mkrepo
+  rule needs engine=script
+  doctor_install
+  doctor_one_fail "FAIL rule needs: engine=script needs a script row for [needs] in .gauntlet/exceptions.tsv; fix .gauntlet/exceptions.tsv: add the row"
+  assert_contains "$OUT" "type, target, reason, date, branch"
+  assert_contains "$OUT" "script<TAB>needs<TAB><reason><TAB><YYYY-MM-DD><TAB>-"
+  assert_not_contains "$OUT" "fix .gauntlet/rules/needs.md"
+}
+
+test_doctor_other_rule_problems_still_point_at_the_rule_file() {
+  mkrepo
+  rule empty engine=linter "detector="
+  doctor_install
+  doctor_one_fail "FAIL rule empty: detector must not be empty; fix .gauntlet/rules/empty.md"
+}
+
 test_doctor_empty_detector_is_one_fail() {
   mkrepo
   rule empty engine=linter "detector="
