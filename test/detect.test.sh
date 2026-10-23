@@ -464,3 +464,124 @@ test_ast_grep_rule_without_a_severity_is_still_counted() {
   assert_eq 0 "$STATUS" "baseline: $OUT"
   assert_contains "$(cat .gauntlet/baseline.tsv)" "silent-catch	x.ts	"
 }
+
+# detect_scan hands the paths to the detector in batches. Every name reaches it as one
+# word, whatever it holds: the detector here prints each word it is given, and a project
+# format reads those lines back, so the path survives the quoting, the ./ prefix for a
+# leading dash and the strip of that prefix. A colon is in the list because path-line
+# cannot read one (R12); this format can.
+test_special_names_reach_the_detector_intact() {
+  mkrepo
+  detect_lib
+  mkdir -p .gauntlet/formats
+  printf -- '---\nmatch: ^(.*)\\|([0-9]+)\\|(.*)$\npath: 1\nline: 2\nmessage: 3\n---\n' > .gauntlet/formats/words.md
+  # One name per line; none holds a newline (R31).
+  cat > "$TMP/names.txt" <<'NAMES'
+plain.ts
+sp ace.ts
+star*.ts
+what?.ts
+br[ack]et.ts
+[x].ts
+-lead.ts
+-
+--
+ünï côde.ts
+back\slash.ts
+trail\
+colon:name.ts
+a:1:b.ts
+it's.ts
+say "hi".ts
+dollar$HOME.ts
+tick`id`.ts
+amp&semi;.ts
+{files}.ts
+~tilde.ts
+#hash.ts
+ leading space.ts
+trailing space.ts 
+NAMES
+  rule words engine=linter format=words "detector=printf '%s|1|x\\n' {files}"
+  run run_detector .gauntlet/rules/words.md "$TMP/names.txt" "$TMP/out.tsv"
+  assert_eq 0 "$STATUS" "status: $OUT"
+  want=$(sed 's/^/words\t/; s/$/\t1\tx/' "$TMP/names.txt")
+  assert_eq "$want" "$(cat "$TMP/out.tsv")" "rows"
+}
+
+# The same names, and files whose content is odd, through rg and the fingerprint
+# reader. The names are the ones rg can print back in path-line form.
+test_special_names_and_contents_baseline_rows() {
+  mkrepo
+  printf 'TODO plain\n' > plain.ts
+  printf 'TODO space\n' > "sp ace.ts"
+  printf 'TODO star\n' > 'star*.ts'
+  printf 'TODO what\n' > 'what?.ts'
+  printf 'TODO bracket\n' > 'br[ack]et.ts'
+  printf 'TODO lead\n' > ./-lead.ts
+  printf 'TODO dash\n' > ./-
+  printf 'TODO uni\n' > "ünï côde.ts"
+  printf 'TODO back\n' > 'back\slash.ts'
+  printf 'TODO nolf' > nolf.ts
+  : > empty.ts
+  printf 'TODO crlf\r\nok\r\nTODO two\r\n' > crlf.ts
+  rule todo
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  want=$(printf '%s\n' \
+    "todo	-	TODO dash	1" \
+    "todo	-lead.ts	TODO lead	1" \
+    "todo	back\\slash.ts	TODO back	1" \
+    "todo	br[ack]et.ts	TODO bracket	1" \
+    "todo	crlf.ts	TODO crlf	1" \
+    "todo	crlf.ts	TODO two	1" \
+    "todo	nolf.ts	TODO nolf	1" \
+    "todo	plain.ts	TODO plain	1" \
+    "todo	sp ace.ts	TODO space	1" \
+    "todo	star*.ts	TODO star	1" \
+    "todo	what?.ts	TODO what	1" \
+    "todo	ünï côde.ts	TODO uni	1")
+  assert_eq "$want" "$(cat .gauntlet/baseline.tsv)" "rows"
+}
+
+test_files_list_without_a_trailing_newline_keeps_the_last_path() {
+  mkrepo
+  detect_lib
+  printf 'TODO a\n' > a.ts
+  printf 'TODO b\n' > b.ts
+  printf 'a.ts\nb.ts' > "$TMP/files.txt"
+  rule todo
+  run run_detector .gauntlet/rules/todo.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_eq "$(printf 'todo\ta.ts\t1\tTODO a\ntodo\tb.ts\t1\tTODO b')" "$(LC_ALL=C sort "$TMP/out.tsv")" "rows"
+}
+
+# The structure of the batching, not its speed: one awk pass quotes the whole list, so the
+# cost does not grow with a bash loop over the paths (20k files took 14.6 s that way).
+# A counting awk on PATH sees every awk that detect_scan starts.
+test_batching_quotes_the_list_in_one_awk_pass() {
+  mkrepo
+  detect_lib
+  mkdir -p "$TMP/bin"
+  real_awk=$(command -v awk)
+  printf '#!/bin/sh\necho x >> "%s/awk.count"\nexec "%s" "$@"\n' "$TMP" "$real_awk" > "$TMP/bin/awk"
+  must chmod +x "$TMP/bin/awk"
+  PATH="$TMP/bin:$PATH"
+  export PATH
+  local i
+  : > "$TMP/files.txt"
+  for i in $(seq 1 3000); do printf 'src/gen/file_%04d_abcdefghijklmnopqrstuv.ts\n' "$i" >> "$TMP/files.txt"; done
+  : > "$TMP/err"
+  : > "$TMP/awk.count"
+  : > "$TMP/runs"
+  DETECT_RAW=
+  detect_scan "$PWD" "sh -c 'echo run >> \"$TMP/runs\"' ignored {files}" r "$TMP/err" "$TMP/files.txt"
+  assert_eq 1 "$(wc -l < "$TMP/awk.count" | tr -d ' ')" "awk processes for 3000 paths"
+  runs=$(wc -l < "$TMP/runs" | tr -d ' ')
+  if [ "$runs" -lt 2 ] || [ "$runs" -gt 8 ]; then fail "3000 paths ran the detector $runs times, expected a few batches"; fi
+  : > "$TMP/awk.count"
+  printf 'a.ts\nb.ts\n' > "$TMP/files.txt"
+  detect_scan "$PWD" "sh -c 'echo run >> \"$TMP/runs\"' ignored {files}" r "$TMP/err" "$TMP/files.txt"
+  assert_eq 1 "$(wc -l < "$TMP/awk.count" | tr -d ' ')" "awk processes for 2 paths"
+}

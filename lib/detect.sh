@@ -17,9 +17,9 @@ DETECT_DELIM=$(printf '\001')
 DETECT_UNPARSED=$(printf '\002')
 DETECT_TAB=$(printf '\t')
 
-# Batch budget for the quoted {files} list, in characters. A character is at
-# most 4 bytes, so 25000 characters keep each bash -c command under 100000
-# bytes (the per-argument limit is 128 KiB).
+# Batch budget for the quoted {files} list, in bytes (detect_quote_batches counts
+# in the C locale). 25000 keeps each bash -c command well under the 128 KiB
+# per-argument limit, and under 100000 bytes even if a tool counted characters.
 DETECT_BATCH_CHARS=25000
 
 # format_file <name>: print the path of the format <name>: the project's
@@ -132,11 +132,47 @@ detect_batch() {
   esac
 }
 
+# detect_quote_batches <limit>: read paths on stdin, one per line, and print one line
+# per batch: the paths as single-quoted shell words (an embedded ' becomes '\''), each
+# after a space, in a line of at most <limit> characters unless one word is longer on its
+# own. A name that starts with - gets a ./ in front, so a tool reads it as a path and
+# not as an option; detect_rule strips that ./ from the rows again. One awk pass for
+# the whole list: a bash loop over 20000 paths took 14.6 s, this takes a fraction of a
+# second. LC_ALL=C makes the budget count bytes, never more than the characters it was
+# sized for.
+detect_quote_batches() {
+  LC_ALL=C awk -v limit="$1" '
+    BEGIN { sq = sprintf("%c", 39); bs = sprintf("%c", 92) }
+    function quote(s,   out, i) {
+      out = ""
+      while ((i = index(s, sq)) > 0) {
+        out = out substr(s, 1, i - 1) sq bs sq sq
+        s = substr(s, i + 1)
+      }
+      return sq out s sq
+    }
+    {
+      p = $0
+      if (substr(p, 1, 1) == "-") p = "./" p
+      w = quote(p)
+      n = length(w)
+      if (batch != "" && blen + n > limit) {
+        print batch
+        batch = ""
+        blen = 0
+      }
+      batch = batch " " w
+      blen += n + 1
+    }
+    END { if (batch != "") print batch }
+  '
+}
+
 # detect_scan <root> <cmd> <id> <errf> <files>: run <cmd> once, or, when it
 # has {files}, once per batch of quoted paths from <files>. An empty list runs
-# nothing.
+# nothing. The batches are kept in <errf>.batches.
 detect_scan() {
-  local root=$1 cmd=$2 id=$3 errf=$4 files=$5 batch="" blen=0 p full limit
+  local root=$1 cmd=$2 id=$3 errf=$4 files=$5 batch full limit
   case "$cmd" in
     *'{files}'*) ;;
     *)
@@ -146,26 +182,13 @@ detect_scan() {
   esac
   # The command's own text counts against the budget too.
   limit=$((DETECT_BATCH_CHARS - ${#cmd}))
-  while IFS= read -r p || [ -n "$p" ]; do
-    # A name that starts with - would be read as an option: ./ makes it a path.
-    # detect_rule strips the ./ from the rows again.
-    case "$p" in -*) p=./$p ;; esac
-    quote_word "$p"
-    if [ -n "$batch" ] && [ $((blen + ${#QUOTED})) -gt "$limit" ]; then
-      # Assign before passing: inside an argument, ${var//pat/"rep"} keeps its
-      # inner quotes on bash 4.2 and older (compat32 mode), breaking the batch.
-      full=${cmd//'{files}'/"$batch"}
-      detect_batch "$root" "$full" "$id" "$errf" || return 2
-      batch=""
-      blen=0
-    fi
-    batch="$batch $QUOTED"
-    blen=$((blen + ${#QUOTED} + 1))
-  done < "$files"
-  if [ -n "$batch" ]; then
+  detect_quote_batches "$limit" < "$files" > "$errf.batches" || return 2
+  while IFS= read -r batch; do
+    # Assign before passing: inside an argument, ${var//pat/"rep"} keeps its
+    # inner quotes on bash 4.2 and older (compat32 mode), breaking the batch.
     full=${cmd//'{files}'/"$batch"}
     detect_batch "$root" "$full" "$id" "$errf" || return 2
-  fi
+  done < "$errf.batches"
   return 0
 }
 
