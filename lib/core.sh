@@ -47,14 +47,15 @@ repo_root() {
   git rev-parse --show-toplevel 2>/dev/null || die "not inside a git repository"
 }
 
-# config_get <key> [default]: print the last value set for key in
-# .gauntlet/config (key=value lines, # comments skipped), or the default. A CRLF file
-# reads like an LF one: the carriage return ending a line is not part of the value.
-config_get() {
-  local root file value
-  root=$(repo_root) || exit 2
-  file="$root/.gauntlet/config"
-  if [ -f "$file" ] && value=$(awk -v k="$1" '
+# config_value <file> <key> [default]: print the last value set for key in the config
+# <file> (key=value lines, # comments skipped), or the default, also when the file is
+# missing. A CRLF file reads like an LF one: the carriage return ending a line is not part
+# of the value. The one reader of a single key: config_get reads the working tree's file
+# with it, and the loosening check reads the base's and HEAD's copies with it, so the
+# gate judges the values the runner reads.
+config_value() {
+  local value
+  if [ -f "$1" ] && value=$(awk -v k="$2" '
     { sub(/\r$/, "") }
     /^[[:space:]]*#/ { next }
     {
@@ -69,11 +70,19 @@ config_get() {
       found = 1
     }
     END { if (!found) exit 1; print last }
-  ' "$file"); then
+  ' "$1"); then
     printf '%s\n' "$value"
   else
-    printf '%s\n' "${2-}"
+    printf '%s\n' "${3-}"
   fi
+}
+
+# config_get <key> [default]: print the last value set for key in .gauntlet/config of the
+# working tree, or the default (see config_value).
+config_get() {
+  local root
+  root=$(repo_root) || exit 2
+  config_value "$root/.gauntlet/config" "$1" "${2-}"
 }
 
 # now_ms: print the current time in milliseconds. Falls back to seconds x 1000

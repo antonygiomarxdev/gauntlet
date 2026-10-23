@@ -1075,3 +1075,394 @@ test_a_row_with_an_empty_reason_still_covers() {
   assert_eq 0 "$STATUS" "status: $OUT"
   assert_contains "$OUT" 'note: loosened todo: severity block → shadow; covered by ""'
 }
+
+# R34: .gauntlet/config is judged like a rule file. A change that lets the branch off
+# something the base enforced is a loosening, and a new `loosen @config` row covers it.
+# exc_cfg <base config> <head config>: main holds the first config, feat the second, and
+# the gate has run against main ($OUT and $STATUS). The todo rule is clean, so the config
+# is the only thing under test.
+exc_cfg() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  printf '%s' "$1" > .gauntlet/config
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf '%s' "$2" > .gauntlet/config
+  exc_rebase
+  exc_commit feat
+  exc_gate
+}
+
+# exc_cfg_loosened <base config> <head config> <line>...: the gate fails on exactly these
+# @config lines.
+exc_cfg_loosened() {
+  local base=$1 head=$2 line n=0
+  shift 2
+  exc_cfg "$base" "$head"
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "[loosened]"
+  for line in "$@"; do
+    assert_contains "$OUT" "  @config  $line"
+    n=$((n + 1))
+  done
+  assert_eq "$n" "$(printf '%s\n' "$OUT" | grep -c '^  @config  ')" "number of @config lines in: $OUT"
+  if [ "$n" -eq 1 ]; then
+    assert_contains "$OUT" "FAIL (1 problem)"
+  else
+    assert_contains "$OUT" "FAIL ($n problems)"
+  fi
+}
+
+# exc_cfg_free <base config> <head config>: the gate passes and reports nothing loosened.
+exc_cfg_free() {
+  exc_cfg "$1" "$2"
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "[loosened]"
+  assert_not_contains "$OUT" "@config"
+}
+
+test_a_changed_base_is_loosening() {
+  exc_cfg_loosened $'base=origin/dev\n' $'base=origin/main\n' "base origin/dev → origin/main"
+}
+
+test_a_base_added_to_the_config_is_loosening() {
+  exc_cfg_loosened $'touched=off\n' $'touched=off\nbase=origin/dev\n' "base (unset) → origin/dev"
+}
+
+test_a_base_removed_from_the_config_is_loosening() {
+  exc_cfg_loosened $'base=origin/dev\n' $'touched=off\n' "base origin/dev → (unset)"
+}
+
+test_touched_on_to_off_is_loosening() {
+  exc_cfg_loosened $'touched=on\n' $'touched=off\n' "touched on → off"
+}
+
+# The default is off (touched_mode), so deleting the line of an enabled gate turns it off.
+test_deleting_touched_on_is_loosening() {
+  exc_cfg_loosened $'touched=on\n' $'# gone\n' "touched on → off"
+}
+
+# The last line wins, as the runner reads it: the effective value went from on to off.
+test_the_effective_touched_value_is_the_last_line() {
+  exc_cfg_loosened $'touched=on\n' $'touched=on\ntouched=off\n' "touched on → off"
+}
+
+test_a_removed_check_is_loosening() {
+  exc_cfg_loosened $'check.lint=true\ncheck.unit=true\n' $'check.unit=true\n' "check lint removed"
+}
+
+test_a_check_turned_off_for_ci_is_loosening() {
+  exc_cfg_loosened $'check.lint=true\ncheck.lint.ci=on\n' $'check.lint=true\ncheck.lint.ci=off\n' "check lint ci on → off"
+}
+
+# The default of .ci is off, so deleting the line of a check that ran in CI turns it off.
+test_deleting_a_check_ci_line_is_loosening() {
+  exc_cfg_loosened $'check.lint=true\ncheck.lint.ci=on\n' $'check.lint=true\n' "check lint ci on → off"
+}
+
+test_narrowed_check_paths_are_loosening() {
+  exc_cfg_loosened $'check.lint=true\ncheck.lint.paths=src/ lib/\n' $'check.lint=true\ncheck.lint.paths=src/\n' \
+    "check lint paths narrowed: lib/"
+}
+
+# A prefix that was in scope and no longer is: src/ became src/api/.
+test_a_deeper_check_prefix_is_narrowing() {
+  exc_cfg_loosened $'check.lint=true\ncheck.lint.paths=src/\n' $'check.lint=true\ncheck.lint.paths=src/api/\n' \
+    "check lint paths narrowed: src/"
+}
+
+# An empty value means every change: empty to non-empty narrows.
+test_check_paths_from_empty_to_a_prefix_is_narrowing() {
+  exc_cfg_loosened $'check.lint=true\n' $'check.lint=true\ncheck.lint.paths=src/\n' \
+    "check lint paths narrowed: all files → src/"
+}
+
+test_a_changed_check_command_is_loosening() {
+  exc_cfg_loosened $'check.lint=true\n' $'check.lint=exit 0\n' "check lint command changed"
+}
+
+test_every_item_of_a_changed_config_is_its_own_line() {
+  exc_cfg_loosened $'base=origin/dev\ntouched=on\ncheck.lint=true\ncheck.unit=true\ncheck.unit.ci=on\n' \
+    $'touched=off\ncheck.unit=exit 0\n' \
+    "base origin/dev → (unset)" "touched on → off" "check lint removed" "check unit ci on → off" "check unit command changed"
+}
+
+# A config deleted by the branch: every key that mattered is a loosening.
+test_a_deleted_config_loosens_everything_that_mattered() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  printf 'touched=on\ncheck.lint=true\n' > .gauntlet/config
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  must git rm -q .gauntlet/config
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  @config  touched on → off"
+  assert_contains "$OUT" "  @config  check lint removed"
+}
+
+# A base with rules but no config reads as all defaults: a base= is a change.
+test_a_config_added_with_a_base_is_loosening() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  must git rm -q -f .gauntlet/config
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf 'base=origin/dev\n' > .gauntlet/config
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  @config  base (unset) → origin/dev"
+}
+
+# Not loosening: each of these keeps every guarantee the base had, or adds one.
+test_a_stage_change_in_a_rule_is_not_loosening() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' stage=push
+  cases_of todo 'TODO x'
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  rule todo paths='**/*.ts' stage=commit
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "commit to push: $OUT"
+  assert_not_contains "$OUT" "[loosened]"
+  rule todo paths='**/*.ts' stage=push
+  exc_rebase
+  exc_commit back
+  exc_gate
+  assert_eq 0 "$STATUS" "push to commit: $OUT"
+  assert_not_contains "$OUT" "[loosened]"
+}
+
+test_adding_a_check_is_not_loosening() {
+  exc_cfg_free $'touched=off\n' $'touched=off\ncheck.lint=true\n'
+}
+
+test_turning_a_check_on_for_ci_is_not_loosening() {
+  exc_cfg_free $'check.lint=true\ncheck.lint.ci=off\n' $'check.lint=true\ncheck.lint.ci=on\n'
+}
+
+test_a_check_ci_line_added_with_off_is_not_loosening() {
+  exc_cfg_free $'check.lint=true\n' $'check.lint=true\ncheck.lint.ci=off\n'
+}
+
+test_widened_check_paths_are_not_loosening() {
+  exc_cfg_free $'check.lint=true\ncheck.lint.paths=src/api/\n' $'check.lint=true\ncheck.lint.paths=src/\n'
+}
+
+test_more_check_prefixes_are_not_loosening() {
+  exc_cfg_free $'check.lint=true\ncheck.lint.paths=src/\n' $'check.lint=true\ncheck.lint.paths=src/ lib/\n'
+}
+
+test_check_paths_cleared_are_not_loosening() {
+  exc_cfg_free $'check.lint=true\ncheck.lint.paths=src/\n' $'check.lint=true\n'
+}
+
+test_reordered_check_prefixes_are_not_loosening() {
+  exc_cfg_free $'check.lint=true\ncheck.lint.paths=src/ lib/\n' $'check.lint=true\ncheck.lint.paths=lib/ src/\n'
+}
+
+test_touched_off_to_on_is_not_loosening() {
+  exc_cfg_free $'touched=off\n' $'touched=on\n'
+}
+
+test_deleting_touched_off_is_not_loosening() {
+  exc_cfg_free $'touched=off\n' $'# nothing\n'
+}
+
+test_comments_blank_lines_and_spacing_are_not_loosening() {
+  exc_cfg_free $'touched=on\ncheck.lint=true\ncheck.lint.paths=src/\n' \
+    $'# the gate\n\n  touched = on  \ncheck.lint =true\n\n# scope\ncheck.lint.paths =  src/  \n'
+}
+
+# A CRLF config reads like an LF one, in either direction.
+test_crlf_and_lf_configs_are_the_same_config() {
+  exc_cfg_free $'touched=on\ncheck.lint=true\ncheck.lint.ci=on\n' $'touched=on\r\ncheck.lint=true\r\ncheck.lint.ci=on\r\n'
+}
+
+test_an_lf_config_after_a_crlf_one_is_the_same_config() {
+  exc_cfg_free $'touched=on\r\ncheck.lint=true\r\n' $'touched=on\ncheck.lint=true\n'
+}
+
+# A byte-order mark before a comment changes no value. Before a key the runner has always
+# ignored the key (doctor says so); the gate judges the effective value, so that is a loosening.
+test_a_byte_order_mark_before_a_comment_is_not_loosening() {
+  exc_cfg_free $'# gauntlet config\ntouched=on\n' $'\357\273\277# gauntlet config\ntouched=on\n'
+}
+
+test_a_byte_order_mark_before_a_key_is_judged_as_the_runner_reads_it() {
+  exc_cfg_loosened $'touched=on\n' $'\357\273\277touched=on\n' "touched on → off"
+}
+
+# Covered, uncovered, and the row that is too old.
+test_a_config_loosening_passes_with_a_new_config_row() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  printf 'touched=on\n' > .gauntlet/config
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf 'touched=off\n' > .gauntlet/config
+  run "$G" loosen @config "touched on -> off" "the gate was too slow"
+  assert_eq 0 "$STATUS" "loosen status: $OUT"
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" 'note: loosened @config: touched on → off; covered by "the gate was too slow"'
+  assert_not_contains "$OUT" "[loosened]"
+}
+
+# One row covers every @config item, as one loosen row covers every change to a rule.
+test_one_config_row_covers_every_config_item() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  printf 'touched=on\ncheck.lint=true\n' > .gauntlet/config
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf 'touched=off\n' > .gauntlet/config
+  run "$G" loosen @config "touched off, lint gone" "moved to CI"
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" 'note: loosened @config: touched on → off; covered by "moved to CI"'
+  assert_contains "$OUT" 'note: loosened @config: check lint removed; covered by "moved to CI"'
+}
+
+test_an_old_config_row_does_not_cover_a_new_config_loosening() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  printf 'touched=on\n' > .gauntlet/config
+  run "$G" loosen @config "an earlier change" "reason"
+  assert_eq 0 "$STATUS" "loosen status: $OUT"
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf 'touched=off\n' > .gauntlet/config
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  @config  touched on → off"
+}
+
+# exc_both_loosened <row-id> <what> <reason>: main enforces touched=on and the todo rule at
+# block; feat turns both off, and only one new row, for <row-id>, covers anything.
+exc_both_loosened() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  printf 'touched=on\n' > .gauntlet/config
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf 'touched=off\n' > .gauntlet/config
+  rule todo paths='**/*.ts' severity=shadow
+  run "$G" loosen "$1" "$2" "$3"
+  assert_eq 0 "$STATUS" "loosen status: $OUT"
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status: $OUT"
+}
+
+test_a_rule_row_does_not_cover_the_config() {
+  exc_both_loosened todo "severity to shadow" "rule reason"
+  assert_contains "$OUT" "  @config  touched on → off"
+  assert_contains "$OUT" 'note: loosened todo: severity block → shadow; covered by "rule reason"'
+  assert_not_contains "$OUT" "  todo  severity"
+}
+
+test_a_config_row_does_not_cover_a_rule() {
+  exc_both_loosened @config "touched off" "config reason"
+  assert_contains "$OUT" "  todo  severity block → shadow"
+  assert_contains "$OUT" 'note: loosened @config: touched on → off; covered by "config reason"'
+  assert_not_contains "$OUT" "  @config  touched"
+}
+
+# The first install is not judged: with no rules and no config at the base there is nothing to loosen.
+test_the_onboarding_branch_may_set_a_base_without_a_row() {
+  must mkdir -p "$TMP/repo"
+  must cd "$TMP/repo"
+  must git init -q .
+  must git symbolic-ref HEAD refs/heads/main
+  must git config user.name "Test User"
+  must git config user.email "test@example.com"
+  must git config commit.gpgsign false
+  printf 'ok\n' > a.ts
+  exc_commit main
+  must git checkout -q -b feat
+  must mkdir -p .gauntlet/rules
+  printf 'base=origin/dev\ntouched=on\n' > .gauntlet/config
+  must touch .gauntlet/baseline.tsv .gauntlet/exceptions.tsv
+  exc_commit onboarding
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "@config"
+}
+
+# R29: from a subdirectory and with CI=true the report is the one the root run makes.
+test_the_config_loosening_report_is_the_same_from_a_subdirectory_and_in_ci() {
+  exc_cfg $'touched=on\ncheck.lint=true\n' $'touched=off\n'
+  assert_eq 1 "$STATUS" "from the root: $OUT"
+  want=$(exc_untimed "$OUT")
+  must mkdir -p pkg/sub
+  must cd pkg/sub
+  exc_gate
+  assert_eq 1 "$STATUS" "from pkg/sub: $OUT"
+  assert_eq "$want" "$(exc_untimed "$OUT")" "same report from a subdirectory"
+  must cd ../..
+  CI=true exc_gate
+  assert_eq 1 "$STATUS" "CI=true: $OUT"
+  assert_eq "$want" "$(exc_untimed "$OUT")" "same report with CI=true"
+}
+
+# A base with a config and no rule yet is still compared: the declared checks it enforces
+# are not an onboarding matter.
+test_the_config_is_judged_when_the_base_has_no_rules() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  printf 'check.lint=true\n' > .gauntlet/config
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf 'touched=off\n' > .gauntlet/config
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  @config  check lint removed"
+}
+
+# The lines come out in one order whatever order awk walks its arrays in: by check name.
+test_removed_checks_are_listed_by_name() {
+  exc_cfg $'check.zeta=true\ncheck.beta=true\ncheck.alpha=true\ncheck.mid=true\ncheck.omega=true\ncheck.delta=true\n' $'touched=off\n'
+  assert_eq 1 "$STATUS" "status: $OUT"
+  got=$(printf '%s\n' "$OUT" | grep '^  @config  check ' | tr '\n' '|')
+  assert_eq "  @config  check alpha removed|  @config  check beta removed|  @config  check delta removed|  @config  check mid removed|  @config  check omega removed|  @config  check zeta removed|" "$got" "order"
+}

@@ -44,7 +44,7 @@ check_ci() {
 check_run() {
   local scratch=$1 base_ref=$2 start=$3 root base sha id rf sev fix atb
   local known=0 n_rules ms end n body new_n=0 global_n=0 touched_n=0 baseline_n=0
-  local loosened_n=0 rt_n=0 rt_rc=0 checks_n=0 broken=0 t0 t1 rc
+  local loosened_n=0 rt_n=0 rt_rc=0 checks_n=0 broken=0 t0 t1 rc cfg_rc
   root=$(repo_root) || return 2
   touched_mode > /dev/null || return 2
   validate_rules || return 2
@@ -136,24 +136,23 @@ check_run() {
     baseline_n=1
   fi
 
-  # Loosening runs even on the onboarding branch; it is skipped only when the
-  # base has no rules to compare with at all.
+  # Loosening runs even on the onboarding branch; it is skipped only when the base has
+  # neither rules nor a config to compare with: nothing was set up there yet.
   rc=0
   base_has "$sha" .gauntlet/rules || rc=$?
-  case "$rc" in
-    0)
-      cmp_loosened "$sha" "$scratch/loosened.covered" > "$scratch/loosened.rows" || return 2
-      # Covered loosenings pass; the report names each one with its row's reason, here and in CI.
-      awk -F '\t' '{ printf "note: loosened %s: %s; covered by \"%s\"\n", $1, $2, $3 }' "$scratch/loosened.covered" >> "$body" || return 2
-      if [ -s "$scratch/loosened.rows" ]; then
-        printf '[loosened]\n' >> "$body"
-        awk -F '\t' '{ printf "  %s  %s\n", $1, $2 }' "$scratch/loosened.rows" >> "$body"
-      fi
-      loosened_n=$(awk 'END { print NR }' "$scratch/loosened.rows") || return 2
-      ;;
-    1) ;;
-    *) return 2 ;;
-  esac
+  cfg_rc=0
+  base_has "$sha" .gauntlet/config || cfg_rc=$?
+  if [ "$rc" -gt 1 ] || [ "$cfg_rc" -gt 1 ]; then return 2; fi
+  if [ "$rc" -eq 0 ] || [ "$cfg_rc" -eq 0 ]; then
+    cmp_loosened "$sha" "$scratch/loosened.covered" > "$scratch/loosened.rows" || return 2
+    # Covered loosenings pass; the report names each one with its row's reason, here and in CI.
+    awk -F '\t' '{ printf "note: loosened %s: %s; covered by \"%s\"\n", $1, $2, $3 }' "$scratch/loosened.covered" >> "$body" || return 2
+    if [ -s "$scratch/loosened.rows" ]; then
+      printf '[loosened]\n' >> "$body"
+      awk -F '\t' '{ printf "  %s  %s\n", $1, $2 }' "$scratch/loosened.rows" >> "$body"
+    fi
+    loosened_n=$(awk 'END { print NR }' "$scratch/loosened.rows") || return 2
+  fi
 
   # Rule tests and declared checks run on the onboarding branch too: only the
   # baseline comparisons above need a baseline at base.
@@ -639,7 +638,87 @@ cmp_loosened_in() {
     reason=$(GL_ID=$id awk -F "$DETECT_TAB" 'index($1, ENVIRON["GL_ID"] ":") == 1 { print "x" $2; exit }' "$scratch/new.loosen") || return 2
     loosen_row "$id" "$reason" "$scratch" || return 2
   done < "$scratch/base.rules"
+
+  # .gauntlet/config is judged like a rule file, under the pseudo-rule @config (R34): one
+  # new `loosen @config` row covers every item below, as a rule's row covers its changes.
+  cmp_config "$mb" "$scratch" > "$scratch/changes" || return 2
+  reason=$(awk -F "$DETECT_TAB" 'index($1, "@config:") == 1 { print "x" $2; exit }' "$scratch/new.loosen") || return 2
+  loosen_row @config "$reason" "$scratch" || return 2
   cat "$scratch/out"
+}
+
+# cmp_config <merge-base> <scratch>: print one line per way .gauntlet/config was loosened
+# since the merge-base, read the way the runner reads it (config_value, check_key_rows):
+#   base         the value differs (set, changed or removed);
+#   touched      the gate went from on to off (the default is off, so deleting the line
+#                of an enabled gate counts);
+#   check <name> removed; its .ci went from on to off (the default is off); its .paths
+#                narrowed; its command changed.
+# Not loosening: a check added, .ci turned on, .paths widened, touched turned on, and
+# comments, blank lines or spacing. The base side is the merge-base's file, the other side
+# is HEAD's (a clean tree is what check --ci judges), and a file absent on a side reads as
+# all defaults: no base, touched off, no checks. A `.paths` value is a list of prefixes
+# (check_in_scope); an empty one means every change. It is narrowed when some prefix of the
+# base list is no longer covered, a prefix being covered when a head prefix starts it, so
+# src/api/ becoming src/ is not narrowing and src/ becoming src/api/ is, and an empty list
+# becoming a prefix is.
+cmp_config() {
+  local mb=$1 scratch=$2 bv hv bt ht
+  at_base "$mb" .gauntlet/config > "$scratch/cfg.base" || return 2
+  at_base HEAD .gauntlet/config > "$scratch/cfg.head" || return 2
+  bv=$(config_value "$scratch/cfg.base" base "") || return 2
+  hv=$(config_value "$scratch/cfg.head" base "") || return 2
+  if [ "$bv" != "$hv" ]; then
+    printf 'base %s → %s\n' "${bv:-(unset)}" "${hv:-(unset)}"
+  fi
+  bt=$(config_value "$scratch/cfg.base" touched off) || return 2
+  ht=$(config_value "$scratch/cfg.head" touched off) || return 2
+  if [ "$bt" = on ] && [ "$ht" != on ]; then printf 'touched on → off\n'; fi
+  # The declared checks of each side: name, ci, paths, command (check_key_rows leaves out
+  # the "#" rows that mark keys it refuses), sorted so the lines come out in one order.
+  check_key_rows "$scratch/cfg.base" | awk 'substr($0, 1, 1) != "#"' | LC_ALL=C sort > "$scratch/cfg.base.checks" || return 2
+  check_key_rows "$scratch/cfg.head" | awk 'substr($0, 1, 1) != "#"' | LC_ALL=C sort > "$scratch/cfg.head.checks" || return 2
+  GL_BASE="$scratch/cfg.base.checks" GL_HEAD="$scratch/cfg.head.checks" awk '
+    # The row is name, ci, paths, command split at the first three tabs, as the runner
+    # splits it (run_declared_checks); the command may hold a tab.
+    function field(line, k,   i) {
+      for (i = 1; i < k; i++) line = substr(line, index(line, "\t") + 1)
+      return k < 4 ? substr(line, 1, index(line, "\t") - 1) : line
+    }
+    FILENAME == ENVIRON["GL_BASE"] {
+      name = field($0, 1)
+      order[++n] = name
+      bci[name] = field($0, 2); bpaths[name] = field($0, 3); bcmd[name] = field($0, 4)
+      next
+    }
+    {
+      name = field($0, 1)
+      has[name] = 1
+      hci[name] = field($0, 2); hpaths[name] = field($0, 3); hcmd[name] = field($0, 4)
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        name = order[i]
+        if (!(name in has)) { print "check " name " removed"; continue }
+        if (bci[name] == "on" && hci[name] != "on") print "check " name " ci on → off"
+        hn = split(hpaths[name], hw, " ")
+        if (bpaths[name] == "") {
+          if (hn > 0) print "check " name " paths narrowed: all files → " hpaths[name]
+        } else if (hn > 0) {
+          bn = split(bpaths[name], bw, " ")
+          for (j = 1; j <= bn; j++) {
+            p = bw[j]
+            if ((name SUBSEP p) in done) continue
+            done[name SUBSEP p] = 1
+            covered = 0
+            for (k = 1; k <= hn; k++) if (index(p, hw[k]) == 1) covered = 1
+            if (!covered) print "check " name " paths narrowed: " p
+          }
+        }
+        if (bcmd[name] != hcmd[name]) print "check " name " command changed"
+      }
+    }
+  ' "$scratch/cfg.base.checks" "$scratch/cfg.head.checks"
 }
 
 # loosen_row <id> <row> <scratch>: file the changes in <scratch>/changes, one per line,
