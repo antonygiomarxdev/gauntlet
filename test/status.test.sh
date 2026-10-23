@@ -3,6 +3,10 @@
 # Tests for status, promote and doctor (lib/status.sh). Each test runs in a fresh
 # repo under $TMP. GAUNTLET_TODAY pins the clock wherever a date matters.
 
+# The pre-push gate text has one source, lib/hooks.sh; the tests read it there and never paste it.
+STATUS_TEST_GATE_CI=$(hook_const HOOK_GATE_CI)
+STATUS_TEST_SHARED_CI=$(hook_const HOOK_SHARED_CI)
+
 # same_file <want> <got>: fail with a diff unless the two files are byte-equal.
 same_file() {
   if ! cmp -s "$1" "$2"; then
@@ -433,13 +437,39 @@ test_doctor_print_only_hook_names_manual_line() {
   doctor_install
   run "$G" doctor
   assert_eq 1 "$STATUS" "doctor with a shared hooks dir"
-  assert_contains "$OUT" "FAIL pre-commit gate missing from $TMP/shared/pre-commit: add this line by hand as the first command, after the shebang line if there is one: .gauntlet/bin/gauntlet check --staged || exit \$?  # gauntlet"
+  assert_contains "$OUT" "FAIL pre-commit gate missing from $TMP/shared/pre-commit: add this line by hand as the first command, after the shebang line if there is one: if [ -x .gauntlet/bin/gauntlet ]; then .gauntlet/bin/gauntlet check --staged || exit \$?; fi"
+  assert_contains "$OUT" "FAIL pre-push gate missing from $TMP/shared/pre-push: add this line by hand as the first command, after the shebang line if there is one: $STATUS_TEST_SHARED_CI"
   assert_not_contains "$OUT" "install-hooks"
   printf '%s\n' '.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet' > "$TMP/shared/pre-commit"
-  printf '%s\n' '.gauntlet/bin/gauntlet check --ci --pre-push || exit $?  # gauntlet' > "$TMP/shared/pre-push"
+  printf '%s\n' "$STATUS_TEST_GATE_CI" > "$TMP/shared/pre-push"
   must chmod +x "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
   run "$G" doctor
-  assert_eq 0 "$STATUS" "doctor after the lines are added by hand"
+  assert_eq 0 "$STATUS" "doctor after the gate lines are added by hand"
+}
+
+# The guarded form that install-hooks prints for a shared hooks directory is the one doctor asks for.
+test_doctor_accepts_the_guarded_form_in_a_shared_hooks_dir() {
+  mkrepo
+  must mkdir "$TMP/shared"
+  must git config core.hooksPath "$TMP/shared"
+  doctor_install
+  printf '%s\n' 'if [ -x .gauntlet/bin/gauntlet ]; then .gauntlet/bin/gauntlet check --staged || exit $?; fi' > "$TMP/shared/pre-commit"
+  printf '%s\n' "$STATUS_TEST_SHARED_CI" > "$TMP/shared/pre-push"
+  must chmod +x "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor with the guarded lines: $OUT"
+  assert_contains "$OUT" "ok pre-commit gate in $TMP/shared/pre-commit"
+  assert_contains "$OUT" "ok pre-push gate in $TMP/shared/pre-push"
+}
+
+# The guarded form is for a shared directory; an own hooks directory still wants the plain gate.
+test_doctor_does_not_accept_the_guarded_form_in_an_own_hooks_dir() {
+  mkrepo
+  doctor_install
+  printf '%s\n' 'if [ -x .gauntlet/bin/gauntlet ]; then .gauntlet/bin/gauntlet check --staged || exit $?; fi' > .git/hooks/pre-commit
+  must chmod +x .git/hooks/pre-commit
+  run "$G" doctor
+  assert_contains "$OUT" "FAIL pre-commit gate missing from .git/hooks/pre-commit"
 }
 
 test_doctor_uneditable_hook_names_manual_line() {
@@ -1574,7 +1604,7 @@ test_doctor_names_the_manual_line_for_an_old_pre_push_line() {
   must chmod +x "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
   run "$G" doctor
   assert_eq 1 "$STATUS" "doctor: $OUT"
-  assert_contains "$OUT" "FAIL pre-push gate in $TMP/shared/pre-push has no --pre-push, so it judges the checked-out branch whatever git pushes: replace that line by hand with: .gauntlet/bin/gauntlet check --ci --pre-push || exit \$?  # gauntlet"
+  assert_contains "$OUT" "FAIL pre-push gate in $TMP/shared/pre-push has no --pre-push, so it judges the checked-out branch whatever git pushes: replace that line by hand with: $STATUS_TEST_SHARED_CI"
   assert_not_contains "$OUT" "run gauntlet install-hooks"
 }
 
@@ -1711,7 +1741,7 @@ test_doctor_names_a_script_that_serves_both_hooks() {
   assert_eq 1 "$(doctor_fails)" "one FAIL for the shared script: $OUT"
   assert_contains "$OUT" "FAIL .git/hooks/pre-commit and .git/hooks/pre-push are the same file, so a gate line in it would run in both hooks: run gauntlet install-hooks and add by hand the lines it prints"
   # shellcheck disable=SC2016 # the hook text holds ${0##*/}, which must not expand here
-  printf '#!/bin/sh\nif [ "${0##*/}" = pre-commit ]; then\n.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet\nfi\nif [ "${0##*/}" = pre-push ]; then\n.gauntlet/bin/gauntlet check --ci --pre-push || exit $?  # gauntlet\nfi\necho shared\n' > .git/hooks/pre-commit
+  printf '#!/bin/sh\nif [ "${0##*/}" = pre-commit ]; then\n.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet\nfi\nif [ "${0##*/}" = pre-push ]; then\n%s\nfi\necho shared\n' "$STATUS_TEST_GATE_CI" > .git/hooks/pre-commit
   run "$G" doctor
   assert_eq 0 "$STATUS" "doctor after the lines are added: $OUT"
   assert_contains "$OUT" "ok pre-commit gate in .git/hooks/pre-commit"

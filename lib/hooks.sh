@@ -34,6 +34,14 @@ HOOK_OLD_GATE_CI='.gauntlet/bin/gauntlet check --ci || exit $?  # gauntlet'
 GAUNTLET_CMD_STAGED='.gauntlet/bin/gauntlet check --staged'
 GAUNTLET_CMD_CI='.gauntlet/bin/gauntlet check --ci --pre-push'
 
+# The form for a hooks directory shared with other repositories (core.hooksPath outside this
+# repo): the same gate, but only where the vendored runner exists, so a repository without
+# gauntlet is not blocked by it. The gate is the first command of the body, so git's stdin
+# reaches the pre-push gate. install-hooks prints it, doctor accepts it. Built from the command
+# strings above, so the gate text has one source.
+HOOK_SHARED_STAGED="if [ -x .gauntlet/bin/gauntlet ]; then $GAUNTLET_CMD_STAGED || exit \$?; fi"
+HOOK_SHARED_CI="if [ -x .gauntlet/bin/gauntlet ]; then $GAUNTLET_CMD_CI || exit \$?; fi"
+
 # shellcheck disable=SC2016 # the awk program reads its record; it is not shell text to expand
 # The decision for one existing hook, run by awk over the file: exit 0 when the gate
 # may go into it, 3 when the file is one we must not edit (CRLF, or a shebang whose
@@ -259,13 +267,19 @@ install_hooks() {
   cd "$root" || die "cannot enter $root"
   hook_paths || die "cannot find the git directory"
   install_lock
-  if [ ! -f .gauntlet/bin/gauntlet ]; then
-    printf 'gauntlet: warning: .gauntlet/bin/gauntlet is missing; run gauntlet install\n' >&2
-  fi
   target=$(hook_target)
   kind=${target%% *}
   dir=${target#"$kind"}
   dir=${dir# }
+  # The hooks call .gauntlet/bin/gauntlet from the repo root. A hook written where that is not an
+  # executable fails every commit and push, so none is written: the message says what to do.
+  # What is only printed is not written, so it is warned about.
+  if [ ! -f .gauntlet/bin/gauntlet ] || [ ! -x .gauntlet/bin/gauntlet ]; then
+    case "$kind" in
+      husky|husky-v9|dir) die "no runner at $HOOKS_ROOT/.gauntlet/bin/gauntlet; run gauntlet install first" ;;
+      *) printf 'gauntlet: warning: no runner at %s; run gauntlet install\n' "$(path_spell "$HOOKS_ROOT/.gauntlet/bin/gauntlet")" >&2 ;;
+    esac
+  fi
   case "$kind" in
     husky|husky-v9|dir)
       mkdir -p "$dir" || die "cannot create $dir"
@@ -334,17 +348,22 @@ add_hook_pair() {
 # lines and both tests on the hook's name (HOOK_GUARD_*), as whole lines. Presence, not meaning:
 # like every check of a hook, it cannot tell what the lines around them do.
 hooks_one_script_done() {
-  hook_has_gate "$1" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED" \
-    && hook_has_gate "$1" "$HOOK_LINE_CI" "$HOOK_GATE_CI" \
+  hook_has_gate "$1" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED" "$HOOK_SHARED_STAGED" \
+    && hook_has_gate "$1" "$HOOK_LINE_CI" "$HOOK_GATE_CI" "$HOOK_SHARED_CI" \
     && grep -Fxq -- "$HOOK_GUARD_STAGED" "$1" 2> /dev/null \
     && grep -Fxq -- "$HOOK_GUARD_CI" "$1" 2> /dev/null
 }
 
-# hooks_one_script <commit-hook> <push-hook>: the two paths are one file (same device and inode,
-# which covers both a symlink and a hard link). Edit nothing: one gate line cannot be right for
-# both hooks. Say why and print the lines to add by hand; or say they are there.
+# hooks_one_script <commit-hook> <push-hook> [shared]: the two paths are one file (same device and
+# inode, which covers both a symlink and a hard link). Edit nothing: one gate line cannot be right
+# for both hooks. Say why and print the lines to add by hand; or say they are there. With "shared"
+# the lines are the guarded forms, for a hooks directory other repositories use.
 hooks_one_script() {
-  local shown a b
+  local shown a b staged=$HOOK_GATE_STAGED ci=$HOOK_GATE_CI
+  if [ "${3:-}" = shared ]; then
+    staged=$HOOK_SHARED_STAGED
+    ci=$HOOK_SHARED_CI
+  fi
   shown=$(path_spell "$(display_path "$1")")
   if hooks_one_script_done "$1"; then
     printf 'already present in %s\n' "$shown"
@@ -354,18 +373,21 @@ hooks_one_script() {
   a=$(path_spell "$(display_path "$1")")
   b=$(path_spell "$(display_path "$2")")
   printf 'ACTION NEEDED: %s and %s are the same file, so a gate line in it would run in both hooks (the staged gate on push, the push gate on commit). It is not edited. Add to %s, as the first commands, after the shebang line if there is one:\n' "$a" "$b" "$shown"
-  printf '%s\n%s\nfi\n%s\n%s\nfi\n' "$HOOK_GUARD_STAGED" "$HOOK_GATE_STAGED" "$HOOK_GUARD_CI" "$HOOK_GATE_CI"
+  printf '%s\n%s\nfi\n%s\n%s\nfi\n' "$HOOK_GUARD_STAGED" "$staged" "$HOOK_GUARD_CI" "$ci"
   warn_if_not_executable "$1"
 }
 
-# print_hook_pair <dir>: print the two gate lines for <dir>, which is not ours to edit.
+# print_hook_pair <dir>: print the two gate lines for <dir>, a hooks directory shared with other
+# repositories (core.hooksPath outside this repo), which is not ours to edit. A plain gate line
+# would fail in every repository that has no .gauntlet/, so the lines are the guarded forms.
 print_hook_pair() {
+  printf '%s is a hooks directory shared with other repositories (core.hooksPath), so the lines below are guarded: they do nothing where .gauntlet/bin/gauntlet is absent.\n' "$(path_spell "$1")"
   if [ "$1/pre-commit" -ef "$1/pre-push" ]; then
-    hooks_one_script "$1/pre-commit" "$1/pre-push"
+    hooks_one_script "$1/pre-commit" "$1/pre-push" shared
     return 0
   fi
-  print_only "$1/pre-commit" "$HOOK_GATE_STAGED"
-  print_only "$1/pre-push" "$HOOK_GATE_CI"
+  print_only "$1/pre-commit" "$HOOK_SHARED_STAGED"
+  print_only "$1/pre-push" "$HOOK_SHARED_CI"
 }
 
 # add_hook_line <file> <plain> <gate> [<old-plain> <old-gate>]: the gate runs first in a hook
@@ -442,10 +464,15 @@ upgrade_gate_line() {
   rm -f "$tmp"
 }
 
-# hook_has_gate <file> <plain> <gate>: succeed when <file> holds either gate form as a
-# whole line. doctor and install-hooks both ask this, so a hook is done by one rule.
+# hook_has_gate <file> <form>...: succeed when <file> holds any of the forms as a whole line. doctor
+# and install-hooks both ask this, so a hook is done by one rule.
 hook_has_gate() {
-  grep -Fxq -- "$2" "$1" 2>/dev/null || grep -Fxq -- "$3" "$1" 2>/dev/null
+  local file=$1 form
+  shift
+  for form in "$@"; do
+    if grep -Fxq -- "$form" "$file" 2> /dev/null; then return 0; fi
+  done
+  return 1
 }
 
 # hook_editable <file>: say whether install-hooks may edit <file> itself. Returns 0
@@ -517,7 +544,7 @@ resolve_link() {
 
 # print_only <file> <gate>: a hook we will not edit. Say what to add, and where it goes.
 print_only() {
-  printf 'ACTION NEEDED: add to %s:\n%s\n  (place it as the first command, after the shebang line if there is one)\n' "$(display_path "$1")" "$2"
+  printf 'ACTION NEEDED: add to %s:\n%s\n  (place it as the first command, after the shebang line if there is one)\n' "$(path_spell "$(display_path "$1")")" "$2"
   if [ -e "$1" ]; then
     warn_if_not_executable "$1"
   fi

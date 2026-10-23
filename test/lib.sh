@@ -35,6 +35,14 @@ if [ "${GAUNTLET_TEST_BSD_DATE:-}" = 1 ]; then
   export PATH
 fi
 
+# hook_const <NAME>: the value of a constant that lib/hooks.sh defines (HOOK_GATE_CI,
+# GAUNTLET_CMD_CI, HOOK_SHARED_CI, ...). A test that compares with a hook line asks for it here, so
+# the text of a gate line has one source; a test never pastes the pre-push command. Read in a
+# subshell, so nothing of the library leaks into the suite.
+hook_const() {
+  ( . "$ROOT/lib/hooks.sh" && printf '%s' "${!1}" )
+}
+
 # kill_tree <pid>: kill <pid> and everything it started, the youngest first. A bash that waits
 # for a command substitution holds a TERM trap until it ends, so killing only the top process
 # leaves a runaway chain of subshells running.

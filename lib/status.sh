@@ -443,13 +443,22 @@ doctor_hooks() {
         fi
       done < "$scratch/configs"
       ;;
-    husky|husky-v9|dir|print)
+    husky|husky-v9|dir)
       if [ "$dir/pre-commit" -ef "$dir/pre-push" ]; then
         doctor_one_script "$dir/pre-commit" "$dir/pre-push" "$execcheck"
         return 0
       fi
       doctor_hook_file pre-commit "$dir/pre-commit" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED" "$kind" "$execcheck"
       doctor_hook_file pre-push "$dir/pre-push" "$HOOK_LINE_CI" "$HOOK_GATE_CI" "$kind" "$execcheck" "$HOOK_OLD_LINE_CI" "$HOOK_OLD_GATE_CI"
+      ;;
+    print)
+      # A shared hooks directory: the guarded form is the one to add, and the gate form is accepted.
+      if [ "$dir/pre-commit" -ef "$dir/pre-push" ]; then
+        doctor_one_script "$dir/pre-commit" "$dir/pre-push" "$execcheck"
+        return 0
+      fi
+      doctor_hook_file pre-commit "$dir/pre-commit" "$HOOK_GATE_STAGED" "$HOOK_SHARED_STAGED" "$kind" "$execcheck"
+      doctor_hook_file pre-push "$dir/pre-push" "$HOOK_GATE_CI" "$HOOK_SHARED_CI" "$kind" "$execcheck" "$HOOK_OLD_LINE_CI" "$HOOK_OLD_GATE_CI"
       ;;
   esac
   return 0

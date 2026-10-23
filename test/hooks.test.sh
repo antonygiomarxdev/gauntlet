@@ -8,9 +8,18 @@
 # Each test runs in a fresh repo under $TMP.
 
 HOOK_TEST_STAGED='.gauntlet/bin/gauntlet check --staged  # gauntlet'
-HOOK_TEST_CI='.gauntlet/bin/gauntlet check --ci --pre-push  # gauntlet'
 HOOK_TEST_GATE_STAGED='.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet'
-HOOK_TEST_GATE_CI='.gauntlet/bin/gauntlet check --ci --pre-push || exit $?  # gauntlet'
+# The pre-push gate text has one source, lib/hooks.sh: the tests read it there instead of pasting
+# the command. That the gate is really `check --ci` with git's ref lines reaching it is pinned by
+# the tests that push for real.
+HOOK_TEST_CI=$(hook_const HOOK_LINE_CI)
+HOOK_TEST_GATE_CI=$(hook_const HOOK_GATE_CI)
+HOOK_TEST_SHARED_STAGED='if [ -x .gauntlet/bin/gauntlet ]; then .gauntlet/bin/gauntlet check --staged || exit $?; fi'
+HOOK_TEST_SHARED_CI=$(hook_const HOOK_SHARED_CI)
+# shellcheck disable=SC2016 # shell text for a hook: ${0##*/} is expanded when the hook runs
+HOOK_TEST_GUARD_STAGED='if [ "${0##*/}" = pre-commit ]; then'
+# shellcheck disable=SC2016 # as above
+HOOK_TEST_GUARD_CI='if [ "${0##*/}" = pre-push ]; then'
 
 # hooks_repo <dir>: a git repo at <dir> on main with one commit and no gauntlet
 # state, then cd into it. <dir> may contain spaces.
@@ -103,6 +112,7 @@ test_plain_repo_gets_hooks() {
 
 test_existing_hook_keeps_content() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   printf '#!/bin/sh\necho one\necho two\n' > .git/hooks/pre-commit
   local want=$'#!/bin/sh\n'"$HOOK_TEST_GATE_STAGED"$'\necho one\necho two\n'
   run "$G" install-hooks
@@ -118,6 +128,7 @@ test_existing_hook_keeps_content() {
 # line is still added, and the other line stays once.
 test_presence_is_the_whole_line() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   printf '#!/bin/sh\necho tidy  # gauntlet\n' > .git/hooks/pre-commit
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks"
@@ -128,6 +139,7 @@ test_presence_is_the_whole_line() {
 # Either form of the line counts as present, per hook.
 test_presence_accepts_either_form() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   printf '#!/bin/sh\necho one\n%s\nexit 0\n' "$HOOK_TEST_GATE_STAGED" > .git/hooks/pre-commit
   printf '#!/bin/sh\necho two\n%s\n' "$HOOK_TEST_CI" > .git/hooks/pre-push
   chmod 755 .git/hooks/pre-commit .git/hooks/pre-push
@@ -144,6 +156,7 @@ test_presence_accepts_either_form() {
 # unchanged, including a trailing exit.
 test_insert_before_exit() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   printf '#!/bin/sh\necho one\n  exit 0   \n\n' > .git/hooks/pre-commit
   chmod 755 .git/hooks/pre-commit
   local want=$'#!/bin/sh\n'"$HOOK_TEST_GATE_STAGED"$'\necho one\n  exit 0   \n\n'
@@ -159,6 +172,7 @@ test_insert_before_exit() {
 
 test_insert_before_exit_without_newline() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   printf '#!/bin/sh\necho two\nexit 0' > .git/hooks/pre-push
   chmod 644 .git/hooks/pre-push
   local want=$'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\necho two\nexit 0'
@@ -180,6 +194,7 @@ test_insert_before_exit_without_newline() {
 # Non-shell interpreters are never edited; only the line is printed.
 test_nonshell_shebang_is_print_only() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   local shebang before
   for shebang in '#!/usr/bin/env python3' '#!/usr/bin/env -S node --no-warnings' '#!/usr/bin/perl'; do
     printf '%s\nprint "hi";\n' "$shebang" > .git/hooks/pre-commit
@@ -197,6 +212,7 @@ test_nonshell_shebang_is_print_only() {
 # sh, bash, dash, zsh, ksh and ash are shell, after env and -S; no shebang is sh.
 test_shell_shebangs_are_edited() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   local sh
   for sh in sh bash dash zsh ksh ash; do
     printf '#!/usr/bin/env %s\necho x\n' "$sh" > .git/hooks/pre-commit
@@ -217,6 +233,7 @@ test_shell_shebangs_are_edited() {
 # A CRLF hook is not edited: the line would not match and the file would be mixed.
 test_crlf_hook_is_print_only() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   local body before
   # A CRLF shebang and a CRLF body; then an LF shebang with a CRLF body only, which
   # the shebang rule alone would not catch.
@@ -234,6 +251,7 @@ test_crlf_hook_is_print_only() {
 # A dangling symlink is printed, and its target is not created.
 test_dangling_symlink_is_print_only() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   must ln -s "$TMP/nowhere" .git/hooks/pre-commit
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks"
@@ -246,6 +264,7 @@ test_dangling_symlink_is_print_only() {
 # An existing hook that is empty gets the shebang and the line; its mode is kept.
 test_empty_existing_hook_gets_shebang_and_line() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   : > .git/hooks/pre-commit
   chmod 644 .git/hooks/pre-commit
   "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed"
@@ -258,6 +277,7 @@ test_empty_existing_hook_gets_shebang_and_line() {
 # after the added and the already-present branches alike.
 test_warns_when_hook_not_executable() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   printf '#!/bin/sh\necho x\n' > .git/hooks/pre-push
   chmod 644 .git/hooks/pre-push
   "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "first install-hooks failed"
@@ -270,6 +290,7 @@ test_warns_when_hook_not_executable() {
 
 test_husky_v9_layout() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   must mkdir -p .husky/_
   printf 'husky stub\n' > .husky/_/husky.sh
   # shellcheck disable=SC2016 # the hook is shell text; its $0 is not ours to expand
@@ -288,6 +309,7 @@ test_husky_v9_layout() {
 
 test_husky_v8_layout() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   must mkdir -p .husky
   printf '#!/bin/sh\nnpm test\n' > .husky/pre-commit
   must git config core.hooksPath .husky
@@ -307,6 +329,7 @@ test_husky_v8_layout() {
 
 test_husky_creates_missing_directory() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   must git config core.hooksPath .husky
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks"
@@ -322,6 +345,7 @@ test_husky_path_forms() {
   for pair in './.husky/_:.husky' '.husky//:.husky' 'packages/app/.husky/_:packages/app/.husky'; do
     n=$((n + 1))
     hooks_repo "$TMP/repo $n"
+    hooks_vendor
     must git config core.hooksPath "${pair%%:*}"
     dir=${pair#*:}
     must mkdir -p "$dir/_"
@@ -339,6 +363,7 @@ test_husky_path_forms() {
 # An absolute husky path inside the root resolves to the same directory.
 test_husky_absolute_path_inside_root() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   must mkdir -p .husky/_
   printf 'husky stub\n' > .husky/_/husky.sh
   local shim
@@ -599,7 +624,9 @@ test_hooks_dir_outside_repo_is_print_only() {
   assert_eq "$before" "$(hooks_sum "$TMP/shared hooks")" "the shared hooks directory is untouched"
   assert_contains "$OUT" "ACTION NEEDED: add to $TMP/shared hooks/pre-commit:"
   assert_contains "$OUT" "ACTION NEEDED: add to $TMP/shared hooks/pre-push:"
-  assert_contains "$OUT" "$HOOK_TEST_GATE_STAGED"
+  assert_contains "$OUT" "$HOOK_TEST_SHARED_STAGED"
+  assert_contains "$OUT" "$HOOK_TEST_SHARED_CI"
+  assert_contains "$OUT" "$TMP/shared hooks is a hooks directory shared with other repositories (core.hooksPath)"
 }
 
 # A global core.hooksPath shared by every repo is printed, and nothing is written.
@@ -624,6 +651,7 @@ test_linked_worktree_hooks_stay_editable() {
   hooks_repo "$TMP/repo"
   must git worktree add -q "$TMP/wt dir" -b wt
   must cd "$TMP/wt dir"
+  hooks_vendor
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks in the worktree"
   assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" "$TMP/repo/.git/hooks/pre-commit")" "pre-commit line in the common hooks dir"
@@ -669,6 +697,7 @@ test_install_from_subdirectory_acts_on_root() {
 # for husky (a husky dir created under the subdirectory would show the bug).
 test_install_hooks_from_subdirectory_uses_root() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   must mkdir -p sub/deeper
   must cd sub/deeper
   run "$G" install-hooks
@@ -676,6 +705,7 @@ test_install_hooks_from_subdirectory_uses_root() {
   assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" "$TMP/repo/.git/hooks/pre-commit")" "default hooks dir at the root"
   if [ -e "$TMP/repo/sub/deeper/.git" ] || [ -e .git/hooks ]; then fail "hooks were written below the root"; fi
   hooks_repo "$TMP/husky repo"
+  hooks_vendor
   must mkdir -p .husky sub/deeper
   must git config core.hooksPath .husky
   must cd sub/deeper
@@ -792,6 +822,7 @@ test_read_only_gauntlet_keeps_old_runner() {
 # A failed read of a hook leaves no temp file behind, and neither does an edit.
 test_no_temp_file_left_behind() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   if hooks_as_root; then
     skip "running as root: unreadable and read-only files are still readable here"
     return 77
@@ -809,18 +840,117 @@ test_no_temp_file_left_behind() {
   assert_eq "" "$(ls -A "$TMP/tmpdir")" "no temp file after a successful edit"
 }
 
-test_install_hooks_warns_without_runner() {
+# I4: a hook written where .gauntlet/bin/gauntlet is not an executable fails every commit and push.
+# install-hooks writes none and says what to do. What it only prints it still warns about.
+test_install_hooks_refuses_without_a_runner() {
   hooks_repo "$TMP/repo"
-  local status=0
-  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || status=$?
-  assert_eq 0 "$status" "install-hooks without a vendored runner"
-  assert_contains "$(cat "$TMP/err")" "warning: .gauntlet/bin/gauntlet is missing"
-  assert_not_contains "$(cat "$TMP/out")" "warning"
-  if [ ! -f .git/hooks/pre-commit ]; then fail "the hooks were not installed"; fi
+  run "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks without a vendored runner: $OUT"
+  assert_contains "$OUT" "gauntlet: no runner at $TMP/repo/.gauntlet/bin/gauntlet; run gauntlet install first"
+  if [ -e .git/hooks/pre-commit ] || [ -e .git/hooks/pre-push ]; then fail "a hook was written without a runner"; fi
+  must mkdir -p .gauntlet/bin
+  printf '#!/bin/sh\n' > .gauntlet/bin/gauntlet
+  run "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks with a runner that is not executable: $OUT"
+  must chmod +x .gauntlet/bin/gauntlet
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks with an executable runner: $OUT"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "the hook was written once the runner is there"
+}
+
+# A runner path that is a directory is not a runner either.
+test_install_hooks_refuses_a_runner_that_is_a_directory() {
+  hooks_repo "$TMP/repo"
+  must mkdir -p .gauntlet/bin/gauntlet
+  run "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "no runner at"
+}
+
+# husky and an own hooks dir are written, so they are refused; a config or a shared directory is
+# only printed, so it gets a warning and the advice.
+test_install_hooks_refuses_husky_and_only_warns_for_what_it_prints() {
+  hooks_repo "$TMP/repo"
+  must git config core.hooksPath .husky
+  run "$G" install-hooks
+  assert_eq 2 "$STATUS" "husky without a runner: $OUT"
+  assert_contains "$OUT" "no runner at"
+  if [ -e .husky/pre-commit ]; then fail "a husky hook was written without a runner"; fi
+  must git config --unset core.hooksPath
+  printf 'pre-commit:\n  parallel: true\n' > lefthook.yml
+  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed for a config: $(cat "$TMP/out" "$TMP/err")"
+  assert_contains "$(cat "$TMP/err")" "gauntlet: warning: no runner at $TMP/repo/.gauntlet/bin/gauntlet; run gauntlet install"
+  assert_contains "$(cat "$TMP/out")" "ACTION NEEDED: add to lefthook.yml:"
+}
+
+# install vendors first, so its own call to install-hooks finds the runner; and a clone that has
+# the committed runner (the documented `prepare` flow) can run install-hooks alone.
+test_install_then_install_hooks_alone_in_a_clone_both_work() {
+  hooks_repo "$TMP/repo"
   run "$G" install
-  assert_eq 0 "$STATUS" "install"
-  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || status=$?
-  assert_eq "" "$(cat "$TMP/err")" "no warning once the runner is vendored"
+  assert_eq 0 "$STATUS" "install: $OUT"
+  must git add -A
+  must git commit -q -m "gauntlet"
+  must git clone -q "$TMP/repo" "$TMP/clone"
+  must cd "$TMP/clone"
+  [ -x .gauntlet/bin/gauntlet ] || fail "the clone has no executable runner"
+  run .gauntlet/bin/gauntlet install-hooks
+  assert_eq 0 "$STATUS" "install-hooks in the clone: $OUT"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "the clone's pre-commit"
+}
+
+# A shared hooks directory serves every repo that uses it. The plain gate line fails in a repo that
+# has no .gauntlet/, so the advice is the guarded form: pasted into the shared hooks it blocks where
+# there is a runner and does nothing where there is none. The gate is the first command of the body,
+# so a push still hands git's ref lines to --pre-push.
+test_the_guarded_form_for_a_shared_hooks_dir_blocks_only_where_there_is_a_runner() {
+  hooks_repo "$TMP/repo"
+  run "$G" install
+  assert_eq 0 "$STATUS" "install: $OUT"
+  must mkdir "$TMP/shared"
+  must git config core.hooksPath "$TMP/shared"
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "$HOOK_TEST_SHARED_STAGED"
+  assert_not_contains "$OUT" "$HOOK_TEST_GATE_STAGED"
+  printf '#!/bin/sh\n%s\n' "$HOOK_TEST_SHARED_STAGED" > "$TMP/shared/pre-commit"
+  printf '#!/bin/sh\n%s\n' "$HOOK_TEST_SHARED_CI" > "$TMP/shared/pre-push"
+  chmod 755 "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
+  # A repo without gauntlet: its commits and pushes go through.
+  hooks_repo "$TMP/other"
+  must git config core.hooksPath "$TMP/shared"
+  must git init -q --bare "$TMP/other-remote.git"
+  must git remote add origin "$TMP/other-remote.git"
+  printf 'x\n' > b.txt
+  must git add b.txt
+  run git commit -q -m "no gauntlet here"
+  assert_eq 0 "$STATUS" "commit in a repo without gauntlet: $OUT"
+  run git push -q origin main
+  assert_eq 0 "$STATUS" "push from a repo without gauntlet: $OUT"
+  # The repo with the runner: a violation is blocked, and so is a push of a branch that is not checked out.
+  must cd "$TMP/repo"
+  must git config core.hooksPath "$TMP/shared"
+  must git init -q --bare "$TMP/remote.git"
+  must git remote add origin "$TMP/remote.git"
+  run "$G" install-hooks
+  rule todo format=path-line
+  must git add -A
+  run git commit -q -m "add the rule"
+  assert_eq 0 "$STATUS" "commit of the rule: $OUT"
+  printf 'TODO fix me\n' > a.txt
+  must git add a.txt
+  run git commit -q -m "add a violation"
+  if [ "$STATUS" -eq 0 ]; then fail "the guarded line did not block a violation: $OUT"; fi
+  must git reset -q
+  must rm a.txt
+  must git checkout -q -b other
+  printf 'y\n' > c.txt
+  must git add c.txt
+  must git commit -q -m "another branch"
+  must git checkout -q main
+  run git push -q origin other
+  assert_contains "$OUT" "gauntlet checks the checked-out branch; check out other and push again"
+  if [ "$STATUS" -eq 0 ]; then fail "git's ref lines did not reach --pre-push through the guarded form"; fi
 }
 
 # A commit made through a real hook: the rule is committed first, because a rule
@@ -860,6 +990,7 @@ test_commit_blocked_then_passes_through_vendored_runner() {
 
 test_nul_byte_hook_is_print_only() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   printf '#!/bin/sh\necho \000x\n' > .git/hooks/pre-commit
   chmod 755 .git/hooks/pre-commit
   local before
@@ -872,6 +1003,7 @@ test_nul_byte_hook_is_print_only() {
 
 test_symlink_to_file_outside_root_is_print_only() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   must mkdir -p "$TMP/outside"
   printf '#!/bin/sh\necho outside\n' > "$TMP/outside/hook"
   chmod 755 "$TMP/outside/hook"
@@ -887,6 +1019,7 @@ test_symlink_to_file_outside_root_is_print_only() {
 
 test_symlink_to_file_inside_root_is_edited() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   must mkdir -p shared
   printf '#!/bin/sh\necho shared\n' > shared/hook
   chmod 755 shared/hook
@@ -900,6 +1033,7 @@ test_symlink_to_file_inside_root_is_edited() {
 # ~ in core.hooksPath expands to the home directory: never a literal ~ in the repo.
 test_hookspath_tilde_expands_to_home() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   mkdir -p "$TMP/home"
   # shellcheck disable=SC2088 # the literal ~ is the point: git must expand it
   must git config core.hooksPath '~/shared-hooks'
@@ -911,6 +1045,7 @@ test_hookspath_tilde_expands_to_home() {
   if [ -e "$TMP/home/shared-hooks" ]; then fail "hooks were written to the home directory"; fi
   assert_contains "$OUT" "ACTION NEEDED: add to $TMP/home/shared-hooks/pre-commit:"
   hooks_repo "$TMP/home-repo"
+  hooks_vendor
   # shellcheck disable=SC2088 # the literal ~ is the point: git must expand it
   must git config core.hooksPath '~/.husky'
   HOME="$TMP/home-repo"
@@ -1019,6 +1154,7 @@ test_read_only_source_installs_twice() {
 # do not count, so the gate line is added.
 test_presence_is_whole_line_not_indented_or_comment() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   printf '#!/bin/sh\n  %s\n# %s\necho x\n' "$HOOK_TEST_STAGED" "$HOOK_TEST_STAGED" > .git/hooks/pre-commit
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks"
@@ -1039,6 +1175,7 @@ test_husky_outside_root_is_print_only() {
 # packages/../.husky/_ normalises to <root>/.husky/_: the edit lands in <root>/.husky.
 test_husky_dotdot_inside_root_normalises() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   must git config core.hooksPath 'packages/../.husky/_'
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks"
@@ -1076,6 +1213,7 @@ test_install_through_symlinked_bin_dir() {
 # A print-only hook that is not executable gets the warning too.
 test_print_only_hook_warns_when_not_executable() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   printf '#!/bin/sh\r\necho x\r\n' > .git/hooks/pre-commit
   chmod 644 .git/hooks/pre-commit
   local before
@@ -1174,6 +1312,7 @@ test_clean_commit_keeps_passing_hook() {
 # A project's own trailing exit stays below the gate, byte for byte.
 test_trailing_exit_stays_below_the_gate() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   printf '#!/bin/sh\necho x\nexit 0\n' > .git/hooks/pre-commit
   chmod 755 .git/hooks/pre-commit
   run "$G" install-hooks
@@ -1184,6 +1323,7 @@ test_trailing_exit_stays_below_the_gate() {
 # A hook that is a symlink to a directory is printed quietly, with no read errors.
 test_symlink_to_directory_is_print_only_quietly() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   must mkdir -p somedir
   must ln -s "$TMP/repo/somedir" .git/hooks/pre-commit
   run "$G" install-hooks
@@ -1209,6 +1349,7 @@ test_shared_hooks_dir_warns_when_hook_not_executable() {
 # core.hooksPath set to the empty value means unset: the default hooks directory.
 test_empty_hookspath_means_the_default_hooks_dir() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   must git config core.hooksPath ""
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks"
@@ -1224,6 +1365,7 @@ test_linked_worktree_symlinked_hook_into_common_git_is_edited() {
   must ln -s ../shared-hook .git/hooks/pre-commit
   must git worktree add -q "$TMP/wt dir" -b wt
   must cd "$TMP/wt dir"
+  hooks_vendor
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks in the worktree"
   assert_eq 1 "$(hooks_lines "$HOOK_TEST_GATE_STAGED" "$TMP/repo/.git/shared-hook")" "the target in the common git dir is edited"
@@ -1365,6 +1507,7 @@ HOOK_TEST_OLD_GATE_CI='.gauntlet/bin/gauntlet check --ci || exit $?  # gauntlet'
 
 test_install_hooks_replaces_the_old_gate_line_in_place() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   printf '#!/bin/sh\necho one\n%s\necho two\n' "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-push
   chmod 755 .git/hooks/pre-push
   run "$G" install-hooks
@@ -1378,6 +1521,7 @@ test_install_hooks_replaces_the_old_gate_line_in_place() {
 
 test_install_hooks_replaces_the_old_plain_line_in_place() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   printf '#!/usr/bin/env sh\n%s\n' "$HOOK_TEST_OLD_CI" > .git/hooks/pre-push
   chmod 755 .git/hooks/pre-push
   run "$G" install-hooks
@@ -1388,6 +1532,7 @@ test_install_hooks_replaces_the_old_plain_line_in_place() {
 # The pre-commit line is not the pre-push line: it keeps its text.
 test_install_hooks_leaves_the_pre_commit_line_alone() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   printf '#!/bin/sh\n%s\n' "$HOOK_TEST_GATE_STAGED" > .git/hooks/pre-commit
   printf '#!/bin/sh\n%s\n' "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-push
   chmod 755 .git/hooks/pre-commit .git/hooks/pre-push
@@ -1399,6 +1544,7 @@ test_install_hooks_leaves_the_pre_commit_line_alone() {
 # A hook we may not edit keeps its old line and is told the new one.
 test_an_old_gate_line_in_an_uneditable_hook_is_print_only() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   printf '#!/usr/bin/env python3\n# %s\nprint("x")\n' "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-push
   local before
   before=$(hooks_sum .git/hooks/pre-push)
@@ -1412,6 +1558,7 @@ test_an_old_gate_line_in_an_uneditable_hook_is_print_only() {
 # The old line later in the hook, after the project's own commands, is replaced where it stands.
 test_a_moved_old_gate_line_is_replaced_where_it_stands() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   printf '#!/bin/sh\necho one\n%s\n' "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-push
   chmod 755 .git/hooks/pre-push
   run "$G" install-hooks
@@ -1422,6 +1569,7 @@ test_a_moved_old_gate_line_is_replaced_where_it_stands() {
 # A missing final newline stays missing, whether the old line is the last one or not.
 test_replacing_the_old_line_keeps_a_missing_final_newline() {
   hooks_repo "$TMP/repo"
+  hooks_vendor
   printf '#!/bin/sh\n%s\necho two' "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-push
   chmod 755 .git/hooks/pre-push
   run "$G" install-hooks
@@ -1576,10 +1724,6 @@ test_a_root_ignore_of_bin_lib_and_shell_files_does_not_hide_the_runner() {
 # R36: one script that serves both hooks (a symlink, a hard link) would get two gate lines, or the
 # wrong command in one of the two hooks. install-hooks leaves it alone, says why, and prints the
 # lines to add: each gate inside a test on the hook's name.
-# shellcheck disable=SC2016 # shell text for a hook: ${0##*/} is expanded when the hook runs
-HOOK_TEST_GUARD_STAGED='if [ "${0##*/}" = pre-commit ]; then'
-# shellcheck disable=SC2016 # as above
-HOOK_TEST_GUARD_CI='if [ "${0##*/}" = pre-push ]; then'
 
 # one_script_repo <symlink|hardlink>: .git/hooks/pre-push is the same file as pre-commit.
 one_script_repo() {
@@ -1724,6 +1868,8 @@ test_a_symlinked_pair_in_a_shared_hooks_dir_gets_the_one_script_advice() {
   assert_eq 0 "$STATUS" "install-hooks: $OUT"
   assert_contains "$OUT" "ACTION NEEDED: $TMP/shared/pre-commit and $TMP/shared/pre-push are the same file"
   assert_eq 1 "$(printf '%s\n' "$OUT" | grep -c 'ACTION NEEDED')" "one piece of advice"
+  assert_contains "$OUT" "$HOOK_TEST_GUARD_STAGED"$'\n'"$HOOK_TEST_SHARED_STAGED"$'\nfi\n'"$HOOK_TEST_GUARD_CI"$'\n'"$HOOK_TEST_SHARED_CI"$'\nfi'
+  assert_contains "$OUT" "$TMP/shared is a hooks directory shared with other repositories (core.hooksPath)"
   hooks_expect "$TMP/shared/pre-commit" $'#!/bin/sh\necho shared\n'
 }
 

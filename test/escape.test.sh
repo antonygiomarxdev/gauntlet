@@ -507,8 +507,8 @@ test_an_unreadable_link_blob_prints_its_path_escaped() {
 
 # --- W3b: the install lock ---
 
-# esc_hooks_repo: a repo whose directory name holds an ESC, with the runner vendored, so every
-# path under it that a message prints holds the byte.
+# esc_hooks_repo [bare]: a repo whose directory name holds an ESC, with the runner vendored unless
+# "bare" is given, so every path under it that a message prints holds the byte.
 esc_hooks_repo() {
   local dir
   dir="$TMP/r$(printf '\033')p"
@@ -522,8 +522,10 @@ esc_hooks_repo() {
   printf 'hello\n' > README.md
   must git add README.md
   must git commit -q -m init
-  must mkdir -p .gauntlet
-  must cp -R "$ROOT/bin" "$ROOT/lib" .gauntlet/
+  if [ "${1:-}" != bare ]; then
+    must mkdir -p .gauntlet
+    must cp -R "$ROOT/bin" "$ROOT/lib" .gauntlet/
+  fi
 }
 
 test_the_lock_messages_print_the_path_escaped() {
@@ -615,4 +617,32 @@ test_the_one_script_advice_prints_the_paths_escaped() {
   run "$G" doctor
   assert_contains "$OUT" 'FAIL hk\x1bd/pre-commit and hk\x1bd/pre-push are the same file'
   assert_clean "$OUT" "doctor"
+}
+
+test_the_no_runner_messages_print_the_path_escaped() {
+  esc_hooks_repo bare
+  run "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" 'gauntlet: no runner at '
+  assert_contains "$OUT" 'r\x1bp/.gauntlet/bin/gauntlet; run gauntlet install first'
+  assert_clean "$OUT" "the refusal"
+  printf 'pre-commit:\n  parallel: true\n' > lefthook.yml
+  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed for a config: $(cat "$TMP/out" "$TMP/err")"
+  assert_contains "$(cat "$TMP/err")" 'gauntlet: warning: no runner at '
+  assert_contains "$(cat "$TMP/err")" 'r\x1bp/.gauntlet/bin/gauntlet; run gauntlet install'
+  assert_clean "$(cat "$TMP/err")" "the warning"
+}
+
+test_the_shared_hooks_dir_advice_prints_the_paths_escaped() {
+  local shared
+  esc_hooks_repo
+  shared="$TMP/sh$(printf '\033')d"
+  must mkdir "$shared"
+  must git config core.hooksPath "$shared"
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" 'sh\x1bd is a hooks directory shared with other repositories (core.hooksPath)'
+  assert_contains "$OUT" 'ACTION NEEDED: add to '
+  assert_contains "$OUT" 'sh\x1bd/pre-commit:'
+  assert_clean "$OUT" "the shared hooks directory advice"
 }
