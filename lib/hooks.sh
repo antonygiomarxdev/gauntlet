@@ -1,13 +1,13 @@
 # shellcheck shell=bash
-# install and install-hooks: vendor the runner into .gauntlet/ and add one line
-# to each existing hook, never taking the hooks over (ADR-0006), and never editing
-# a file this project does not own (R25). Sourced, never executed. Bash 3.2
+# install and install-hooks: vendor the runner into .gauntlet/ and add the gate to
+# each existing hook, never taking the hooks over (ADR-0006), and never editing a
+# file this project does not own (R25, R26). Sourced, never executed. Bash 3.2
 # compatible; awk, git and coreutils only. Needs core.sh. bin/gauntlet sets
 # GAUNTLET_BIN, the physical bin directory of the running runner, before sourcing.
 
-# The gate lines. The plain form is appended at the end of a hook. The
-# `|| exit $?` form is inserted before a trailing exit or exec, so the gate blocks
-# without set -e. A hook that has either form, as a whole line, is already done.
+# The gate lines. A created hook gets the plain pinned form. An existing hook gets
+# the `|| exit $?` form on the line after its shebang (see add_hook_line). A hook
+# that has either form, as a whole line, is already done.
 HOOK_LINE_STAGED='.gauntlet/bin/gauntlet check --staged  # gauntlet'
 HOOK_GATE_STAGED='.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet'
 HOOK_LINE_CI='.gauntlet/bin/gauntlet check --ci  # gauntlet'
@@ -17,19 +17,11 @@ HOOK_GATE_CI='.gauntlet/bin/gauntlet check --ci || exit $?  # gauntlet'
 GAUNTLET_CMD_STAGED='.gauntlet/bin/gauntlet check --staged'
 GAUNTLET_CMD_CI='.gauntlet/bin/gauntlet check --ci'
 
-# shellcheck disable=SC2016 # the awk program reads $0; it is not shell text to expand
-# The edit of one hook file, run by awk over the file. Its exit status says what to
-# do: 0 writes the new content; 3 prints the plain line (the file is one we must not
-# edit: a non-shell interpreter, CRLF, or a nested early exit); 4 prints the gate
-# form to place before the final exit (a trailing exit with an argument). Written
-# content: an empty file gets the shebang and the plain line; a trailing exit or exec
-# (the last line that is not blank or a comment) gets the gate form before it;
-# anything else gets the plain line at the end.
-#
-# Known ceiling: an early exit reached through a function call as the last line
-# (`main "$@"`, with `exit 0` inside main) is not seen; the closer test below looks
-# only at the last code line, and `main "$@"` is not a closer.
-HOOK_EDIT_AWK='
+# shellcheck disable=SC2016 # the awk program reads its record; it is not shell text to expand
+# The decision for one existing hook, run by awk over the file: exit 0 when the gate
+# may go into it, 3 when the file is one we must not edit (CRLF, or a shebang whose
+# interpreter is not a shell). Nothing is written by this program.
+HOOK_CHECK_AWK='
 function base(p) { sub(/.*\//, "", p); return p }
 function interpreter(line,   s, n, w, i) {
   s = substr(line, 3)
@@ -45,86 +37,12 @@ function interpreter(line,   s, n, w, i) {
 function is_shell(name) {
   return name == "sh" || name == "bash" || name == "dash" || name == "zsh" || name == "ksh" || name == "ash"
 }
-# strip_comment: the code before a comment. A comment starts a line, or follows a
-# blank; a # inside a word is not a comment.
-function strip_comment(s) {
-  sub(/^#.*$/, "", s)
-  sub(/[ \t]#.*$/, "", s)
-  return s
-}
-# bare_exit: true when s holds an exit as a command word whose argument is not a
-# non-zero literal: no argument, exit 0, or any argument that is not a literal.
-function bare_exit(s,   delim, tail, tok) {
-  s = " " s
-  while (match(s, /[ \t;&|({]exit([ \t;&|)}]|$)/)) {
-    delim = substr(s, RSTART + RLENGTH - 1, 1)
-    tail = substr(s, RSTART + RLENGTH)
-    tok = ""
-    if (delim == " " || delim == "\t") {
-      sub(/^[ \t]+/, "", tail)
-      tok = tail
-      sub(/[ \t;&|)}].*$/, "", tok)
-    }
-    if (tok !~ /^[1-9][0-9]*$/) return 1
-    s = tail
-  }
-  return 0
-}
-{
-  text[NR] = $0
-  if (index($0, "\r") > 0) crlf = 1
-}
+NR == 1 { first = $0 }
+index($0, "\r") > 0 { crlf = 1 }
 END {
-  if (NR == 0) {
-    print "#!/usr/bin/env sh"
-    print ENVIRON["LINE"]
-    exit 0
-  }
   if (crlf) exit 3
-  if (substr(text[1], 1, 2) == "#!" && !is_shell(interpreter(text[1]))) exit 3
-  last = 0
-  for (i = NR; i >= 1 && last == 0; i--) {
-    t = text[i]
-    gsub(/^[ \t]+|[ \t]+$/, "", t)
-    if (t != "" && substr(t, 1, 1) != "#") last = i
-  }
-  if (last > 0) {
-    # A closer ends the last code line (a one-line `if ...; fi` included), with an
-    # early exit anywhere: the gate written after it could never run, so the hook is
-    # printed, not edited.
-    t = strip_comment(text[last])
-    gsub(/^[ \t]+|[ \t]+$/, "", t)
-    if (t ~ /(^|[ \t;&|(])(fi|done|esac|\})[ \t;]*$/) {
-      for (j = 1; j <= NR; j++) if (bare_exit(strip_comment(text[j]))) exit 3
-    }
-  }
-  at = NR + 1
-  gate = 0
-  if (last > 0) {
-    t = text[last]
-    gsub(/^[ \t]+|[ \t]+$/, "", t)
-    n = split(t, seg, /[;&|]/)
-    for (k = 1; k <= n; k++) {
-      s = seg[k]
-      gsub(/^[ \t]+|[ \t]+$/, "", s)
-      if (s !~ /^(exit|exec)([ \t;]|$)/) continue
-      if (substr(s, 1, 4) == "exit") {
-        rest = substr(s, 5)
-        sub(/[ \t]+#.*$/, "", rest)
-        gsub(/^[ \t]+|[ \t]+$/, "", rest)
-        if (rest != "" && rest !~ /^[0-9]+$/) exit 4
-      }
-      gate = 1
-    }
-    if (gate) at = last
-  }
-  for (i = 1; i <= NR; i++) {
-    if (i == at) {
-      if (gate) { print ENVIRON["GATE"] } else { print ENVIRON["LINE"] }
-    }
-    print text[i]
-  }
-  if (at > NR) print ENVIRON["LINE"]
+  if (substr(first, 1, 2) == "#!" && !is_shell(interpreter(first))) exit 3
+  exit 0
 }
 '
 
@@ -156,30 +74,18 @@ install_source() {
 }
 
 # vendor_runner <source>: copy bin/ and lib/ of the checkout <source> into
-# .gauntlet/, from the repo root. The copy is made first, as .bin.new and .lib.new,
-# and only a complete copy goes on: the old runner is moved aside, the new one moved
-# in, and any failure moves the old one back (swap_runner). When <source> is the
-# vendored copy itself (the same directory, through any symlink), nothing is copied.
+# .gauntlet/, from the repo root. The copy is made first, as .bin.new and .lib.new;
+# then the old runner is moved aside and the new one moved in (swap_runner). An
+# install killed in between is put right by recover_interrupted_install. When
+# <source> is the vendored copy itself (the same directory, through any symlink),
+# nothing is copied.
 vendor_runner() {
-  local leftover
   if [ -d .gauntlet ] && [ "$1" = "$(cd .gauntlet && pwd -P)" ]; then
     printf 'runner already vendored in .gauntlet/\n'
     return 0
   fi
   mkdir -p .gauntlet || die "cannot create .gauntlet"
-  for leftover in bin.new lib.new; do
-    if [ -e ".gauntlet/.$leftover" ]; then
-      die "an earlier install left .gauntlet/.$leftover behind; move it away and install again"
-    fi
-  done
-  for leftover in bin lib; do
-    if [ -e ".gauntlet/.$leftover.old" ]; then
-      if [ ! -e ".gauntlet/$leftover" ]; then
-        die "an earlier install left .gauntlet/.$leftover.old and no .gauntlet/$leftover; restore it by hand"
-      fi
-      discard_dirs ".gauntlet/.$leftover.old"
-    fi
-  done
+  recover_interrupted_install
   if ! cp -R "$1/bin" .gauntlet/.bin.new || ! cp -R "$1/lib" .gauntlet/.lib.new \
     || ! chmod -R u+w .gauntlet/.bin.new .gauntlet/.lib.new \
     || ! chmod +x .gauntlet/.bin.new/gauntlet; then
@@ -190,9 +96,23 @@ vendor_runner() {
   printf 'vendored runner to .gauntlet/\n'
 }
 
+# recover_interrupted_install: an earlier install stopped between its moves. Each
+# old runner that was moved aside goes back (its live copy, if one is there, is the
+# half-swapped one). Then every copy that was never finished is removed.
+recover_interrupted_install() {
+  local name
+  for name in bin lib; do
+    if [ -e ".gauntlet/.$name.old" ]; then
+      discard_dirs ".gauntlet/$name"
+      mv ".gauntlet/.$name.old" ".gauntlet/$name" || die "cannot restore .gauntlet/$name from .gauntlet/.$name.old"
+    fi
+  done
+  discard_dirs .gauntlet/.bin.new .gauntlet/.lib.new .gauntlet/.bin.old .gauntlet/.lib.old
+}
+
 # swap_runner: move the old runner aside and the new one in, bin then lib. A failed
-# move rolls back what was moved. The new copies are dropped only once the old
-# runner is back; the old copies are dropped only after every move succeeded.
+# move rolls back what was moved. The new copies are dropped only once the old runner
+# is back; the old copies are dropped only after every move succeeded.
 swap_runner() {
   local bin_aside=0 bin_in=0 lib_aside=0 lib_in=0
   if [ -e .gauntlet/bin ]; then
@@ -218,17 +138,19 @@ swap_runner() {
   discard_dirs .gauntlet/.bin.old .gauntlet/.lib.old
 }
 
-# swap_failed <bin-aside> <bin-in> <lib-aside> <lib-in> <message>: undo the moves
-# that were made, in reverse, then fail. The new copies are dropped only when the
-# old runner is back; otherwise they stay, with the old runner, and say so.
+# swap_failed <bin-aside> <bin-in> <lib-aside> <lib-in> <message>: undo the moves that
+# were made, in reverse, then fail. The new copies are dropped only when the old
+# runner is back; otherwise they stay, and the message names the old copies that exist.
 swap_failed() {
-  local ok=0
+  local ok=0 old=""
   if [ "$4" = 1 ]; then mv .gauntlet/lib .gauntlet/.lib.new || ok=1; fi
   if [ "$3" = 1 ]; then mv .gauntlet/.lib.old .gauntlet/lib || ok=1; fi
   if [ "$2" = 1 ]; then mv .gauntlet/bin .gauntlet/.bin.new || ok=1; fi
   if [ "$1" = 1 ]; then mv .gauntlet/.bin.old .gauntlet/bin || ok=1; fi
   if [ "$ok" -ne 0 ]; then
-    die "$5; the rollback failed, so .gauntlet/.bin.old and .gauntlet/.lib.old hold the old runner"
+    if [ "$1" = 1 ]; then old=" .gauntlet/.bin.old"; fi
+    if [ "$3" = 1 ]; then old="$old .gauntlet/.lib.old"; fi
+    die "$5; the rollback failed, so the old runner is in$old"
   fi
   discard_dirs .gauntlet/.bin.new .gauntlet/.lib.new
   die "$5; the old runner is back"
@@ -236,7 +158,7 @@ swap_failed() {
 
 # discard_dirs <dir>...: remove directories this install made. Their modes are made
 # writable first, so a read-only source copy can still be removed, and a failure
-# here never aborts the caller (the message it reports comes after).
+# here never aborts the caller.
 discard_dirs() {
   chmod -R u+w "$@" 2>/dev/null || true
   rm -rf "$@" || true
@@ -252,15 +174,18 @@ create_missing() {
   printf 'created %s\n' "$1"
 }
 
-# install-hooks: add the gauntlet lines to the project's hooks, from the repo root.
-# husky's directory gets them. A config owned by lefthook, prek or another hook
-# manager is printed, not edited. Any other hooks directory gets them when it is
-# inside the repo or the git dir; a shared one outside them is printed only.
+# install-hooks: add the gate to the project's hooks, from the repo root. husky's
+# directory gets it. A config owned by lefthook, prek or another hook manager is
+# printed, not edited. Any other hooks directory gets it when it is inside the repo or
+# the git common dir; a shared one outside them is printed only. An empty
+# core.hooksPath means unset: the default hooks directory is <common git dir>/hooks.
 install_hooks() {
-  local root hooks_path husky git_hooks git_common hooks
+  local root hooks_path husky git_common hooks
   root=$(repo_root)
   cd "$root" || die "cannot enter $root"
   HOOKS_ROOT=$(physical_path "$root")
+  git_common=$(git rev-parse --git-common-dir) || die "cannot find the git directory"
+  HOOKS_COMMON=$(abs_path "$git_common")
   if [ ! -f .gauntlet/bin/gauntlet ]; then
     printf 'gauntlet: warning: .gauntlet/bin/gauntlet is missing; run gauntlet install\n' >&2
   fi
@@ -277,11 +202,9 @@ install_hooks() {
   if [ -n "$hooks_path" ]; then
     hooks=$(abs_path "$hooks_path")
   else
-    git_hooks=$(git rev-parse --git-path hooks) || die "cannot find the hooks directory"
-    hooks=$(abs_path "$git_hooks")
+    hooks=$(abs_path "$HOOKS_COMMON/hooks")
   fi
-  git_common=$(git rev-parse --git-common-dir) || die "cannot find the git directory"
-  if owned_path "$hooks" "$(abs_path "$git_common")"; then
+  if owned_path "$hooks" "$HOOKS_COMMON"; then
     mkdir -p "$hooks" || die "cannot create $hooks"
     add_hook_pair "$hooks"
   else
@@ -295,17 +218,19 @@ add_hook_pair() {
   add_hook_line "$1/pre-push" "$HOOK_LINE_CI" "$HOOK_GATE_CI"
 }
 
-# print_hook_pair <dir>: print the two lines for <dir>, which is not ours to edit.
+# print_hook_pair <dir>: print the two gate lines for <dir>, which is not ours to edit.
 print_hook_pair() {
-  print_only "$1/pre-commit" "$HOOK_LINE_STAGED"
-  print_only "$1/pre-push" "$HOOK_LINE_CI"
+  print_only "$1/pre-commit" "$HOOK_GATE_STAGED"
+  print_only "$1/pre-push" "$HOOK_GATE_CI"
 }
 
-# add_hook_line <file> <line> <gate>: make <file> run the gate once. <line> is the
-# plain form and <gate> the `|| exit $?` form. A file that already has either, as
-# a whole line, is left alone. A file we must not edit is printed instead; see
-# HOOK_EDIT_AWK and has_nul. A missing file is created executable, with the shebang.
-# An existing file keeps its mode, and is warned about when it is not executable.
+# add_hook_line <file> <plain> <gate>: the gate runs first in a hook we may edit. The
+# gate form goes on the line right after the shebang (line 1 when there is none), so
+# it runs before anything the project's own hook does, and an early exit, a trailing
+# exit, exec, a line continuation or a failing last command cannot get past it. The
+# project's hook then runs unchanged and keeps its own exit status. A hook we must not
+# edit is printed instead. A missing file, or an empty one, gets the plain pinned form.
+# An existing file keeps its mode and every byte except the inserted line.
 add_hook_line() {
   local file=$1 line=$2 gate=$3 tmp status=0
   if [ -e "$file" ] && { grep -Fxq -- "$line" "$file" 2>/dev/null || grep -Fxq -- "$gate" "$file" 2>/dev/null; }; then
@@ -314,7 +239,7 @@ add_hook_line() {
     return 0
   fi
   if [ -L "$file" ] && [ ! -e "$file" ]; then
-    print_only "$file" "$line"
+    print_only "$file" "$gate"
     return 0
   fi
   if [ ! -e "$file" ]; then
@@ -323,24 +248,35 @@ add_hook_line() {
     printf 'created %s\n' "$(display_path "$file")"
     return 0
   fi
-  if [ -L "$file" ] && ! inside_root "$(resolve_link "$file")"; then
-    print_only "$file" "$line"
+  if [ -L "$file" ] && ! owned_path "$(resolve_link "$file")" "$HOOKS_COMMON"; then
+    print_only "$file" "$gate"
+    return 0
+  fi
+  if [ ! -f "$file" ]; then
+    print_only "$file" "$gate"
+    return 0
+  fi
+  if [ ! -s "$file" ]; then
+    printf '#!/usr/bin/env sh\n%s\n' "$line" > "$file" || die "cannot write $file"
+    printf 'added gauntlet line to %s\n' "$(display_path "$file")"
     warn_if_not_executable "$file"
     return 0
   fi
   if has_nul "$file"; then
-    print_only "$file" "$line"
-    warn_if_not_executable "$file"
+    print_only "$file" "$gate"
     return 0
   fi
-  tmp=$(mktemp "${TMPDIR:-/tmp}/gauntlet-hook.XXXXXX") || die "cannot create a temp file"
-  LINE="$line" GATE="$gate" awk "$HOOK_EDIT_AWK" "$file" > "$tmp" || status=$?
+  awk "$HOOK_CHECK_AWK" "$file" || status=$?
   case "$status" in
     0) ;;
-    3) rm -f "$tmp"; print_only "$file" "$line"; warn_if_not_executable "$file"; return 0 ;;
-    4) rm -f "$tmp"; print_gate_only "$file" "$gate"; warn_if_not_executable "$file"; return 0 ;;
-    *) rm -f "$tmp"; die "cannot read $file" ;;
+    3) print_only "$file" "$gate"; return 0 ;;
+    *) die "cannot read $file" ;;
   esac
+  tmp=$(mktemp "${TMPDIR:-/tmp}/gauntlet-hook.XXXXXX") || die "cannot create a temp file"
+  if ! insert_gate_first "$file" "$gate" > "$tmp"; then
+    rm -f "$tmp"
+    die "cannot read $file"
+  fi
   # Writing over the file keeps its mode; moving the temp file would not.
   cat "$tmp" > "$file" || { rm -f "$tmp"; die "cannot write $file"; }
   rm -f "$tmp"
@@ -348,7 +284,25 @@ add_hook_line() {
   warn_if_not_executable "$file"
 }
 
-# has_nul <file>: succeed when <file> holds a NUL byte, which the awk edit is not
+# insert_gate_first <file> <gate>: print <file> with <gate> on the line after its
+# shebang, or as line 1 when there is no shebang. Every other byte is copied as it is.
+insert_gate_first() {
+  local first
+  first=$(head -n 1 "$1") || return 1
+  case "$first" in
+    '#!'*)
+      printf '%s\n' "$first"
+      printf '%s\n' "$2"
+      tail -n +2 "$1"
+      ;;
+    *)
+      printf '%s\n' "$2"
+      cat "$1"
+      ;;
+  esac
+}
+
+# has_nul <file>: succeed when <file> holds a NUL byte, which the line edit is not
 # trusted with. An unreadable file is left to awk, which reports the read error.
 has_nul() {
   if [ ! -r "$1" ]; then
@@ -376,15 +330,12 @@ resolve_link() {
   printf '%s/%s\n' "$(cd "$(dirname "$p")" && pwd -P)" "$(basename "$p")"
 }
 
-# print_only <file> <line>: say what to add to a hook we will not edit.
+# print_only <file> <gate>: a hook we will not edit. Say what to add, and where it goes.
 print_only() {
-  printf 'ACTION NEEDED: add to %s:\n%s\n' "$(display_path "$1")" "$2"
-}
-
-# print_gate_only <file> <gate>: a trailing exit with an argument. The gate goes
-# before that exit, so it runs before the exit can end the hook.
-print_gate_only() {
-  printf 'ACTION NEEDED: add to %s:\n%s\n  (place it before the final exit)\n' "$(display_path "$1")" "$2"
+  printf 'ACTION NEEDED: add to %s:\n%s\n  (place it as the first command, after the shebang line if there is one)\n' "$(display_path "$1")" "$2"
+  if [ -e "$1" ]; then
+    warn_if_not_executable "$1"
+  fi
 }
 
 # warn_if_not_executable <file>: git ignores a hook without the exec bit. Never
@@ -395,10 +346,10 @@ warn_if_not_executable() {
   fi
 }
 
-# husky_dir <hooks-path>: print the husky directory a core.hooksPath names, when
-# the path ends in /.husky or /.husky/_ and lies inside the repo root. The
-# trailing /_ is dropped, so nothing is ever written into a _ directory. Prints
-# nothing and fails otherwise.
+# husky_dir <hooks-path>: print the husky directory a core.hooksPath names, when the
+# path ends in /.husky or /.husky/_ and lies inside the repo root. The trailing /_ is
+# dropped, so nothing is ever written into a _ directory. Prints nothing and fails
+# otherwise.
 husky_dir() {
   local p=$1
   if [ -z "$p" ]; then
@@ -419,9 +370,9 @@ husky_dir() {
   fi
 }
 
-# print_config_snippets: for each lefthook, prek, or TOML or JSON config in the
-# repo root, print the lines to add, or say it is already configured. Succeeds
-# when at least one config exists, so the hooks are left to that config.
+# print_config_snippets: for each lefthook, prek, or TOML or JSON config in the repo
+# root, print the lines to add, or say it is already configured. Succeeds when at
+# least one config exists, so the hooks are left to that config.
 print_config_snippets() {
   local f found=1
   for f in lefthook.* .lefthook.* .config/lefthook.* .pre-commit-config.yaml prek.toml; do
@@ -493,9 +444,8 @@ generic_snippet() {
   printf '  pre-commit: %s\n  pre-push: %s\n' "$GAUNTLET_CMD_STAGED" "$GAUNTLET_CMD_CI"
 }
 
-# abs_path <path>: the absolute, normalised, physical form of <path>. A relative
-# path is taken from the repo root. A path that does not exist keeps its
-# normalised spelling.
+# abs_path <path>: the absolute, normalised, physical form of <path>. A relative path
+# is taken from the repo root. A path that does not exist keeps its normalised spelling.
 abs_path() {
   local p=$1
   case "$p" in
@@ -542,9 +492,9 @@ inside_root() {
   esac
 }
 
-# owned_path <path> <git-common-dir>: succeed when <path> is inside the repo root
-# or inside the common git dir (a linked worktree or submodule keeps its hooks
-# there). Anything else is someone else's directory.
+# owned_path <path> <git-common-dir>: succeed when <path> is inside the repo root or
+# inside the common git dir (a linked worktree or submodule keeps its hooks there).
+# Anything else is someone else's file or directory.
 owned_path() {
   if inside_root "$1"; then
     return 0

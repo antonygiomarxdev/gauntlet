@@ -1,8 +1,8 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2153 # ROOT, G and STATUS are set by test/lib.sh
 # Tests for install and install-hooks. The runner is vendored without ever
-# leaving .gauntlet/ half-written. A hook gets one gauntlet line only when it is a
-# shell script we can append to (R25); otherwise the line is printed. Husky, the
+# leaving .gauntlet/ half-written. An editable hook gets the gate on the line after its
+# shebang (R26); otherwise the gate line is printed. Husky, the
 # YAML and TOML/JSON configs, custom hooks paths and linked worktrees are each
 # handled, and nothing outside the hooks and the state files is ever changed.
 # Each test runs in a fresh repo under $TMP.
@@ -63,7 +63,7 @@ test_plain_repo_gets_hooks() {
 test_existing_hook_keeps_content() {
   hooks_repo "$TMP/repo"
   printf '#!/bin/sh\necho one\necho two\n' > .git/hooks/pre-commit
-  local want=$'#!/bin/sh\necho one\necho two\n'"$HOOK_TEST_STAGED"$'\n'
+  local want=$'#!/bin/sh\n'"$HOOK_TEST_GATE_STAGED"$'\necho one\necho two\n'
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "first install-hooks"
   hooks_expect .git/hooks/pre-commit "$want"
@@ -80,7 +80,7 @@ test_presence_is_the_whole_line() {
   printf '#!/bin/sh\necho tidy  # gauntlet\n' > .git/hooks/pre-commit
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks"
-  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "the gate line was added"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_GATE_STAGED" .git/hooks/pre-commit)" "the gate line was added"
   assert_eq 1 "$(hooks_lines "echo tidy  # gauntlet" .git/hooks/pre-commit)" "the other line is kept once"
 }
 
@@ -99,12 +99,13 @@ test_presence_accepts_either_form() {
   assert_eq "$before" "$(hooks_sum .git/hooks/pre-commit .git/hooks/pre-push)" "neither hook changed"
 }
 
-# The gate goes before a trailing exit, in the form that blocks without set -e.
+# The gate goes first: on the line after the shebang, and the hook's own lines follow
+# unchanged, including a trailing exit.
 test_insert_before_exit() {
   hooks_repo "$TMP/repo"
   printf '#!/bin/sh\necho one\n  exit 0   \n\n' > .git/hooks/pre-commit
   chmod 755 .git/hooks/pre-commit
-  local want=$'#!/bin/sh\necho one\n'"$HOOK_TEST_GATE_STAGED"$'\n  exit 0   \n\n'
+  local want=$'#!/bin/sh\n'"$HOOK_TEST_GATE_STAGED"$'\necho one\n  exit 0   \n\n'
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "first install-hooks"
   hooks_expect .git/hooks/pre-commit "$want"
@@ -119,7 +120,7 @@ test_insert_before_exit_without_newline() {
   hooks_repo "$TMP/repo"
   printf '#!/bin/sh\necho two\nexit 0' > .git/hooks/pre-push
   chmod 644 .git/hooks/pre-push
-  local want=$'#!/bin/sh\necho two\n'"$HOOK_TEST_GATE_CI"$'\nexit 0\n'
+  local want=$'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\necho two\nexit 0'
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "first install-hooks"
   hooks_expect .git/hooks/pre-push "$want"
@@ -129,104 +130,11 @@ test_insert_before_exit_without_newline() {
   hooks_expect .git/hooks/pre-push "$want"
 }
 
-test_bare_exit_gets_gate_form() {
-  hooks_repo "$TMP/repo"
-  printf '#!/bin/sh\necho x\nexit\n' > .git/hooks/pre-commit
-  chmod 755 .git/hooks/pre-commit
-  run "$G" install-hooks
-  assert_eq 0 "$STATUS" "install-hooks"
-  hooks_expect .git/hooks/pre-commit "#!/bin/sh
-echo x
-$HOOK_TEST_GATE_STAGED
-exit
-"
-}
 
-# A comment after the trailing exit is not a command: the gate still goes before it,
-# or it would never run.
-test_comment_after_exit_still_gets_gate() {
-  hooks_repo "$TMP/repo"
-  printf '#!/bin/sh\necho x\nexit 0\n# end of hook\n' > .git/hooks/pre-commit
-  chmod 755 .git/hooks/pre-commit
-  run "$G" install-hooks
-  assert_eq 0 "$STATUS" "install-hooks"
-  hooks_expect .git/hooks/pre-commit "#!/bin/sh
-echo x
-$HOOK_TEST_GATE_STAGED
-exit 0
-# end of hook
-"
-}
 
-test_trailing_exec_gets_gate_form() {
-  hooks_repo "$TMP/repo"
-  printf '#!/bin/sh\necho two\nexec sh other.sh\n' > .git/hooks/pre-push
-  chmod 755 .git/hooks/pre-push
-  run "$G" install-hooks
-  assert_eq 0 "$STATUS" "install-hooks"
-  hooks_expect .git/hooks/pre-push "#!/bin/sh
-echo two
-$HOOK_TEST_GATE_CI
-exec sh other.sh
-"
-}
 
-# The gate must run before an exit that shares the last line with other commands.
-test_commit_blocked_when_exit_shares_the_line() {
-  hooks_repo "$TMP/my repo"
-  printf '#!/bin/sh\necho start; exit 0\n' > .git/hooks/pre-commit
-  chmod 755 .git/hooks/pre-commit
-  run "$G" install
-  assert_eq 0 "$STATUS" "install"
-  rule todo format=path-line
-  must git add -A
-  run git commit -q -m "add the todo rule"
-  assert_eq 0 "$STATUS" "commit of the rule alone: $OUT"
-  printf 'TODO fix me\n' > a.txt
-  must git add a.txt
-  local before
-  before=$(git rev-parse HEAD)
-  run git commit -q -m "add a violation"
-  if [ "$STATUS" -eq 0 ]; then
-    fail "a hook ending in exit 0 on the same line let a new violation through: $OUT"
-  fi
-  assert_eq "$before" "$(git rev-parse HEAD)" "HEAD is unchanged after the blocked commit"
-}
 
-# A word that only starts with exit or exec is not an exit line.
-test_exit_like_words_are_not_exit_lines() {
-  hooks_repo "$TMP/repo"
-  printf '#!/bin/sh\nexit_status_check\n' > .git/hooks/pre-commit
-  printf '#!/bin/sh\nexitfoo\n' > .git/hooks/pre-push
-  chmod 755 .git/hooks/pre-commit .git/hooks/pre-push
-  run "$G" install-hooks
-  assert_eq 0 "$STATUS" "install-hooks"
-  hooks_expect .git/hooks/pre-commit "#!/bin/sh
-exit_status_check
-$HOOK_TEST_STAGED
-"
-  hooks_expect .git/hooks/pre-push "#!/bin/sh
-exitfoo
-$HOOK_TEST_CI
-"
-}
 
-# A trailing exit with an argument that is not a literal number, or any other
-# trailing exit, means the hook is left alone and the line is printed.
-test_trailing_exit_with_argument_is_print_only() {
-  hooks_repo "$TMP/repo"
-  printf '#!/bin/sh\necho x\nexit $?\n' > .git/hooks/pre-commit
-  # shellcheck disable=SC2016 # the hook is shell text; $status is not ours to expand
-  printf '#!/bin/sh\necho y\nexit "$status"\n' > .git/hooks/pre-push
-  chmod 755 .git/hooks/pre-commit .git/hooks/pre-push
-  local before
-  before=$(hooks_sum .git/hooks/pre-commit .git/hooks/pre-push)
-  run "$G" install-hooks
-  assert_eq 0 "$STATUS" "install-hooks"
-  assert_eq "$before" "$(hooks_sum .git/hooks/pre-commit .git/hooks/pre-push)" "both hooks are left alone"
-  assert_contains "$OUT" "ACTION NEEDED: add to .git/hooks/pre-commit:"
-  assert_contains "$OUT" "ACTION NEEDED: add to .git/hooks/pre-push:"
-}
 
 # Non-shell interpreters are never edited; only the line is printed.
 test_nonshell_shebang_is_print_only() {
@@ -240,7 +148,8 @@ test_nonshell_shebang_is_print_only() {
     assert_eq 0 "$STATUS" "install-hooks with [$shebang]"
     assert_eq "$before" "$(hooks_sum .git/hooks/pre-commit)" "[$shebang] is not edited"
     assert_contains "$OUT" "ACTION NEEDED: add to .git/hooks/pre-commit:"
-    assert_contains "$OUT" "$HOOK_TEST_STAGED"
+    assert_contains "$OUT" "$HOOK_TEST_GATE_STAGED"
+    assert_contains "$OUT" "as the first command, after the shebang"
   done
 }
 
@@ -252,16 +161,16 @@ test_shell_shebangs_are_edited() {
     printf '#!/usr/bin/env %s\necho x\n' "$sh" > .git/hooks/pre-commit
     rm -f .git/hooks/pre-push
     run "$G" install-hooks
-    assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "[$sh] is edited"
+    assert_eq 1 "$(hooks_lines "$HOOK_TEST_GATE_STAGED" .git/hooks/pre-commit)" "[$sh] is edited"
   done
   printf '#!/usr/bin/env -S bash -e\necho x\n' > .git/hooks/pre-commit
   rm -f .git/hooks/pre-push
   run "$G" install-hooks
-  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "env -S bash is edited"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_GATE_STAGED" .git/hooks/pre-commit)" "env -S bash is edited"
   printf 'echo x\n' > .git/hooks/pre-commit
   rm -f .git/hooks/pre-push
   run "$G" install-hooks
-  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "no shebang is edited"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_GATE_STAGED" .git/hooks/pre-commit)" "no shebang is edited"
 }
 
 # A CRLF hook is not edited: the line would not match and the file would be mixed.
@@ -329,7 +238,7 @@ test_husky_v9_layout() {
   shim=$(hooks_sum .husky/_)
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks"
-  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .husky/pre-commit)" "pre-commit line"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_GATE_STAGED" .husky/pre-commit)" "pre-commit line"
   assert_eq 1 "$(hooks_lines "$HOOK_TEST_CI" .husky/pre-push)" "pre-push line"
   assert_eq "$shim" "$(hooks_sum .husky/_)" "husky's own directory is untouched"
   assert_eq ".husky/_" "$(git config --get core.hooksPath)" "hooksPath"
@@ -341,7 +250,7 @@ test_husky_v8_layout() {
   must mkdir -p .husky
   printf '#!/bin/sh\nnpm test\n' > .husky/pre-commit
   must git config core.hooksPath .husky
-  local want=$'#!/bin/sh\nnpm test\n'"$HOOK_TEST_STAGED"$'\n'
+  local want=$'#!/bin/sh\n'"$HOOK_TEST_GATE_STAGED"$'\nnpm test\n'
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks"
   hooks_expect .husky/pre-commit "$want"
@@ -352,7 +261,7 @@ test_husky_v8_layout() {
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks with an absolute hooksPath"
   assert_contains "$OUT" "already present in .husky/pre-commit"
-  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .husky/pre-commit)" "one pre-commit line"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_GATE_STAGED" .husky/pre-commit)" "one pre-commit line"
 }
 
 test_husky_creates_missing_directory() {
@@ -546,7 +455,7 @@ test_install_twice_leaves_tree_identical() {
   run "$G" install
   assert_eq 0 "$STATUS" "second install"
   assert_eq "$tree" "$(hooks_sum .gauntlet .git/hooks)" "tree after the second install"
-  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "one pre-commit line"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_GATE_STAGED" .git/hooks/pre-commit)" "one pre-commit line"
   assert_contains "$OUT" "already present in .git/hooks/pre-push"
 }
 
@@ -614,7 +523,7 @@ test_custom_hookspath_relative() {
   plain=$(hooks_sum .git/hooks)
   run "$G" install
   assert_eq 0 "$STATUS" "install"
-  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" tools/hooks/pre-commit)" "pre-commit line"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_GATE_STAGED" tools/hooks/pre-commit)" "pre-commit line"
   assert_eq 1 "$(hooks_lines "$HOOK_TEST_CI" tools/hooks/pre-push)" "pre-push line"
   assert_eq "$plain" "$(hooks_sum .git/hooks)" ".git/hooks is untouched"
 }
@@ -647,7 +556,7 @@ test_hooks_dir_outside_repo_is_print_only() {
   assert_eq "$before" "$(hooks_sum "$TMP/shared hooks")" "the shared hooks directory is untouched"
   assert_contains "$OUT" "ACTION NEEDED: add to $TMP/shared hooks/pre-commit:"
   assert_contains "$OUT" "ACTION NEEDED: add to $TMP/shared hooks/pre-push:"
-  assert_contains "$OUT" "$HOOK_TEST_STAGED"
+  assert_contains "$OUT" "$HOOK_TEST_GATE_STAGED"
 }
 
 # A global core.hooksPath shared by every repo is printed, and nothing is written.
@@ -898,104 +807,13 @@ test_commit_blocked_then_passes_through_vendored_runner() {
   assert_eq "" "$(git status --short)" "tree is clean after the fixed commit"
 }
 
-# A trailing exit with an argument is printed in the gate form, to go before it.
-test_exit_with_argument_prints_gate_form() {
-  hooks_repo "$TMP/repo"
-  # shellcheck disable=SC2016 # the hook is shell text; $rc is not ours to expand
-  printf '#!/bin/sh\necho x\nexit "$rc"\n' > .git/hooks/pre-commit
-  chmod 755 .git/hooks/pre-commit
-  local before
-  before=$(hooks_sum .git/hooks/pre-commit)
-  run "$G" install-hooks
-  assert_eq 0 "$STATUS" "install-hooks"
-  assert_eq "$before" "$(hooks_sum .git/hooks/pre-commit)" "the hook is left alone"
-  assert_contains "$OUT" "ACTION NEEDED: add to .git/hooks/pre-commit:"
-  assert_contains "$OUT" "$HOOK_TEST_GATE_STAGED"
-  assert_contains "$OUT" "before the final exit"
-}
 
-# The printed line, placed before the final exit as it says, blocks a violation.
-test_gate_placed_before_exit_with_argument_blocks() {
-  hooks_repo "$TMP/my repo"
-  # shellcheck disable=SC2016 # the hook is shell text; $rc is not ours to expand
-  printf '#!/bin/sh\nrc=0\necho start\nexit "$rc"\n' > .git/hooks/pre-commit
-  chmod 755 .git/hooks/pre-commit
-  run "$G" install
-  assert_eq 0 "$STATUS" "install"
-  assert_contains "$OUT" "before the final exit"
-  # shellcheck disable=SC2016 # the hook is shell text; $rc is not ours to expand
-  printf '#!/bin/sh\nrc=0\necho start\n%s\nexit "$rc"\n' "$HOOK_TEST_GATE_STAGED" > .git/hooks/pre-commit
-  rule todo format=path-line
-  must git add -A
-  run git commit -q -m "add the todo rule"
-  assert_eq 0 "$STATUS" "commit of the rule alone: $OUT"
-  printf 'TODO fix me\n' > a.txt
-  must git add a.txt
-  local before
-  before=$(git rev-parse HEAD)
-  run git commit -q -m "add a violation"
-  if [ "$STATUS" -eq 0 ]; then fail "the gate placed before the final exit let a violation through: $OUT"; fi
-  assert_eq "$before" "$(git rev-parse HEAD)" "HEAD is unchanged"
-}
 
-# A hook that exits early is printed, not edited; with the gate placed at the top,
-# as the printed text says, a commit that brings a violation is blocked.
-nested_exit_case() {
-  local rest placed before_commit before
-  rest=${1#*$'\n'}
-  placed=$'#!/bin/sh\n'"$HOOK_TEST_GATE_STAGED"$'\n'"$rest"
-  hooks_repo "$TMP/my repo"
-  printf '%s' "$1" > .git/hooks/pre-commit
-  chmod 755 .git/hooks/pre-commit
-  before=$(hooks_sum .git/hooks/pre-commit)
-  run "$G" install
-  assert_eq 0 "$STATUS" "install"
-  assert_eq "$before" "$(hooks_sum .git/hooks/pre-commit)" "the early-exit hook is left alone"
-  assert_contains "$OUT" "ACTION NEEDED: add to .git/hooks/pre-commit:"
-  printf '%s' "$placed" > .git/hooks/pre-commit
-  rule todo format=path-line
-  must git add -A
-  run git commit -q -m "add the todo rule"
-  assert_eq 0 "$STATUS" "commit of the rule alone: $OUT"
-  printf 'TODO fix me\n' > a.txt
-  must git add a.txt
-  before_commit=$(git rev-parse HEAD)
-  run git commit -q -m "add a violation"
-  if [ "$STATUS" -eq 0 ]; then fail "the gate placed at the top let a violation through: $OUT"; fi
-  assert_eq "$before_commit" "$(git rev-parse HEAD)" "HEAD is unchanged"
-}
 
-test_nested_exit_in_if_is_print_only_and_placed_gate_blocks() {
-  nested_exit_case $'#!/bin/sh\nif true; then exit 0; fi\n'
-}
 
-test_nested_exit_in_case_is_print_only_and_placed_gate_blocks() {
-  nested_exit_case $'#!/bin/sh\ncase x in\n  *) exit 0 ;;\nesac\n'
-}
 
-test_nested_exit_in_function_is_print_only_and_placed_gate_blocks() {
-  nested_exit_case $'#!/bin/sh\nmain() {\n  echo hi\n  exit 0\n}\n'
-}
 
-# A comment that mentions exit 0 is not an exit; non-zero literal exits are not
-# bare, so the hook stays editable.
-test_comment_mentioning_exit_zero_is_not_a_nested_exit() {
-  hooks_repo "$TMP/repo"
-  printf '#!/bin/sh\n# exit 0 would skip the gate, so none is written here\nif false; then\n  exit 1\nfi\n' > .git/hooks/pre-commit
-  chmod 755 .git/hooks/pre-commit
-  run "$G" install-hooks
-  assert_eq 0 "$STATUS" "install-hooks"
-  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "the gate line was appended"
-}
 
-test_nonzero_literal_exits_stay_editable() {
-  hooks_repo "$TMP/repo"
-  printf '#!/bin/sh\nif [ -f x ]; then\n  exit 10\nfi\n' > .git/hooks/pre-commit
-  chmod 755 .git/hooks/pre-commit
-  run "$G" install-hooks
-  assert_eq 0 "$STATUS" "install-hooks"
-  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "the gate line was appended"
-}
 
 test_nul_byte_hook_is_print_only() {
   hooks_repo "$TMP/repo"
@@ -1032,7 +850,7 @@ test_symlink_to_file_inside_root_is_edited() {
   must ln -s ../../shared/hook .git/hooks/pre-commit
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks"
-  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" shared/hook)" "the target inside the repo is edited"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_GATE_STAGED" shared/hook)" "the target inside the repo is edited"
   if [ ! -L .git/hooks/pre-commit ]; then fail "the link was replaced"; fi
 }
 
@@ -1094,6 +912,7 @@ test_failed_rollback_keeps_both_copies() {
   FAKE_MV_FAIL_AT=2 FAKE_MV_FAIL2_AT=3 PATH="$TMP/fakebin:$PATH" "$G" install > "$TMP/out" 2>&1 || status=$?
   assert_eq 2 "$status" "install with the new runner's move and its rollback failing"
   assert_contains "$(cat "$TMP/out")" "the rollback failed"
+  assert_not_contains "$(cat "$TMP/out")" "lib.old"
   if [ ! -d .gauntlet/.bin.old ]; then fail "the old runner is not kept in .gauntlet/.bin.old"; fi
   if [ ! -d .gauntlet/.bin.new ]; then fail "the complete new copy was deleted"; fi
   if [ -e .gauntlet/bin ]; then fail "bin is in place though the rollback failed"; fi
@@ -1161,7 +980,7 @@ test_presence_is_whole_line_not_indented_or_comment() {
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks"
   assert_not_contains "$OUT" "already present in .git/hooks/pre-commit"
-  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "the whole-line gate was added"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_GATE_STAGED" .git/hooks/pre-commit)" "the whole-line gate was added"
 }
 
 # A husky path outside the repo root is not husky's: printed, and nothing created.
@@ -1185,44 +1004,7 @@ test_husky_dotdot_inside_root_normalises() {
   if [ -e packages ]; then fail "packages/ was created by an unresolved .."; fi
 }
 
-# exit 0 with a trailing comment is an exit line: the gate goes before it.
-test_exit_zero_with_comment_is_an_exit_line() {
-  hooks_repo "$TMP/repo"
-  printf '#!/bin/sh\necho x\nexit 0 # done\n' > .git/hooks/pre-commit
-  chmod 755 .git/hooks/pre-commit
-  run "$G" install-hooks
-  assert_eq 0 "$STATUS" "install-hooks"
-  hooks_expect .git/hooks/pre-commit "#!/bin/sh
-echo x
-$HOOK_TEST_GATE_STAGED
-exit 0 # done
-"
-}
 
-# foo && exit 0 as the last line is a trailing exit: the gate goes before the line,
-# so it runs before the conditional exit and a violation is blocked.
-test_trailing_conditional_exit_gets_gate_before_the_line() {
-  hooks_repo "$TMP/my repo"
-  printf '#!/bin/sh\necho start && exit 0\n' > .git/hooks/pre-commit
-  chmod 755 .git/hooks/pre-commit
-  run "$G" install
-  assert_eq 0 "$STATUS" "install"
-  hooks_expect .git/hooks/pre-commit "#!/bin/sh
-$HOOK_TEST_GATE_STAGED
-echo start && exit 0
-"
-  rule todo format=path-line
-  must git add -A
-  run git commit -q -m "add the todo rule"
-  assert_eq 0 "$STATUS" "commit of the rule alone: $OUT"
-  printf 'TODO fix me\n' > a.txt
-  must git add a.txt
-  local before
-  before=$(git rev-parse HEAD)
-  run git commit -q -m "add a violation"
-  if [ "$STATUS" -eq 0 ]; then fail "a conditional exit on the last line let a violation through: $OUT"; fi
-  assert_eq "$before" "$(git rev-parse HEAD)" "HEAD is unchanged"
-}
 
 # A config with only one of the two gate commands is not already configured.
 test_partial_config_is_not_already_configured() {
@@ -1258,4 +1040,226 @@ test_print_only_hook_warns_when_not_executable() {
   "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed"
   assert_eq "$before" "$(hooks_sum .git/hooks/pre-commit)" "the CRLF hook is not edited"
   assert_contains "$(cat "$TMP/err")" "warning: .git/hooks/pre-commit is not executable; git will ignore it"
+}
+
+# The gate goes first in an editable hook: on the line after the shebang, before
+# anything the project's own hook does. An early exit, exec, a continuation or a
+# failing tail cannot get past it. The helper commits a violation after install.
+top_gate_case() {
+  hooks_repo "$TMP/my repo"
+  printf '%s' "$1" > .git/hooks/pre-commit
+  chmod 755 .git/hooks/pre-commit
+  run "$G" install
+  assert_eq 0 "$STATUS" "install"
+  assert_eq "$HOOK_TEST_GATE_STAGED" "$(sed -n 2p .git/hooks/pre-commit)" "the gate is the second line"
+  run sh -n .git/hooks/pre-commit
+  assert_eq 0 "$STATUS" "the edited hook still parses"
+  rule todo format=path-line
+  must git add -A
+  run git commit -q -m "add the todo rule"
+  assert_eq 0 "$STATUS" "commit of the rule alone: $OUT"
+  printf 'TODO fix me\n' > a.txt
+  must git add a.txt
+  local before
+  before=$(git rev-parse HEAD)
+  run git commit -q -m "add a violation"
+  if [ "$STATUS" -eq 0 ]; then fail "the gate did not block a violation: $OUT"; fi
+  assert_eq "$before" "$(git rev-parse HEAD)" "HEAD is unchanged after the blocked commit"
+}
+
+test_gate_first_blocks_echo_then_exit_on_one_line() {
+  top_gate_case $'#!/bin/sh\necho start; exit 0\n'
+}
+
+test_gate_first_blocks_trailing_exec() {
+  top_gate_case $'#!/bin/sh\necho lint\nexec echo done\n'
+}
+
+test_gate_first_blocks_exit_then_more_code() {
+  top_gate_case $'#!/bin/sh\nif true; then exit 0; fi\necho more\n'
+}
+
+test_gate_first_blocks_early_opt_out() {
+  top_gate_case $'#!/bin/sh\nfiles=$(echo x)\nif [ -z "$files" ]; then exit 0; fi\necho linting\n'
+}
+
+test_gate_first_blocks_function_then_call() {
+  top_gate_case $'#!/bin/sh\nmain() {\n  echo lint\n  exit 0\n}\nmain "$@"\n'
+}
+
+test_gate_first_blocks_exit_with_argument() {
+  top_gate_case $'#!/bin/sh\nrc=0\necho lint\nexit "$rc"\n'
+}
+
+test_gate_first_blocks_line_continuation() {
+  top_gate_case $'#!/bin/sh\necho lint \\\n  || exit 1\n'
+}
+
+# The project's own result is kept: a commit made through the hook has the same exit
+# status before and after install, and the hook's own output still shows.
+status_case() {
+  hooks_repo "$TMP/$1"
+  printf '%s' "$2" > .git/hooks/pre-commit
+  chmod 755 .git/hooks/pre-commit
+  printf 'ok\n' > a.txt
+  must git add a.txt
+  run git commit -q -m "before install"
+  local before=$STATUS
+  run "$G" install
+  assert_eq 0 "$STATUS" "install"
+  printf 'ok again\n' > b.txt
+  must git add b.txt
+  run git commit -q -m "after install"
+  assert_eq "$before" "$STATUS" "the exit status is the same before and after install: $OUT"
+  assert_contains "$OUT" "$3"
+}
+
+test_clean_commit_keeps_failing_tail_echo_false() {
+  status_case status-echo-false $'#!/bin/sh\necho lint; false\n' lint
+}
+
+test_clean_commit_keeps_failing_tail_with_exit() {
+  status_case status-false-exit $'#!/bin/sh\necho check; false; exit $?\n' check
+}
+
+test_clean_commit_keeps_passing_hook() {
+  status_case status-pass $'#!/bin/sh\necho lint\n' lint
+}
+
+# A project's own trailing exit stays below the gate, byte for byte.
+test_trailing_exit_stays_below_the_gate() {
+  hooks_repo "$TMP/repo"
+  printf '#!/bin/sh\necho x\nexit 0\n' > .git/hooks/pre-commit
+  chmod 755 .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks"
+  hooks_expect .git/hooks/pre-commit $'#!/bin/sh\n'"$HOOK_TEST_GATE_STAGED"$'\necho x\nexit 0\n'
+}
+
+# A hook that is a symlink to a directory is printed quietly, with no read errors.
+test_symlink_to_directory_is_print_only_quietly() {
+  hooks_repo "$TMP/repo"
+  must mkdir -p somedir
+  must ln -s "$TMP/repo/somedir" .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks"
+  assert_contains "$OUT" "ACTION NEEDED: add to .git/hooks/pre-commit:"
+  assert_not_contains "$OUT" "read error"
+  assert_not_contains "$OUT" "Is a directory"
+}
+
+# A shared hooks directory outside the repo: an existing hook there that is not
+# executable is warned about, and its mode is left alone.
+test_shared_hooks_dir_warns_when_hook_not_executable() {
+  hooks_repo "$TMP/repo"
+  must mkdir -p "$TMP/shared hooks"
+  printf '#!/bin/sh\necho shared\n' > "$TMP/shared hooks/pre-commit"
+  chmod 644 "$TMP/shared hooks/pre-commit"
+  must git config core.hooksPath "$TMP/shared hooks"
+  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed"
+  assert_contains "$(cat "$TMP/err")" "warning: $TMP/shared hooks/pre-commit is not executable; git will ignore it"
+  if [ -x "$TMP/shared hooks/pre-commit" ]; then fail "the shared hook's mode was changed"; fi
+}
+
+# core.hooksPath set to the empty value means unset: the default hooks directory.
+test_empty_hookspath_means_the_default_hooks_dir() {
+  hooks_repo "$TMP/repo"
+  must git config core.hooksPath ""
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks"
+  assert_eq "#!/usr/bin/env sh" "$(head -n 1 .git/hooks/pre-commit)" "the default hooks dir got the hook"
+  if [ -e pre-commit ]; then fail "a hook was written into the repo root"; fi
+}
+
+# In a linked worktree, a hook symlinked to a file inside the common git dir is ours.
+test_linked_worktree_symlinked_hook_into_common_git_is_edited() {
+  hooks_repo "$TMP/repo"
+  printf '#!/bin/sh\necho shared\n' > .git/shared-hook
+  chmod 755 .git/shared-hook
+  must ln -s ../shared-hook .git/hooks/pre-commit
+  must git worktree add -q "$TMP/wt dir" -b wt
+  must cd "$TMP/wt dir"
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks in the worktree"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_GATE_STAGED" "$TMP/repo/.git/shared-hook")" "the target in the common git dir is edited"
+  if [ ! -L "$TMP/repo/.git/hooks/pre-commit" ]; then fail "the link was replaced"; fi
+}
+
+# An install killed after each of the four moves of the vendoring swap leaves a state
+# the next install must recover from: a working runner, and no copies left behind.
+interrupted_install_case() {
+  local point=$1 runner
+  hooks_repo "$TMP/repo $point"
+  run "$G" install
+  assert_eq 0 "$STATUS" "install"
+  runner=$(hooks_sum .gauntlet/bin .gauntlet/lib)
+  must mv .gauntlet/bin .gauntlet/.bin.old
+  if [ "$point" -eq 1 ]; then
+    must cp -R "$ROOT/bin" .gauntlet/.bin.new
+  else
+    must cp -R "$ROOT/bin" .gauntlet/bin
+  fi
+  if [ "$point" -ge 3 ]; then
+    must mv .gauntlet/lib .gauntlet/.lib.old
+    if [ "$point" -eq 3 ]; then
+      must cp -R "$ROOT/lib" .gauntlet/.lib.new
+    else
+      must cp -R "$ROOT/lib" .gauntlet/lib
+    fi
+  fi
+  run "$G" install
+  assert_eq 0 "$STATUS" "re-install after a kill at move $point: $OUT"
+  assert_eq "$runner" "$(hooks_sum .gauntlet/bin .gauntlet/lib)" "the runner is the checkout's runner"
+  run .gauntlet/bin/gauntlet --version
+  assert_eq 0 "$STATUS" "the runner works after a kill at move $point"
+  if [ -e .gauntlet/.bin.new ] || [ -e .gauntlet/.lib.new ] || [ -e .gauntlet/.bin.old ] || [ -e .gauntlet/.lib.old ]; then
+    fail "copies were left behind after a kill at move $point"
+  fi
+}
+
+test_interrupted_install_recovers_after_move_1() {
+  interrupted_install_case 1
+}
+
+test_interrupted_install_recovers_after_move_2() {
+  interrupted_install_case 2
+}
+
+test_interrupted_install_recovers_after_move_3() {
+  interrupted_install_case 3
+}
+
+test_interrupted_install_recovers_after_move_4() {
+  interrupted_install_case 4
+}
+
+# A real push: the pre-push gate, placed first in an existing hook that ends in
+# exit 0, refuses a branch whose commit brings a new violation. The commit is made
+# with --no-verify so the violation reaches push, as it would from a machine
+# without the commit gate.
+test_push_blocked_by_gate_first_in_existing_pre_push() {
+  hooks_repo "$TMP/push repo"
+  must git init -q --bare "$TMP/remote.git"
+  must git remote add origin "$TMP/remote.git"
+  printf '#!/bin/sh\necho push\nexit 0\n' > .git/hooks/pre-push
+  chmod 755 .git/hooks/pre-push
+  run "$G" install
+  assert_eq 0 "$STATUS" "install"
+  rule todo format=path-line
+  must git add -A
+  run git commit -q -m "add the gate and the rule"
+  assert_eq 0 "$STATUS" "commit on main: $OUT"
+  run git push -q origin main
+  assert_eq 0 "$STATUS" "push of main, which has no violation: $OUT"
+  must git checkout -q -b feat
+  printf 'TODO fix me\n' > a.txt
+  must git add a.txt
+  run git commit -q --no-verify -m "add a violation"
+  assert_eq 0 "$STATUS" "commit that skipped the commit gate: $OUT"
+  run git push -q origin feat
+  if [ "$STATUS" -eq 0 ]; then fail "the push with a new violation was not refused: $OUT"; fi
+  assert_contains "$OUT" "a.txt"
+  if git -C "$TMP/remote.git" rev-parse -q --verify refs/heads/feat > /dev/null; then
+    fail "the refused branch reached the remote"
+  fi
 }
