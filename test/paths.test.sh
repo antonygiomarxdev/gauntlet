@@ -121,6 +121,30 @@ cd.ts' "$OUT" "name-status tokens, one per line"
   assert_contains "$OUT" 'e\tf.ts'
 }
 
+# all_files also lists the untracked files, to find case files. R31 is about what git tracks: an
+# untracked editor file with a tab or a newline in its name is left out, not an error (I2).
+test_all_files_leaves_out_untracked_odd_names() {
+  mkrepo
+  paths_lib
+  printf 'x\n' > tracked.ts
+  must git add -A
+  printf 'x\n' > "$(printf 'swap\tfile')"
+  printf 'x\n' > "$(printf 'a\nb')"
+  printf 'x\n' > "plain untracked.ts"
+  run all_files
+  assert_eq 0 "$STATUS" "all_files: $OUT"
+  assert_contains "$OUT" "tracked.ts"
+  assert_contains "$OUT" "plain untracked.ts"
+  assert_not_contains "$OUT" "swap"
+  assert_not_contains "$OUT" "$(printf 'a\nb')"
+  assert_eq "plain untracked.ts" "$(printf '%s\n' "$OUT" | tail -n 1)" "the untracked names come after the tracked ones"
+  # A tracked odd name is still refused.
+  must git add -A
+  run all_files
+  assert_eq 2 "$STATUS" "all_files with a tracked odd name: $OUT"
+  assert_contains "$OUT" "rename the file"
+}
+
 # The names that are fine stay fine: spaces, quotes, a backslash, unicode.
 test_listing_accepts_names_without_a_tab_or_newline() {
   mkrepo

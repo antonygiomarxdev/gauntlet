@@ -211,3 +211,21 @@ test_good_case_flagged_counts_its_rows_in_the_singular() {
   run run_rule_tests
   assert_contains "$OUT" "  todo  todo.good.txt  good case flagged: 2 rows"
 }
+
+# test-rules finds the case files among the tracked and the untracked files. A stray file
+# with a tab or a newline in its name that git does not track (a swap file) does not fail it;
+# a tracked one does, as everywhere (R31).
+test_test_rules_ignores_an_untracked_odd_name_but_not_a_tracked_one() {
+  mkrepo
+  rule todo
+  printf 'TODO\n' > .gauntlet/rules/todo.bad.ts
+  printf 'ok\n' > .gauntlet/rules/todo.good.ts
+  printf 'junk\n' > "$(printf 'swap\tfile')"
+  printf 'junk\n' > "$(printf 'a\nb')"
+  run "$G" test-rules
+  assert_eq 0 "$STATUS" "untracked odd names: $OUT"
+  must git add -A
+  run "$G" test-rules
+  assert_eq 2 "$STATUS" "tracked odd names: $OUT"
+  assert_contains "$OUT" "rename the file"
+}

@@ -45,14 +45,29 @@ select_files() {
 
 # all_files: print every tracked or untracked-but-not-ignored file that exists
 # in the working tree, once each. Used by test-rules case discovery; the
-# measurement reads tracked_files instead.
+# measurement reads tracked_files instead. The tracked part refuses a path with a tab
+# or a newline (R31); the untracked part leaves such a name out, since git does not
+# track it and nothing is measured from it.
 all_files() {
-  local list skip rc=0
-  list=$(git_nul_lines -c core.quotepath=off ls-files -t -c -d -o --exclude-standard -z) || return 2
-  skip=$(tmp_new) || return 2
-  gitlink_paths > "$skip" || rc=2
-  if [ "$rc" -eq 0 ]; then printf '%s\n' "$list" | files_from_listing | skip_names "$skip" || rc=2; fi
-  rm -f "$skip"
+  tracked_files || return 2
+  untracked_files
+}
+
+# untracked_files: print the untracked files git does not ignore, once each, without
+# the names that hold a tab or a newline.
+untracked_files() {
+  local tmp name rc=0
+  tmp=$(tmp_new) || return 2
+  git -c core.quotepath=off ls-files -o --exclude-standard -z > "$tmp" || rc=2
+  if [ "$rc" -eq 0 ]; then
+    while IFS= read -r -d '' name; do
+      case "$name" in
+        *$'\t'*|*$'\n'*) ;;
+        *) printf '%s\n' "$name" ;;
+      esac
+    done < "$tmp"
+  fi
+  rm -f "$tmp"
   return "$rc"
 }
 
