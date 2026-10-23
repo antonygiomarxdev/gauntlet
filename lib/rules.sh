@@ -10,18 +10,22 @@ rule_get() {
   case "$2" in
     severity|stage|engine|since|format) strip=1 ;;
   esac
+  # Print only after the closing fence is seen; an unclosed block exits 3.
   awk -v want="$2" -v strip="$strip" '
     { sub(/\r$/, "") }
     /^---$/ { n++; if (n == 2) exit; next }
-    n == 1 {
+    n == 1 && !found {
       colon = index($0, ":")
       if (colon == 0 || substr($0, 1, colon - 1) != want) next
       val = substr($0, colon + 1)
       sub(/^[ \t]+/, "", val)
       if (strip == 1) sub(/[ \t]+#.*$/, "", val)
       sub(/[ \t]+$/, "", val)
-      print val
-      exit
+      found = 1
+    }
+    END {
+      if (n < 2) exit 3
+      if (found) print val
     }
   ' "$1"
 }
@@ -47,6 +51,10 @@ rule_validate() {
   }
   if [ ! -f "$file" ]; then
     problem "cannot read rule file"
+    return 1
+  fi
+  if ! rule_get "$file" id >/dev/null; then
+    problem "frontmatter must be closed by a second ---"
     return 1
   fi
   stem=${file##*/}

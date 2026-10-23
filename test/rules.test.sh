@@ -24,6 +24,31 @@ test_get_keeps_hash_in_detector() {
   assert_eq "rg '# x' {files}" "$(rule_get .gauntlet/rules/x.md detector)" "detector"
 }
 
+test_get_strips_comment_on_format_key() {
+  mkrepo
+  rules_lib
+  printf -- '---\nid: x\nformat: github   # default\n---\n' > .gauntlet/rules/x.md
+  assert_eq "github" "$(rule_get .gauntlet/rules/x.md format)" "format"
+}
+
+test_get_fails_on_unclosed_frontmatter() {
+  mkrepo
+  rules_lib
+  printf -- '---\nid: x\nseverity: block\n' > .gauntlet/rules/x.md
+  run rule_get .gauntlet/rules/x.md id
+  assert_eq 3 "$STATUS" "status"
+  assert_eq "" "$OUT" "output"
+}
+
+test_validate_rejects_unclosed_frontmatter() {
+  mkrepo
+  rules_lib
+  printf -- '---\nid: x\nseverity: block\nengine: rg\ndetector: rg TODO {files}\nfix: remove it\nsource: pending\nsince: 2026-10-22\n' > .gauntlet/rules/x.md
+  run rule_validate .gauntlet/rules/x.md
+  assert_eq 1 "$STATUS" "status"
+  assert_eq ".gauntlet/rules/x.md: frontmatter must be closed by a second ---" "$OUT" "output"
+}
+
 test_validate_accepts_good_rule() {
   mkrepo
   rules_lib
