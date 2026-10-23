@@ -27,6 +27,8 @@ select_files() {
     }
     BEGIN {
       np = split(ENVIRON["GL_PATHS"], inc, " ")
+      # A blank paths value must not select nothing: fall back to **.
+      if (np == 0) { np = 1; inc[1] = "**" }
       ne = split(ENVIRON["GL_EXCLUDE"], exc, " ")
       for (i = 1; i <= np; i++) inc_re[i] = glob2re(inc[i])
       for (j = 1; j <= ne; j++) exc_re[j] = glob2re(exc[j])
@@ -43,10 +45,10 @@ select_files() {
 
 # all_files: print every tracked or untracked-but-not-ignored file.
 all_files() {
-  git ls-files -co --exclude-standard
+  git -c core.quotepath=off ls-files -co --exclude-standard
 }
 
 # staged_files: print staged paths that are added, copied, modified or renamed.
 staged_files() {
-  git diff --cached --name-only --diff-filter=ACMR
+  git -c core.quotepath=off diff --cached --name-only --diff-filter=ACMR
 }

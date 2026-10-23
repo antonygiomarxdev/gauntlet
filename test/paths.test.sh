@@ -57,3 +57,35 @@ test_metacharacters_match_literally() {
   OUT=$(printf 'c++/a(1).ts\ncc/a1.ts\n' | select_files "c++/a(1).ts" "")
   assert_eq "c++/a(1).ts" "$OUT"
 }
+
+test_blank_paths_selects_everything() {
+  paths_lib
+  OUT=$(printf 'a.ts\nx/b\n' | select_files "  " "")
+  assert_eq "a.ts
+x/b" "$OUT"
+}
+
+test_staged_files_prints_unicode_unquoted() {
+  mkrepo
+  paths_lib
+  must sh -c 'echo one > é.txt'
+  must git add é.txt
+  OUT=$(staged_files)
+  assert_eq "é.txt" "$OUT"
+}
+
+test_all_files_lists_tracked_and_untracked_omits_ignored() {
+  mkrepo
+  paths_lib
+  must sh -c 'echo one > tracked.txt'
+  must git add tracked.txt
+  must git commit -q -m "add tracked"
+  must sh -c 'echo two > untracked-é.txt'
+  must sh -c 'echo three > ignored.log'
+  must sh -c 'echo "*.log" > .gitignore'
+  OUT=$(all_files)
+  assert_contains "$OUT" "tracked.txt"
+  assert_contains "$OUT" "untracked-é.txt"
+  assert_contains "$OUT" ".gitignore"
+  assert_not_contains "$OUT" "ignored.log"
+}
