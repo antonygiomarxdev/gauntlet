@@ -2,7 +2,7 @@
 
 **Status:** Draft
 **Key:** LIFE
-**Parent PRD:** [PRD — gauntlet](../PRD.md)
+**Parent PRD:** [PRD — I-01 Core](../PRD.md)
 **Owner:** Antony Giomar Hernández
 
 ## 1. Functional problem
@@ -133,11 +133,13 @@ A rule set that never changes rots, and one that changes on an agent's whim stop
 | FRD | Why |
 |---|---|
 | FRD-02 Rules and detectors (RULE) | The rule format and cases that `add-rule` writes. |
-| FRD-03 Gates (GATE) | Shadow and track reporting feeds promotion. |
+| FRD-03 Push and CI gate (GATE) | Shadow and track reporting feeds promotion. |
 | FRD-05 Agent integration (AGENT) | Agent-side reminders and proposals. |
 
-## 12. Open questions
+## 12. Decisions
 
-1. **How far back does the trend look?** Proposed default: the last 8 commits that changed `baseline.tsv`, shown as first and last counts plus the change.
-2. **How are "false positives reported" counted for a shadow rule?** Proposed default: the number of false-positive discussions that name the rule id, entered by hand in the rule body. There is no automatic tracking in v0.1.
-3. **Does guard support ship in v0.1?** Proposed default: no. It is planned with the shared linter cache in a later spec. The FRD stays as written.
+Decided by the owner on 2026-10-22, each by accepting the proposed default.
+
+1. **How far back does the trend look?** Decision: the last 8 commits that changed `baseline.tsv`, shown as first and last counts plus the change.
+2. **How are "false positives reported" counted for a shadow rule?** Decision: the number of false-positive discussions that name the rule id, entered by hand in the rule body. There is no automatic tracking in v0.1.
+3. **Does guard support ship in v0.1?** Decision: no. It is planned with the shared linter cache in a later spec. The FRD stays as written.

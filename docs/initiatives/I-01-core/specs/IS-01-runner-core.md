@@ -54,12 +54,12 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
 
 1. **The runner is split into `lib/` files and vendored as a folder.** Design §6 lists only `bin/gauntlet`; split files keep each concern small enough to review.
 2. **`check --ci` refuses a dirty tree.** It exits 2 when tracked files differ from `HEAD`, with the message `gauntlet checks what you push; commit or stash first`. Measuring the working tree while pushing `HEAD` would break parity. Untracked files do not count.
-3. **Partial staging** (open in the design draft; GATE-AC14). The `pre-commit` check runs on the working tree. When a staged file also has unstaged changes, auto-tighten is skipped and a notice is printed. Push and CI still verify the exact baseline. The ceiling: a commit check can pass on code that is not what gets committed. The push gate catches it.
+3. **Partial staging** (HOOK-AC3). The `pre-commit` check runs on the working tree. When a staged file also has unstaged changes, auto-tighten is skipped and a notice is printed. Push and CI still verify the exact baseline. The ceiling: a commit check can pass on code that is not what gets committed. The push gate catches it.
 4. **lefthook and prek configs are YAML.** `install-hooks` prints the exact snippet for them and does not edit the file. `doctor` fails until the snippet is present. husky, a custom `core.hooksPath` and plain `.git/hooks` get the line added automatically.
 5. **Waivers apply only on their own branch.** A `waive` row applies only when its `branch` column equals the current branch (`GITHUB_HEAD_REF` in CI, `git symbolic-ref --short HEAD` locally). Rows from merged branches are ignored, and `doctor` lists them as stale. Deleting them on merge is left for later.
 6. **Loosening needs a new exception row.** A `loosen` or `remove` row counts only if it is new since the merge-base: present in the current `exceptions.tsv` and absent from the base's. Otherwise one old row would permit every future loosening.
 7. **New rules, and the onboarding branch, are exempt from checks 1–3.**
-   - A rule whose file does not exist at the merge-base is exempt from new, global and touched ([GATE-AC12](../frd/FRD-03-gates.md)).
+   - A rule whose file does not exist at the merge-base is exempt from new, global and touched ([GATE-AC10](../frd/FRD-03-push-and-ci-gate.md)).
    - When the merge-base has no `.gauntlet/baseline.tsv`, checks 1–3 are skipped with the note `no baseline at base`.
 8. **Detector exit codes.**
    - `0` is fine.
@@ -190,7 +190,7 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
 ### Task 4: Detectors
 
 **Files:**
-- Create: `lib/detect.sh`, `test/detect.test.sh`, `test/fixtures/ast-grep-github.txt`
+- Create: `lib/detect.sh`, `lib/formats/path-line.md`, `lib/formats/github.md`, `lib/formats/tsc.md`, `test/detect.test.sh`, `test/fixtures/ast-grep-github.txt`
 
 **Interfaces:**
 - Consumes: `rule_get`, `select_files`.
@@ -199,9 +199,16 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
     - With an empty file list and `{files}` present, the detector is not run at all.
     - Without `{files}`, it runs as-is. This is the whole-program case: output is filtered by the rule's `paths` and `exclude` instead of the input list.
   - **`ast-grep`:** `ast-grep scan --rule <detector> --format github {files}`.
-  - **Parsing:**
-    - `::(error|warning|notice) file=<p>,line=<n>…::<msg>` is parsed as ast-grep github format.
-    - Anything else is parsed as `<p>:<n>[:<col>][:<msg>]`. The path is everything before the first `:<digits>` followed by `:` or end of line.
+  - **Parsing through output formats** (FRD-02 §4.14). No format is hard-coded in `detect.sh`.
+    - `load_format <name>` reads `.gauntlet/formats/<name>.md` if present, else `<runner>/lib/formats/<name>.md`, else returns 2 with `unknown format <name>`. Frontmatter keys: `match` (ERE), `path`, `line`, `message` (group numbers, `message` optional), `ignore` (ERE, optional).
+    - The rule's `format` defaults to `github` for `engine: ast-grep` and `path-line` otherwise.
+    - Each output line is tried against `ignore`, then rewritten with `sed -E` using `match` and the group numbers into `path<TAB>line<TAB>message`. Use a control character as the `s` delimiter so patterns may contain `/`, and build the tab with `printf`, because BSD sed does not expand `\t`.
+    - A non-empty line that matches neither pattern makes the detector broken (exit 2, `broken detector: <rule>: unparsed line: <line>`), whatever the detector's exit code.
+    - Built-in formats:
+      - `path-line`: `^(.+):([0-9]+)(:[0-9]+)?(: ?(.*))?$`, path 1, line 2, message 5. The `.+` is greedy, so a path containing `:<digits>` is a known ceiling; `rg --with-filename` paths from the repo never hit it in practice.
+      - `github`: `^::(error|warning|notice) file=([^,]+),line=([0-9]+)[^:]*::(.*)$`, path 2, line 3, message 4.
+      - `tsc`: `^(.+)\(([0-9]+),[0-9]+\): (error|warning) (.*)$`, path 1, line 2, message 4; `ignore: ^Found [0-9]+ errors?`.
+    - Each built-in format file carries its cases in its body: a fenced `sample` block and a fenced `expected` block of rows. `test-rules` runs them (Task 6).
     - A leading `./` or `$(repo_root)/` is stripped from the path.
     - Rows whose path is not in the input list are dropped.
   - **Exit codes** follow decision 8. A missing tool fails with `missing tool <x>`; for `rg` and `ast-grep` the message adds the install hint `brew install ripgrep ast-grep | apt install ripgrep; pipx install ast-grep-cli`.
@@ -213,6 +220,11 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
   - `test_ast_grep_parse`: a stub detector that `cat`s the fixture and exits 1 yields `silent-catch	x.ts	1	empty catch`.
   - `test_exit1_empty_is_clean`: rg with no match yields 0 rows and status 0.
   - `test_unparseable_output_fails_closed`: the detector `echo garbage; exit 1` returns 2 with stderr containing `broken detector`.
+  - `test_unmatched_line_fails_even_on_exit0`: the detector `echo garbage; exit 0` returns 2 with stderr containing `unparsed line: garbage` (RULE-AC16).
+  - `test_project_format_no_runner_change`: `.gauntlet/formats/mylint.md` with `match: ^([^|]+)\|([0-9]+)\|(.*)$`, path 1, line 2, message 3; a rule with `format: mylint` whose detector prints `a.ts|7|bad thing` yields `r	a.ts	7	bad thing` (RULE-AC15).
+  - `test_ignore_drops_summary_line`: with the `tsc` format, `Found 2 errors.` is ignored and the two error lines become rows.
+  - `test_project_format_overrides_builtin`: a project `path-line.md` is used instead of the built-in one.
+  - `test_unknown_format_is_broken_setup`: `format: nope` returns 2 with `unknown format nope`.
   - `test_missing_tool`: detector `nosuchtool {files}` returns 2 with `missing tool nosuchtool`.
   - `test_output_filtered_to_inputs`: the detector prints a row for a file not in the list, and the row is dropped.
   - `test_whole_program_filtered_by_paths`: a detector without `{files}`, with `paths=src/**`, drops a row for `lib/x.ts`.
@@ -262,6 +274,7 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
   - The detector is run on the case paths explicitly, and the rule's `paths` and `exclude` are ignored.
   - `bad` must produce at least 1 row and `good` must produce 0.
   - A rule with no `bad` case fails with the problem `no cases`.
+  - Every output format in use (built-in and project) is also tested: its `sample` block is parsed and must equal its `expected` block. A format without both blocks fails with `no cases`.
 
   `gauntlet test-rules` wraps it, with exit 0 or 1.
 
@@ -270,7 +283,9 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
   - `test_bad_not_flagged_fails` (the bad case has no `TODO`);
   - `test_good_flagged_fails`;
   - `test_directory_case`: a `bad` dir with two files, one violating, passes;
-  - `test_rule_without_cases_fails`, with output containing `no cases`.
+  - `test_rule_without_cases_fails`, with output containing `no cases`;
+  - `test_format_sample_matches_expected`: each built-in format passes; a project format whose `expected` differs fails and names the format;
+  - `test_format_without_cases_fails`, with output containing `no cases`.
 - [ ] **Step 2:** Run `test/run.sh cases`. Expected: FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run `test/run.sh cases`. Expected: PASS.
@@ -393,7 +408,8 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
     - **`paths` narrowed** (a base glob missing from the current list) needs the same `loosen` row;
     - **`exclude` widened** (a current glob missing from the base list) needs the same `loosen` row;
     - **`engine` or `detector` string changed** needs the same `loosen` row;
-    - **detector file content changed** (when `detector` names an existing file) needs the same `loosen` row.
+    - **detector file content changed** (when `detector` names an existing file) needs the same `loosen` row;
+    - **`format` changed, or the project format file it resolves to added or changed** since the base, for a `block` rule, needs the same `loosen` row.
 
 - [ ] **Step 1: Failing tests:**
   - `test_waive_exempts_new_on_branch`: on branch `f`, after `$G waive a.ts "reason"`, the new violation in `a.ts` passes `[new]` while the global total still applies.
@@ -403,6 +419,7 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
   - `test_lower_severity_passes_with_new_row`.
   - `test_old_loosen_row_does_not_cover_new_loosening`: a row committed on `main` does not cover the branch's change.
   - `test_widen_paths_is_not_loosening`: `paths=src/**` becomes `src/** lib/**`, and the status is 0.
+  - `test_format_change_is_loosening`: adding `.gauntlet/formats/path-line.md` that ignores every line fails in `[loosened]` for each `block` rule using it.
   - `test_remove_rule_needs_remove_row`.
   - `test_empty_reason_rejected`: status 2.
   - `test_trailer_not_a_waiver`: a commit message ending in `Standards-waiver: a.ts — x` waives nothing.
@@ -461,7 +478,7 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
     5. Print `  <rule>  <old> → <new>   baseline updated and staged into this commit`.
 
     Shadow and track rows may rise here: the baseline must stay exact. Block rows only fall, because a rise has already failed the check. When a staged file has unstaged changes, auto-tighten is skipped and the output says `partially staged; run gauntlet baseline before pushing` (decision 3).
-  - **Budget:** the header shows the elapsed time, and a run over 5 s adds `[slow] over the 5 s commit budget`.
+  - **Budget:** the header shows the elapsed time, and a run over the budget adds `[slow] over the 5 s commit budget`. It never changes the exit code. The budget is 5 s; `GAUNTLET_COMMIT_BUDGET_MS` overrides it for tests only, like `GAUNTLET_TODAY`.
 
 - [ ] **Step 1: Failing tests:**
   - `test_staged_new_violation_blocks`, run through a real `git commit` with the hook installed by hand: the commit fails and `HEAD` is unchanged.
@@ -470,6 +487,8 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
   - `test_partial_stage_skips_tighten`, with output containing `partially staged`.
   - `test_deleted_file_rows_removed`.
   - `test_push_stage_rules_not_run_at_commit`: a `stage=push` rule whose detector is `false {files}` does not fail the commit.
+  - `test_first_commit_passes_with_note`: in a repo with no `HEAD`, the commit succeeds and the output contains a note (HOOK-AC5).
+  - `test_over_budget_warns_not_fails`: with `GAUNTLET_COMMIT_BUDGET_MS=1`, a clean commit succeeds and the output contains `[slow]` (HOOK-AC6).
 - [ ] **Step 2:** Run `test/run.sh staged`. Expected: FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run `test/run.sh staged`. Expected: PASS.
@@ -577,24 +596,24 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
 | FRD criteria | Task |
 |---|---|
 | RULE-AC1, AC2 | 2 |
-| RULE-AC3–AC7 | 4 |
+| RULE-AC3–AC7, AC15, AC16 | 4 |
 | RULE-AC8 | 12 |
 | RULE-AC9–AC12 | 6 |
 | RULE-AC13 | 11 |
 | RULE-AC14 | 8 |
-| GATE-AC1, AC2, AC14 | 12 |
-| GATE-AC3 | 5 and 8 |
-| GATE-AC4–AC6, AC10–AC13, AC16 | 8 |
-| GATE-AC7, AC8 | 9 |
-| GATE-AC9 | 7 |
-| GATE-AC15 | 11 |
-| GATE-AC17 | 13 |
+| GATE-AC1 | 5 and 8 |
+| GATE-AC2–AC4, AC8–AC11, AC13 | 8 |
+| GATE-AC5, AC6 | 9 |
+| GATE-AC7 | 7 |
+| GATE-AC12 | 11 |
+| HOOK-AC1–AC3, AC5, AC6 | 12 |
+| HOOK-AC4, AC7, AC8 | 13 (the `doctor` half of AC7 in 14) |
 | EXC-AC1–AC10 | 10 |
 | EXC-AC11 | 14 |
 | LIFE-AC1–AC4, AC10, AC11 | 14 |
 
 Not covered here, and owned by later specs:
-- EXC-AC12 (CI comments) and LIFE-AC5–AC7, AC12 (agent proposals, trend) go to IS-02;
+- GATE-AC14 and EXC-AC12 (CI job and PR comments) and LIFE-AC5–AC7, AC12 (agent proposals, trend) go to IS-02;
 - LIFE-AC8 and AC9 (guards) go to IS-03;
 - ONB and AGENT go to IS-02.
 
@@ -608,7 +627,7 @@ Not covered here, and owned by later specs:
     - §11 (the skill) and §12 (agent integration) go to plan 2;
     - `fix` and `update` go to plan 3.
 - **Open items from §16:**
-  - linter output mapping: the generic `path:line` parser covers `eslint --format unix`; other linters get adapters when needed;
+  - linter output mapping: declarative output formats (Task 4), decided by the owner on 2026-10-22; a new linter is one format file, never runner code;
   - partial staging: decision 3;
   - write-time latency: plan 2;
   - `rg` multi-line normalization: deferred. A reformat that splits one flagged line produces a new fingerprint, and the check reports it. That fails closed, not open.

@@ -2,7 +2,7 @@
 
 **Status:** Draft
 **Key:** ONB
-**Parent PRD:** [PRD — gauntlet](../PRD.md)
+**Parent PRD:** [PRD — I-01 Core](../PRD.md)
 **Owner:** Antony Giomar Hernández
 
 ## 1. Functional problem
@@ -140,11 +140,13 @@ Onboarding studies the repo, researches each technology's own guidance, proposes
 | FRD | Why |
 |---|---|
 | FRD-02 Rules and detectors (RULE) | Accepted rules are written in its format, with its cases. |
-| FRD-03 Gates (GATE) | Install wires its hooks, checks and CI job. |
+| FRD-03 Push and CI gate (GATE) | Install wires its hooks, checks and CI job. |
 | FRD-05 Agent integration (AGENT) | Install writes the `AGENTS.md` block and the adapters. |
 | FRD-06 Rule lifecycle (LIFE) | Shadow promotion, and linter-owned rules. |
 
-## 12. Open questions
+## 12. Decisions
 
-1. **How many proposals per session?** Proposed default: no cap, but ordered by count × severity, and the Owner may say "stop here" at any point. The rest go to `ONBOARDING.md` as pending.
-2. **Does the catalog ship in v0.1?** Proposed default: yes, with the patterns generalized from the origin project (silent catch, raw string vs enum, missing return type, wrong-way layer imports). Each is used only with evidence and a yes.
+Decided by the owner on 2026-10-22, each by accepting the proposed default.
+
+1. **How many proposals per session?** Decision: no cap, but ordered by count × severity, and the Owner may say "stop here" at any point. The rest go to `ONBOARDING.md` as pending.
+2. **Does the catalog ship in v0.1?** Decision: yes, with the patterns generalized from the origin project (silent catch, raw string vs enum, missing return type, wrong-way layer imports). Each is used only with evidence and a yes.

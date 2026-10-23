@@ -2,7 +2,7 @@
 
 **Status:** Draft
 **Key:** EXC
-**Parent PRD:** [PRD — gauntlet](../PRD.md)
+**Parent PRD:** [PRD — I-01 Core](../PRD.md)
 **Owner:** Antony Giomar Hernández
 
 ## 1. Functional problem
@@ -41,7 +41,8 @@ An exception must be explicit, reviewable and written only by a human. An agent 
    - lowering its severity (`block` > `shadow` > `track`);
    - narrowing `paths`;
    - widening `exclude`;
-   - changing its engine, its detector, or its detector file.
+   - changing its engine, its detector, or its detector file;
+   - changing its `format`, or changing or adding a project format file (`.gauntlet/formats/`) that a `block` rule reads through, since a format decides which output lines count.
 
    Widening `paths` or raising a severity is not loosening.
 9. **When the Agent is blocked**, it proposes the exact command with its reason, stops, and notifies the human. It never routes around the gate.
@@ -119,10 +120,12 @@ An exception must be explicit, reviewable and written only by a human. An agent 
 
 | FRD | Why |
 |---|---|
-| FRD-03 Gates (GATE) | The checks that exceptions relax. |
+| FRD-03 Push and CI gate (GATE) | The checks that exceptions relax. |
 | FRD-05 Agent integration (AGENT) | Denies agent edits and enforces stop-and-notify. |
 
-## 12. Open questions
+## 12. Decisions
 
-1. **Should merged-branch waivers be removed automatically?** Proposed default: not in v0.1. `doctor` lists them, and a later version removes them in the CI job on merge.
-2. **Should the exception commands refuse to run without a TTY,** as a heuristic against agents? Proposed default: no. It is unreliable across harnesses, and enforcement belongs to the adapter plus review.
+Decided by the owner on 2026-10-22, each by accepting the proposed default.
+
+1. **Should merged-branch waivers be removed automatically?** Decision: not in v0.1. `doctor` lists them, and a later version removes them in the CI job on merge.
+2. **Should the exception commands refuse to run without a TTY,** as a heuristic against agents? Decision: no. It is unreliable across harnesses, and enforcement belongs to the adapter plus review.

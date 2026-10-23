@@ -2,7 +2,7 @@
 
 **Status:** Draft
 **Key:** AGENT
-**Parent PRD:** [PRD — gauntlet](../PRD.md)
+**Parent PRD:** [PRD — I-01 Core](../PRD.md)
 **Owner:** Antony Giomar Hernández
 
 ## 1. Functional problem
@@ -104,12 +104,14 @@ The edit is denied. The message says the baseline is derived, and that only `gau
 | FRD | Why |
 |---|---|
 | FRD-01 Onboarding (ONB) | Install writes the block and the adapter. |
-| FRD-03 Gates (GATE) | The runner-side enforcement. |
+| FRD-03 Push and CI gate (GATE) | The runner-side enforcement. |
 | FRD-04 Exceptions (EXC) | The commands the agent proposes. |
 | FRD-06 Rule lifecycle (LIFE) | `add-rule` and `propose-rule`. |
 
-## 12. Open questions
+## 12. Decisions
 
-1. **Does Claude Code read `AGENTS.md` natively?** pawl's docs say it does not. To be verified against the current docs before the adapter ships. Proposed default: link it from `CLAUDE.md` regardless, since a link is harmless.
-2. **What is the latency budget for the write-time warning**? Proposed default: 1 s per write, running only the commit-stage rules whose `paths` match. Over budget, the warning is skipped with a one-line note that it was skipped; the commit gate still checks. Nothing is skipped silently.
-3. **Is `git push -n` denied?** Proposed default: no, because `-n` is `--dry-run` for push. Deny only `--no-verify` on push, and both `--no-verify` and `-n` on commit.
+Decided by the owner on 2026-10-22, each by accepting the proposed default.
+
+1. **Does Claude Code read `AGENTS.md` natively?** pawl's docs say it does not. To be verified against the current docs before the adapter ships. Decision: link it from `CLAUDE.md` regardless, since a link is harmless.
+2. **What is the latency budget for the write-time warning**? Decision: 1 s per write, running only the commit-stage rules whose `paths` match. Over budget, the warning is skipped with a one-line note that it was skipped; the commit gate still checks. Nothing is skipped silently.
+3. **Is `git push -n` denied?** Decision: no, because `-n` is `--dry-run` for push. Deny only `--no-verify` on push, and both `--no-verify` and `-n` on commit.

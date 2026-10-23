@@ -2,7 +2,7 @@
 
 **Status:** Draft
 **Key:** RULE
-**Parent PRD:** [PRD — gauntlet](../PRD.md)
+**Parent PRD:** [PRD — I-01 Core](../PRD.md)
 **Owner:** Antony Giomar Hernández
 
 ## 1. Functional problem
@@ -28,7 +28,7 @@ gauntlet admits a rule only when it has a declarative detector, a fix hint, a pr
 ## 4. Business rules
 
 1. **One file per rule.** A rule lives in `.gauntlet/rules/<id>.md`, with flat `key: value` frontmatter and a markdown body that holds the rationale and the repo evidence.
-2. **Required keys:** `id`, which equals the file name; `severity`; `engine`; `detector`; `fix`; `source`; `since`. The optional keys are `stage`, which defaults to `commit`, `paths` and `exclude`.
+2. **Required keys:** `id`, which equals the file name; `severity`; `engine`; `detector`; `fix`; `source`; `since`. The optional keys are `stage`, which defaults to `commit`; `format`, which names the detector's output format (§4.14); `paths`; and `exclude`.
 3. **`severity` is one of three values.**
    - `block` is fully gated.
    - `shadow` reports "would have failed" and never fails.
@@ -41,7 +41,7 @@ gauntlet admits a rule only when it has a declarative detector, a fix hint, a pr
 
    A custom script detector requires a human-approved `script` exception (EXC). It lives in `.gauntlet/detectors/`, is built from the fixed template, and has cases.
 6. **Input contract.** At commit, `{files}` in the detector is replaced by the staged files. At push and in CI, it is replaced by every file matching `paths` minus `exclude`. A detector without `{files}` runs once over the whole repo.
-7. **Output contract.** A detector prints one violation per line as `path:line[: message]`. A violation spanning several locations prints one line per location. Lines about files outside the input are dropped.
+7. **Output contract.** Each line of a detector's output is read through the rule's output format (§4.14) into `path`, `line` and `message`. A violation spanning several locations is one line per location. Lines about files outside the input are dropped.
 8. **Fail closed.**
    - A detector that exits non-zero with output that does not parse is broken, and the gate fails.
    - A missing tool fails with its install command.
@@ -56,13 +56,20 @@ gauntlet admits a rule only when it has a declarative detector, a fix hint, a pr
 11. **`source` is a primary source:** official documentation, the technology's official style guide, or a project ADR. A blog post is not enough. `pending` is allowed only until a session with web access confirms the source.
 12. **The fix hint is one line.** `fix` is one actionable line, printed under every violation of the rule.
 13. **One owner per rule.** A rule lives in exactly one place: the project's linter or gauntlet, never both (see LIFE for graduation).
+14. **Output formats are data, not code.** Supporting a new linter means adding one format file, never changing the runner.
+    - A format file declares a `match` pattern (a POSIX extended regular expression), which capture group holds the `path`, the `line` and, optionally, the `message`, and an optional `ignore` pattern for summary lines such as `✖ 3 problems`.
+    - gauntlet ships built-in formats: `path-line` (`path:line[:col][: message]`, which covers `eslint --format unix`, `ruff --output-format concise`, `golangci-lint` and most compilers), `github` (GitHub annotation lines, which `ast-grep --format github` and many linters emit) and `tsc`. A project adds its own in `.gauntlet/formats/<name>.md`. A project format with the same name as a built-in one replaces it.
+    - A rule names its format with `format:`. The default is `github` for `engine: ast-grep` and `path-line` for every other engine.
+    - Every format has cases: a sample of the tool's real output and the rows it must produce. `test-rules` runs them.
+    - A non-empty output line that matches neither `match` nor `ignore` means the detector is broken (§4.8). Unknown output is never dropped silently.
+    - A tool whose only output is JSON is used through its line-oriented output option, or through a `script` detector by exception (EXC).
 
 ## 5. Functional flows
 
 ### Flow A — a rule backed by a linter rule
 
 1. `engine: linter`, and `detector` is the linter command with the rule enabled and `{files}`.
-2. The output is mapped to `path:line[: message]`.
+2. The output is read through the rule's format, `path-line` unless the rule names another one.
 
 ### Flow B — an `ast-grep` rule
 
@@ -102,6 +109,7 @@ gauntlet admits a rule only when it has a declarative detector, a fix hint, a pr
 - **`.gauntlet/rules/<id>.yml`:** the `ast-grep` rule, when the engine is `ast-grep`.
 - **`.gauntlet/rules/<id>.bad*` and `<id>.good*`:** the cases, each a file or a directory.
 - **`.gauntlet/detectors/`:** custom script detectors, present only by exception.
+- **`.gauntlet/formats/<name>.md`:** a project output format, with flat `key: value` frontmatter (`match`, `path`, `line`, `message`, `ignore`) and its cases in the body: a sample block and the expected `path	line	message` rows.
 - **`.gauntlet/HOW-TO-WRITE-A-RULE.md`:** the guide every rule follows (LIFE).
 
 ## 9. Functional acceptance criteria
@@ -116,16 +124,18 @@ gauntlet admits a rule only when it has a declarative detector, a fix hint, a pr
 - **RULE-AC8:** Given a `stage: push` rule, when the commit gate runs, then the rule is not run; when pre-push or CI runs, then it is.
 - **RULE-AC9:** Given a rule whose `bad` case is not flagged, when `test-rules` runs, then it fails and names the rule and the case.
 - **RULE-AC10:** Given a rule whose `good` case is flagged, when `test-rules` runs, then it fails.
-- **RULE-AC11:** Given a rule with no cases, when `test-rules` runs, then it fails with `no cases`.
+- **RULE-AC11:** Given a rule or an output format with no cases, when `test-rules` runs, then it fails with `no cases`.
 - **RULE-AC12:** Given a `bad` directory where one of two files violates, when `test-rules` runs, then the case passes.
 - **RULE-AC13:** Given a change under `.gauntlet/rules/` in the branch, when pre-push or CI runs, then every rule's cases run.
 - **RULE-AC14:** Given any violation printed by a gate, when shown, then the rule's `fix` line follows it.
+- **RULE-AC15:** Given a project format `.gauntlet/formats/mylint.md` whose `match` captures path, line and message, and a rule with `format: mylint`, when the rule runs, then its violations are reported with the right path, line and message, and no runner file changed.
+- **RULE-AC16:** Given a detector that prints a line matching neither its format's `match` nor its `ignore`, when any gate runs, then the gate fails as a broken detector and shows the line.
 
 ## 10. Out of scope
 
 - How violations are compared against the baseline (GATE).
 - Exceptions for loosening a rule (EXC).
-- Mapping specific linters' native output formats beyond `path:line`. Small adapters are added as consumers need them.
+- Parsing JSON output. Line-oriented formats cover the linters in scope; JSON-only tools go through a `script` detector by exception.
 
 ## 11. Dependencies on other FRDs
 
@@ -134,7 +144,9 @@ gauntlet admits a rule only when it has a declarative detector, a fix hint, a pr
 | FRD-04 Exceptions (EXC) | `script` engine approval. |
 | FRD-06 Rule lifecycle (LIFE) | Writing rules, `HOW-TO-WRITE-A-RULE.md`, and guards for linter-owned rules. |
 
-## 12. Open questions
+## 12. Decisions
 
-1. **Normalizing fingerprints for line-oriented `rg` rules when a reformat splits one flagged line into several**. Proposed default: treat it as new and report it (fail closed). Revisit only if it produces real false positives.
-2. **Native linter output mapping** (ESLint JSON, ruff, golangci, …). Proposed default: support `path:line[:col][: message]` generically in v0.1, which covers `eslint --format unix` and `ruff --output-format concise`, and add adapters on demand.
+Decided by the owner on 2026-10-22.
+
+1. **A reformat that splits one flagged line into several** produces a new fingerprint and is reported (fail closed). Revisited only if it produces real false positives.
+2. **Linter output is read through declarative output formats** (§4.14), not through per-linter adapters in the runner. The owner asked for a mechanism where supporting another linter means describing its output, nothing more.

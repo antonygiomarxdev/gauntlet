@@ -83,9 +83,25 @@ A custom script is allowed only by exception. A human approves a `script` except
 ## Contract
 
 - **Input.** At commit, the runner substitutes `{files}` with the staged files. At push and in CI, it substitutes every file that matches `paths` minus `exclude`.
-- **Output.** One violation per line: `path:line[: message]`. The runner then drops lines about files it did not pass in.
+- **Output.** One violation per line, read through the rule's output format. The runner then drops lines about files it did not pass in.
 - **Multi-location violations** print one line per location.
-- **Fail closed.** A non-zero exit with no parseable output is treated as a broken detector, and the gate fails. A missing tool fails with its install command. Nothing is skipped silently.
+- **Fail closed.** An output line that the format can neither read nor ignore means a broken detector, and the gate fails. A missing tool fails with its install command. Nothing is skipped silently.
+
+## Output formats
+
+Supporting another linter means describing its output, not changing gauntlet. A format is a small file with a pattern and the positions of the path, the line and the message:
+
+```markdown
+---
+match: ^(.+)\(([0-9]+),[0-9]+\): (error|warning) (.*)$
+path: 1
+line: 2
+message: 4
+ignore: ^Found [0-9]+ errors?
+---
+```
+
+gauntlet ships `path-line` (`path:line[:col][: message]`, the default; it covers `eslint --format unix`, `ruff --output-format concise`, `golangci-lint` and most compilers), `github` (GitHub annotation lines, the default for ast-grep) and `tsc`. Add your own in `.gauntlet/formats/<name>.md` and name it in the rule with `format: <name>`. Each format carries a sample of real output and the rows it must produce, and `gauntlet test-rules` checks them. Changing a format that a `block` rule reads through counts as loosening that rule, so it needs a human's `loosen` exception.
 
 ## Test cases
 

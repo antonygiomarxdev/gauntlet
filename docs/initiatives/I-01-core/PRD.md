@@ -25,10 +25,11 @@ The first usable gauntlet: a runner that measures owner-approved rules and gates
 |---|---|
 | Onboard a repository by agreeing rules with the owner | [FRD-01](frd/FRD-01-onboarding.md) |
 | Define rules with declarative, tested detectors | [FRD-02](frd/FRD-02-rules-and-detectors.md) |
-| Gate commits, pushes and CI | [FRD-03](frd/FRD-03-gates.md) |
+| Gate pushes and CI | [FRD-03](frd/FRD-03-push-and-ci-gate.md) |
 | Grant exceptions, by humans only | [FRD-04](frd/FRD-04-exceptions.md) |
 | Bind agents in any harness | [FRD-05](frd/FRD-05-agent-integration.md) |
 | Evolve rules: status, promotion, proposals, graduation | [FRD-06](frd/FRD-06-rule-lifecycle.md) |
+| Gate commits and wire into existing hooks | [FRD-07](frd/FRD-07-commit-gate-and-hooks.md) |
 
 ## 4. Release criteria
 
@@ -42,6 +43,8 @@ The first usable gauntlet: a runner that measures owner-approved rules and gates
 - **Escape-hatch rate:** the share of commits that need an exception stays well below the 7–17 % the hand-built trailer reached.
 - **Commit-time latency:** p90 under 5 s.
 - **False-positive reports:** each one is resolved by a detector fix or a case, not by a waiver.
+
+I-01 reads these by hand from `status`, the baseline history and the discussions. Measuring them systematically, and telling which rules work and which do not, is [I-03](../README.md).
 
 ## 6. Assumptions to validate
 
@@ -72,9 +75,10 @@ None blocking. The FRDs carry their own questions, each with a proposed default.
 |---|---|
 | [FRD-01](frd/FRD-01-onboarding.md) Onboarding | Draft |
 | [FRD-02](frd/FRD-02-rules-and-detectors.md) Rules and detectors | Draft |
-| [FRD-03](frd/FRD-03-gates.md) Gates | Draft |
+| [FRD-03](frd/FRD-03-push-and-ci-gate.md) Push and CI gate | Draft |
 | [FRD-04](frd/FRD-04-exceptions.md) Exceptions | Draft |
 | [FRD-05](frd/FRD-05-agent-integration.md) Agent integration | Draft |
 | [FRD-06](frd/FRD-06-rule-lifecycle.md) Rule lifecycle | Draft |
+| [FRD-07](frd/FRD-07-commit-gate-and-hooks.md) Commit gate and hooks | Draft |
 | [TP-01](../../architecture/TP-01-gauntlet.md) System technical proposal (parent; this initiative has no local proposal yet) | Draft |
 | [IS-01](specs/IS-01-runner-core.md) Runner core | Draft |

@@ -4,7 +4,7 @@
 **Scope:** system. Every initiative builds on it; an initiative-local proposal names it as `Parent`.
 **Parent:** [VISION](../VISION.md)
 **PRD:** [I-01 Core](../initiatives/I-01-core/PRD.md)
-**FRDs covered:** [FRD-01](../initiatives/I-01-core/frd/FRD-01-onboarding.md) · [FRD-02](../initiatives/I-01-core/frd/FRD-02-rules-and-detectors.md) · [FRD-03](../initiatives/I-01-core/frd/FRD-03-gates.md) · [FRD-04](../initiatives/I-01-core/frd/FRD-04-exceptions.md) · [FRD-05](../initiatives/I-01-core/frd/FRD-05-agent-integration.md) · [FRD-06](../initiatives/I-01-core/frd/FRD-06-rule-lifecycle.md)
+**FRDs covered:** [FRD-01](../initiatives/I-01-core/frd/FRD-01-onboarding.md) · [FRD-02](../initiatives/I-01-core/frd/FRD-02-rules-and-detectors.md) · [FRD-03](../initiatives/I-01-core/frd/FRD-03-push-and-ci-gate.md) · [FRD-04](../initiatives/I-01-core/frd/FRD-04-exceptions.md) · [FRD-05](../initiatives/I-01-core/frd/FRD-05-agent-integration.md) · [FRD-06](../initiatives/I-01-core/frd/FRD-06-rule-lifecycle.md) · [FRD-07](../initiatives/I-01-core/frd/FRD-07-commit-gate-and-hooks.md)
 **ADRs applied:** [0001](../adr/0001-runner-is-bash-awk-git.md)–[0011](../adr/0011-changelog-fragments-with-changie.md)
 
 ## 1. Engineering problem
@@ -105,7 +105,7 @@ flowchart LR
 
 ## 10. Contracts and boundaries
 
-- **Detector output:** `path:line[:col][: message]`, or ast-grep's `--format github` lines. A detector's exit code means:
+- **Detector output:** read line by line through an output format, a data file with an extended regular expression and the capture groups for path, line and message, plus an optional `ignore` pattern. Built-in formats (`path-line`, `github`, `tsc`) ship in `lib/formats/`; a project adds or overrides one in `.gauntlet/formats/`. The runner applies a format with `sed -E`, so supporting a new linter never changes runner code. A line that matches neither pattern means a broken detector. A detector's exit code means:
   - `0`: fine;
   - `1`: fine when the output is empty or parses;
   - `127`: missing tool;
@@ -152,6 +152,6 @@ All of [ADR-0001](../adr/0001-runner-is-bash-awk-git.md) to [ADR-0011](../adr/00
 
 | Spec | Slice | FRD coverage | Depends on |
 |---|---|---|---|
-| [IS-01](../initiatives/I-01-core/specs/IS-01-runner-core.md) | Runner core | RULE (except linter-owned rules), GATE (except the generated CI job and PR comments), EXC (except CI comments), LIFE (`status` without trend, `promote`, `doctor`) | — |
+| [IS-01](../initiatives/I-01-core/specs/IS-01-runner-core.md) | Runner core | RULE (except linter-owned rules), GATE (except the generated CI job and PR comments), HOOK, EXC (except CI comments), LIFE (`status` without trend, `promote`, `doctor`) | — |
 | IS-02 (planned) | Skill and agent integration | ONB, AGENT, LIFE (`propose-rule`, `add-rule`, trend), GATE (CI job and PR comments), EXC (CI comments) | IS-01 |
 | IS-03 (planned) | Linter depth | RULE (shared linter run), LIFE (graduation and guards), `fix`, `update` | IS-01 |
