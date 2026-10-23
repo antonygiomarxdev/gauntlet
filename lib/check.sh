@@ -418,16 +418,15 @@ loosen_changes() {
   bdet=$(rule_get "$brule" detector) || return 2
   cdet=$(rule_get "$crule" detector) || return 2
   if [ "$bdet" != "$cdet" ]; then printf 'detector changed\n'; fi
-  # A detector that names a file is judged by that file's content, when the
-  # string itself did not change (a changed string is reported above).
-  if [ "$bdet" = "$cdet" ] && [ -n "$cdet" ] && [ -f "$root/$cdet" ]; then
-    gp=${cdet#./}
-    if ! git cat-file -e "$mb:$gp" 2>/dev/null; then
-      printf 'detector file %s changed\n' "$gp"
-    else
-      at_base "$mb" "$gp" > "$scratch/det" || return 2
-      if ! cmp -s "$scratch/det" "$root/$cdet"; then printf 'detector file %s changed\n' "$gp"; fi
-    fi
+  # Each word of an unchanged detector that names a file is judged by that
+  # file's blob. The words are split with globbing off, so {files} and flags
+  # are plain words that name nothing. A changed string is reported above.
+  if [ "$bdet" = "$cdet" ]; then
+    (set -f; for w in $cdet; do printf '%s\n' "$w"; done) > "$scratch/words" || return 2
+    while IFS= read -r w; do
+      w=${w#./}
+      if blob_changed "$mb" "$w"; then printf 'detector file %s changed\n' "$w"; fi
+    done < "$scratch/words"
   fi
 
   # A format decides which output lines count, so it is judged for block rules.
@@ -438,15 +437,27 @@ loosen_changes() {
   if [ "$csev" = block ]; then
     if [ "$bfmt" != "$cfmt" ]; then printf 'format %s → %s\n' "$bfmt" "$cfmt"; fi
     gp=.gauntlet/formats/$cfmt.md
-    if [ -f "$root/$gp" ]; then
+    if blob_changed "$mb" "$gp"; then
       if ! git cat-file -e "$mb:$gp" 2>/dev/null; then
         printf 'format file %s added\n' "$gp"
+      elif ! git cat-file -e "HEAD:$gp" 2>/dev/null; then
+        printf 'format file %s removed\n' "$gp"
       else
-        at_base "$mb" "$gp" > "$scratch/fmt" || return 2
-        if ! cmp -s "$scratch/fmt" "$root/$gp"; then printf 'format file %s changed\n' "$gp"; fi
+        printf 'format file %s changed\n' "$gp"
       fi
     fi
   fi
+}
+
+# blob_changed <merge-base> <path>: true when <path> has a different git blob at
+# the merge-base than at HEAD; a path absent on one side is a different blob.
+# Blob ids, not file reads: a symlink compares by its link text, and HEAD is
+# clean (check --ci refuses a dirty tree), so HEAD is what CI runs.
+blob_changed() {
+  local a b
+  a=$(git rev-parse -q --verify "$1:$2" 2>/dev/null) || a=
+  b=$(git rev-parse -q --verify "HEAD:$2" 2>/dev/null) || b=
+  [ "$a" != "$b" ]
 }
 
 # list_missing <label> <list> <other>: print "<label> <glob>" for each word of

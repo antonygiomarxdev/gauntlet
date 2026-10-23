@@ -354,3 +354,166 @@ test_engine_and_detector_change_are_loosening() {
   assert_contains "$OUT" "  todo  detector changed"
   assert_contains "$OUT" "FAIL (1 problems)"
 }
+
+test_wrong_argument_count_exits_2() {
+  exc_setup 'ok'
+  run "$G" waive
+  assert_eq 2 "$STATUS" "waive with none"
+  assert_contains "$OUT" "usage: gauntlet waive"
+  run "$G" waive a.ts
+  assert_eq 2 "$STATUS" "waive with one"
+  run "$G" waive a.ts r extra
+  assert_eq 2 "$STATUS" "waive with three"
+  run "$G" loosen todo "what"
+  assert_eq 2 "$STATUS" "loosen with two"
+  assert_contains "$OUT" "usage: gauntlet loosen"
+  run "$G" remove todo
+  assert_eq 2 "$STATUS" "remove with one"
+  assert_contains "$OUT" "usage: gauntlet remove"
+  run "$G" remove todo r extra
+  assert_eq 2 "$STATUS" "remove with three"
+  assert_eq "" "$(cat .gauntlet/exceptions.tsv)" "exceptions file"
+}
+
+test_waive_glob_and_dot_slash_rejected() {
+  exc_setup 'ok'
+  run "$G" waive '*.ts' "reason"
+  assert_eq 2 "$STATUS" "glob status"
+  run "$G" waive './a.ts' "reason"
+  assert_eq 2 "$STATUS" "dot-slash status"
+  assert_contains "$OUT" "without ./"
+  run "$G" waive 'a/' "reason"
+  assert_eq 2 "$STATUS" "trailing slash status"
+  assert_eq "" "$(cat .gauntlet/exceptions.tsv)" "exceptions file"
+}
+
+test_row_appended_after_missing_newline() {
+  exc_setup 'ok'
+  header=$(printf 'type\ttarget\treason\tdate\tbranch')
+  printf '%s' "$header" > .gauntlet/exceptions.tsv
+  run "$G" waive a.ts "rewrite scheduled"
+  assert_eq 0 "$STATUS" "waive status"
+  today=$(date +%Y-%m-%d)
+  expected=$(printf '%s\nwaive\ta.ts\trewrite scheduled\t%s\tfeat' "$header" "$today")
+  assert_eq "$expected" "$(cat .gauntlet/exceptions.tsv)" "rows"
+}
+
+test_loosen_of_ab_does_not_cover_a() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule a paths='**/*.ts'
+  rule ab paths='**/*.ts'
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  rule a paths='**/*.ts' severity=shadow
+  run "$G" loosen ab "severity to shadow" "reason"
+  assert_eq 0 "$STATUS" "loosen status"
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  a  severity block → shadow"
+}
+
+test_reordered_paths_and_exclude_are_not_loosening() {
+  mkrepo
+  mkdir -p src lib
+  printf 'ok\n' > src/a.ts
+  rule todo paths='src/** lib/**' exclude='x/** y/**'
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  rule todo paths='lib/** src/**' exclude='y/** x/**'
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[loosened]"
+}
+
+test_detector_args_file_change_is_loosening() {
+  mkrepo
+  mkdir -p tools
+  printf '#!/bin/sh\nrg --with-filename --line-number --no-heading TODO "$@"\n' > tools/find.sh
+  printf 'TODO\n' > a.ts
+  rule todo paths='**/*.ts' engine=script detector='bash tools/find.sh {files}'
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf '#!/bin/sh\ntrue\n' > tools/find.sh
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
+}
+
+test_detector_args_file_removed_is_loosening() {
+  mkrepo
+  mkdir -p tools
+  printf '#!/bin/sh\ntrue\n' > tools/find.sh
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script detector='true tools/find.sh {files}'
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  must git rm -q tools/find.sh
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
+}
+
+test_detector_file_removed_with_bash_fails_closed() {
+  mkrepo
+  mkdir -p tools
+  printf '#!/bin/sh\ntrue\n' > tools/find.sh
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script detector='bash tools/find.sh {files}'
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  must git rm -q tools/find.sh
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 2 "$STATUS" "status: a broken detector stops the gate"
+}
+
+test_symlinked_detector_unrelated_commit_not_loosened() {
+  mkrepo
+  mkdir -p tools
+  printf '#!/bin/sh\nrg --with-filename --line-number --no-heading TODO\n' > tools/real.sh
+  chmod +x tools/real.sh
+  ln -s real.sh tools/find.sh
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script detector=tools/find.sh
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf 'x\n' > b.txt
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[loosened]"
+}
+
+test_format_file_deleted_is_loosening() {
+  mkrepo
+  printf 'TODO\n' > a.ts
+  rule todo paths='**/*.ts'
+  mkdir -p .gauntlet/formats
+  printf -- '---\nmatch: ^([^:]+):([0-9]+)(:[0-9]+)?(: ?(.*))?$\npath: 1\nline: 2\nmessage: 5\nignore: nomatch\n---\n' > .gauntlet/formats/path-line.md
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  must git rm -q .gauntlet/formats/path-line.md
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  todo  format file .gauntlet/formats/path-line.md removed"
+}

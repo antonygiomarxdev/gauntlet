@@ -30,6 +30,9 @@ exc_append() {
   file=$(exc_file) || return 2
   if [ ! -s "$file" ]; then
     printf 'type\ttarget\treason\tdate\tbranch\n' > "$file" || return 2
+  elif [ -n "$(tail -c 1 "$file")" ]; then
+    # The last row has no newline: end it, or the new row is glued onto it.
+    printf '\n' >> "$file" || return 2
   fi
   today=$(date +%Y-%m-%d) || return 2
   printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$today" "$4" >> "$file" || return 2
@@ -38,14 +41,22 @@ exc_append() {
 # exc_waive <path> <reason>: waive a path on the current branch. The path is
 # relative to the repo root and must exist in git or in the working tree.
 exc_waive() {
-  local path=$1 reason=$2 root branch
+  local path reason root branch
   [ "$#" -eq 2 ] || die "usage: gauntlet waive <path> <reason>"
+  path=$1
+  reason=$2
   exc_text_check path "$path"
   exc_text_check reason "$reason"
+  # A path names one file: no ./ prefix, no trailing slash, no glob (the exact
+  # path must exist, checked literally below).
+  case "$path" in
+    ./*) die "path must be relative to the repo root, without ./: $path" ;;
+    */) die "path must name a file, not end with /: $path" ;;
+  esac
   root=$(repo_root) || return 2
   branch=$(current_branch) || return 2
   [ "$branch" != HEAD ] || die "detached HEAD: check out a branch first"
-  if ! (cd "$root" && { [ -e "$path" ] || [ -n "$(git ls-files -- "$path")" ]; }); then
+  if ! (cd "$root" && { [ -e "$path" ] || [ -n "$(git --literal-pathspecs ls-files -- "$path")" ]; }); then
     die "not a path in git or the working tree: $path"
   fi
   exc_append waive "$path" "$reason" "$branch" || return 2
