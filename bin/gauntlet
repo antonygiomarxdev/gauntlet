@@ -12,6 +12,8 @@ set -eu
 . "$(dirname "$0")/../lib/detect.sh"
 # shellcheck source=lib/measure.sh
 . "$(dirname "$0")/../lib/measure.sh"
+# shellcheck source=lib/cases.sh
+. "$(dirname "$0")/../lib/cases.sh"
 
 case "${1:-}" in
   --version) printf 'gauntlet %s\n' "$GAUNTLET_VERSION" ;;
@@ -24,6 +26,12 @@ case "${1:-}" in
       cp "$scratch/measure.tsv" "$root/.gauntlet/baseline.tsv" || status=2
     fi
     rm -rf "$scratch"
+    exit "$status"
+    ;;
+  test-rules)
+    root=$(repo_root) || exit 2
+    status=0
+    run_rule_tests "$root" || status=$?
     exit "$status"
     ;;
   *) die "unknown command: ${1:-}" ;;

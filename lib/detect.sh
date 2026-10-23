@@ -132,13 +132,47 @@ detect_scan() {
   return 0
 }
 
-# run_detector <rule-file> <files-list> <out-tsv>: run the rule's detector and
-# write "rule<TAB>path<TAB>line<TAB>message" rows to out-tsv. Returns 0, or 2
-# with a message on stderr for a missing tool, a broken detector or format.
-run_detector() {
-  local rule=$1 files=$2 out=$3
-  local id engine detector paths exclude format cmd root errf scoped
-  local s row rows bad want
+# parse_output <format-name> <raw-file> <out-file>: parse a detector's raw output
+# with the named format and write "path<TAB>line<TAB>message" rows to out-file.
+# Empty and ignored lines are dropped. Returns 2 with a message on stderr when
+# a line matches neither the format's match nor its ignore, or when the format
+# does not compile. run_detector and test-rules both parse through here.
+parse_output() {
+  local raw=$2 out=$3 s row bad
+  load_format "$1" || return 2
+  # One sed pass: drop empty and ignored lines, rewrite matches into rows, and
+  # mark every other line as unparsed (printed with the marker, never dropped).
+  s="/^\$/d"
+  if [ -n "$FMT_IGNORE" ]; then
+    s="$s
+\\${DETECT_DELIM}${FMT_IGNORE}${DETECT_DELIM}d"
+  fi
+  row="\\$FMT_PATH$DETECT_TAB\\$FMT_LINE$DETECT_TAB"
+  if [ -n "$FMT_MESSAGE" ]; then row="$row\\$FMT_MESSAGE"; fi
+  s="$s
+s${DETECT_DELIM}${FMT_MATCH}${DETECT_DELIM}${row}${DETECT_DELIM}
+t emit
+s/.*/${DETECT_UNPARSED}&/p
+b
+:emit
+p"
+  sed -n -E "$s" "$raw" > "$out" 2>/dev/null || {
+    printf 'format %s does not compile\n' "$1" >&2
+    return 2
+  }
+  bad=$(GL_MARK=$DETECT_UNPARSED awk 'index($0, ENVIRON["GL_MARK"]) == 1 { print substr($0, 2); exit }' "$out") || return 2
+  if [ -n "$bad" ]; then
+    printf 'unparsed line: %s\n' "$bad" >&2
+    return 2
+  fi
+  return 0
+}
+
+# detect_rule <scratch> <rule-file> <files-list> <out-tsv>: the work of
+# run_detector, with its intermediate files kept in <scratch>.
+detect_rule() {
+  local scratch=$1 rule=$2 files=$3 out=$4
+  local id engine detector paths exclude format cmd root errf scoped want bad
   id=${rule##*/}
   id=${id%.md}
   engine=$(rule_get "$rule" engine) || return 2
@@ -171,46 +205,28 @@ run_detector() {
     *) scoped=0 ;;
   esac
 
-  errf=$(mktemp) || return 2
+  errf="$scratch/err"
+  : > "$errf" || return 2
   DETECT_RAW=
-  detect_scan "$root" "$cmd" "$id" "$errf" "$files" || { rm -f "$errf"; return 2; }
-  rm -f "$errf"
+  detect_scan "$root" "$cmd" "$id" "$errf" "$files" || return 2
+  printf '%s\n' "$DETECT_RAW" > "$scratch/raw" || return 2
 
-  # One sed pass: drop empty and ignored lines, rewrite matches into rows, and
-  # mark every other line as unparsed (printed with the marker, never dropped).
-  s="/^\$/d"
-  if [ -n "$FMT_IGNORE" ]; then
-    s="$s
-\\${DETECT_DELIM}${FMT_IGNORE}${DETECT_DELIM}d"
-  fi
-  row="\\$FMT_PATH$DETECT_TAB\\$FMT_LINE$DETECT_TAB"
-  if [ -n "$FMT_MESSAGE" ]; then row="$row\\$FMT_MESSAGE"; fi
-  s="$s
-s${DETECT_DELIM}${FMT_MATCH}${DETECT_DELIM}${row}${DETECT_DELIM}
-t emit
-s/.*/${DETECT_UNPARSED}&/p
-b
-:emit
-p"
-  rows=$(printf '%s\n' "$DETECT_RAW" | sed -n -E "$s") || {
-    printf 'gauntlet: format %s does not compile\n' "$format" >&2
-    return 2
-  }
-  bad=$(printf '%s\n' "$rows" | awk -v m="$DETECT_UNPARSED" 'index($0, m) == 1 { print substr($0, 2); exit }')
-  if [ -n "$bad" ]; then
-    printf 'gauntlet: broken detector: %s: unparsed line: %s\n' "$id" "$bad" >&2
+  if ! parse_output "$format" "$scratch/raw" "$scratch/parsed" 2> "$scratch/perr"; then
+    printf 'gauntlet: broken detector: %s: ' "$id" >&2
+    cat "$scratch/perr" >&2
     return 2
   fi
 
   # Strip a leading ./ or the repo root from each path.
-  rows=$(printf '%s\n' "$rows" | GL_ROOT="$root/" awk -F "$DETECT_TAB" '
+  GL_ROOT="$root/" awk -F "$DETECT_TAB" '
     NF == 0 { next }
     {
       p = $1
       if (index(p, "./") == 1) p = substr(p, 3)
       if (index(p, ENVIRON["GL_ROOT"]) == 1) p = substr(p, length(ENVIRON["GL_ROOT"]) + 1)
       print p "\t" substr($0, length($1) + 2)
-    }')
+    }
+  ' "$scratch/parsed" > "$scratch/rows" || return 2
 
   # Keep rows for the input list; a whole-program detector is filtered by the
   # rule's paths and exclude instead. The keep-list goes to awk as a file: an
@@ -218,17 +234,27 @@ p"
   if [ "$scoped" -eq 1 ]; then
     want=$files
   else
-    want=$(mktemp) || return 2
-    printf '%s\n' "$rows" | awk -F "$DETECT_TAB" 'NF { print $1 }' |
-      LC_ALL=C sort -u | select_files "$paths" "$exclude" > "$want" || { rm -f "$want"; return 2; }
+    want="$scratch/want"
+    awk -F "$DETECT_TAB" 'NF { print $1 }' "$scratch/rows" |
+      LC_ALL=C sort -u | select_files "$paths" "$exclude" > "$want" || return 2
   fi
   bad=0
-  printf '%s\n' "$rows" | GL_WANT_FILE="$want" GL_RULE="$id" awk -F "$DETECT_TAB" '
+  GL_WANT_FILE="$want" GL_RULE="$id" awk -F "$DETECT_TAB" '
     BEGIN {
       while ((getline line < ENVIRON["GL_WANT_FILE"]) > 0) keep[line] = 1
     }
     NF && ($1 in keep) { print ENVIRON["GL_RULE"] "\t" $0 }
-  ' > "$out" || bad=$?
-  if [ "$scoped" -ne 1 ]; then rm -f "$want"; fi
+  ' "$scratch/rows" > "$out" || bad=$?
   return "$bad"
+}
+
+# run_detector <rule-file> <files-list> <out-tsv>: run the rule's detector and
+# write "rule<TAB>path<TAB>line<TAB>message" rows to out-tsv. Returns 0, or 2
+# with a message on stderr for a missing tool, a broken detector or format.
+run_detector() {
+  local scratch st=0
+  scratch=$(mktemp -d) || return 2
+  detect_rule "$scratch" "$@" || st=$?
+  rm -rf "$scratch"
+  return "$st"
 }
