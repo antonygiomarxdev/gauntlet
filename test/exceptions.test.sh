@@ -634,3 +634,161 @@ test_glob_word_in_detector_names_no_file() {
   assert_eq 0 "$STATUS" "status: $OUT"
   assert_not_contains "$OUT" "detector file"
 }
+
+# R29: every repo command runs from the repo root, so a subdirectory changes nothing.
+# exc_sub_setup: main with the todo rule at block, then feat with it at track (an
+# unexcepted loosening), plus a pkg/sub directory to run from.
+exc_sub_setup() {
+  exc_setup 'ok'
+  must mkdir -p "pkg/sub"
+  printf 'ok\n' > "pkg/sub/x.ts"
+  exc_commit sub
+  rule todo paths='**/*.ts' severity=track
+  exc_rebase
+  exc_commit feat
+}
+
+# exc_untimed <text>: the text without its timing lines, which differ on every run.
+exc_untimed() {
+  printf '%s\n' "$1" | grep -v ' ms$' | grep -v '^gauntlet  [a-z]* · '
+}
+
+test_ci_loosening_is_found_from_a_subdirectory() {
+  exc_sub_setup
+  exc_gate
+  assert_eq 1 "$STATUS" "from the root: $OUT"
+  assert_contains "$OUT" "  todo  severity block → track"
+  want=$(exc_untimed "$OUT")
+  must cd pkg/sub
+  exc_gate
+  assert_eq 1 "$STATUS" "from pkg/sub: $OUT"
+  assert_contains "$OUT" "[loosened]"
+  assert_contains "$OUT" "FAIL (1 problems)"
+  assert_eq "$want" "$(exc_untimed "$OUT")" "same report as from the root"
+}
+
+test_staged_gate_from_a_subdirectory_matches_the_root() {
+  exc_setup 'ok'
+  must mkdir -p "pkg/sub"
+  printf 'TODO fix\n' > "pkg/sub/n.ts"
+  must git add -A
+  run "$G" check --staged
+  assert_eq 1 "$STATUS" "from the root: $OUT"
+  assert_contains "$OUT" "pkg/sub/n.ts:1"
+  want=$(exc_untimed "$OUT")
+  must cd pkg/sub
+  run "$G" check --staged
+  assert_eq 1 "$STATUS" "from pkg/sub: $OUT"
+  assert_eq "$want" "$(exc_untimed "$OUT")" "same report as from the root"
+}
+
+test_baseline_from_a_subdirectory_writes_the_root_file() {
+  exc_setup 'TODO one'
+  must mkdir -p "pkg/sub"
+  printf 'TODO two\nTODO three\n' > "pkg/sub/a b.ts"
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "from the root: $OUT"
+  must cp .gauntlet/baseline.tsv "$TMP/want.tsv"
+  must git checkout -q -- .gauntlet/baseline.tsv
+  must cd pkg/sub
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "from pkg/sub: $OUT"
+  must cmp "$TMP/want.tsv" "$TMP/repo/.gauntlet/baseline.tsv"
+  [ ! -e .gauntlet ] || fail "baseline created a .gauntlet in the subdirectory"
+}
+
+test_test_rules_from_a_subdirectory_matches_the_root() {
+  exc_setup 'ok'
+  must mkdir -p "pkg/sub"
+  printf 'fine\n' > .gauntlet/rules/todo.bad.txt
+  run "$G" test-rules
+  assert_eq 1 "$STATUS" "from the root: $OUT"
+  assert_contains "$OUT" "bad case not flagged"
+  want=$OUT
+  must cd pkg/sub
+  run "$G" test-rules
+  assert_eq 1 "$STATUS" "from pkg/sub: $OUT"
+  assert_eq "$want" "$OUT" "same report as from the root"
+}
+
+test_status_from_a_subdirectory_writes_the_root_file() {
+  exc_setup 'ok'
+  must mkdir -p "pkg/sub"
+  run "$G" status
+  assert_eq 0 "$STATUS" "from the root: $OUT"
+  want=$OUT
+  must rm .gauntlet/STATUS.md
+  must cd pkg/sub
+  run "$G" status
+  assert_eq 0 "$STATUS" "from pkg/sub: $OUT"
+  assert_eq "$want" "$OUT" "same text as from the root"
+  [ -f "$TMP/repo/.gauntlet/STATUS.md" ] || fail "STATUS.md was not written at the root"
+  [ ! -e .gauntlet ] || fail "status created a .gauntlet in the subdirectory"
+}
+
+test_doctor_from_a_subdirectory_matches_the_root() {
+  exc_setup 'ok'
+  must mkdir -p "pkg/sub"
+  run "$G" doctor
+  want=$OUT
+  want_status=$STATUS
+  must cd pkg/sub
+  run "$G" doctor
+  assert_eq "$want_status" "$STATUS" "status: $OUT"
+  assert_eq "$want" "$OUT" "same report as from the root"
+}
+
+test_promote_from_a_subdirectory_edits_the_root_rule() {
+  exc_setup 'ok' severity=shadow
+  must mkdir -p "pkg/sub"
+  must cd pkg/sub
+  run "$G" promote todo
+  assert_eq 0 "$STATUS" "from pkg/sub: $OUT"
+  assert_contains "$(cat "$TMP/repo/.gauntlet/rules/todo.md")" "severity: block"
+}
+
+# Outside a repo every repo command says so and exits 2; git's own usage text for
+# `diff --no-index` never reaches the user.
+test_repo_commands_outside_a_repo_exit_2_with_one_message() {
+  must mkdir -p "$TMP/plain"
+  must cd "$TMP/plain"
+  for c in "check --ci" "check --staged" baseline test-rules status doctor "promote x" \
+    "waive a b" "loosen a b c" "remove a b" base install install-hooks; do
+    # shellcheck disable=SC2086 # the words of $c are separate arguments
+    run "$G" $c
+    assert_eq 2 "$STATUS" "gauntlet $c: $OUT"
+    assert_contains "$OUT" "not inside a git repository"
+    assert_not_contains "$OUT" "no-index"
+  done
+  run "$G" --version
+  assert_eq 0 "$STATUS" "--version needs no repo: $OUT"
+  run "$G" nonsense
+  assert_eq 2 "$STATUS" "unknown command: $OUT"
+  assert_contains "$OUT" "unknown command: nonsense"
+}
+
+# The base's rule list is read with --full-tree and --: a library call from a
+# subdirectory still sees .gauntlet/rules, and bin/gauntlet's cd is not the only guard.
+test_cmp_loosened_lists_base_rules_from_a_subdirectory() {
+  exc_sub_setup
+  # shellcheck source=lib/core.sh
+  . "$ROOT/lib/core.sh"
+  # shellcheck source=lib/rules.sh
+  . "$ROOT/lib/rules.sh"
+  # shellcheck source=lib/detect.sh
+  . "$ROOT/lib/detect.sh"
+  # shellcheck source=lib/base.sh
+  . "$ROOT/lib/base.sh"
+  # shellcheck source=lib/exceptions.sh
+  . "$ROOT/lib/exceptions.sh"
+  # shellcheck source=lib/paths.sh
+  . "$ROOT/lib/paths.sh"
+  # shellcheck source=lib/check.sh
+  . "$ROOT/lib/check.sh"
+  sha=$(git merge-base HEAD main)
+  must cd pkg/sub
+  OUT=$(cmp_loosened "$sha") || fail "cmp_loosened failed"
+  assert_contains "$OUT" "todo"
+  assert_contains "$OUT" "severity block → track"
+}

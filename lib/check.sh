@@ -150,7 +150,7 @@ check_run() {
   check_table "$root" "$scratch" || return 2
   if rule_tests_due "$scratch/changed"; then
     t0=$(now_ms)
-    run_rule_tests "$root" > "$scratch/rule-tests.out" && rt_rc=0 || rt_rc=$?
+    run_rule_tests > "$scratch/rule-tests.out" && rt_rc=0 || rt_rc=$?
     t1=$(now_ms)
     printf 'rule-tests\t%s\n' "$((t1 - t0))" >> "$scratch/check.time"
     # A setup that cannot run the tests still prints what it found, then exits 2.
@@ -161,7 +161,7 @@ check_run() {
       cat "$scratch/rule-tests.out" >> "$body" || return 2
     fi
   fi
-  run_declared_checks "$root" "$scratch" || return 2
+  run_declared_checks "$scratch" || return 2
   checks_n=$(awk 'END { print NR }' "$scratch/checks.failed") || return 2
   if [ -s "$scratch/checks.failed" ]; then
     printf '[checks]\n' >> "$body"
@@ -295,13 +295,14 @@ check_table() {
   fi
 }
 
-# run_declared_checks <root> <scratch>: run each check of <scratch>/checks.raw
-# that is in scope and, under CI=true, has ci=on. Each runs as bash -c from the
-# repo root; output goes to a temp file. A failure appends "  <name>  exit <code>"
+# run_declared_checks <scratch>: run each check of <scratch>/checks.raw that is
+# in scope and, under CI=true, has ci=on. Each runs as bash -c from the working
+# directory, which is the repo root (bin/gauntlet changes to it); output goes to
+# a temp file. A failure appends "  <name>  exit <code>"
 # and the last 20 output lines (indented) to <scratch>/checks.body and a line to
 # <scratch>/checks.failed. Every check that runs adds its time to check.time.
 run_declared_checks() {
-  local root=$1 scratch=$2 row name ci paths cmd code out kept t0 t1
+  local scratch=$1 row name ci paths cmd code out kept t0 t1
   out="$scratch/check.out"
   kept="$scratch/check.kept"
   : > "$scratch/checks.body"
@@ -318,7 +319,7 @@ run_declared_checks() {
     if ! check_in_scope "$paths" "$scratch/changed"; then continue; fi
 
     t0=$(now_ms)
-    (cd "$root" && bash -c "$cmd") < /dev/null 3<&- > "$out" 2>&1 && code=0 || code=$?
+    bash -c "$cmd" < /dev/null 3<&- > "$out" 2>&1 && code=0 || code=$?
     t1=$(now_ms)
     printf 'check:%s\t%s\n' "$name" "$((t1 - t0))" >> "$scratch/check.time"
     if [ "$code" -ne 0 ]; then
@@ -583,7 +584,7 @@ cmp_loosened_in() {
   exc_new_rows "$mb" "$scratch/exc.new" || return 2
   awk -F "$DETECT_TAB" '$1 == "loosen" { print $2 }' "$scratch/exc.new" > "$scratch/new.loosen" || return 2
   awk -F "$DETECT_TAB" '$1 == "remove" { print $2 }' "$scratch/exc.new" > "$scratch/new.remove" || return 2
-  git_nul_lines -c core.quotepath=off ls-tree -r --name-only -z "$mb" .gauntlet/rules > "$scratch/base.rules" || return 2
+  git_nul_lines -c core.quotepath=off ls-tree --full-tree -r --name-only -z "$mb" -- .gauntlet/rules > "$scratch/base.rules" || return 2
 
   : > "$scratch/out"
   while IFS= read -r name; do
@@ -729,7 +730,7 @@ commit_budget() {
 # never in the work tree and never committed. status reads the same path.
 commit_times_path() {
   local p
-  p=$(cd "$1" && git rev-parse --git-path gauntlet-time.tsv) || return 1
+  p=$(git rev-parse --git-path gauntlet-time.tsv) || return 1
   case "$p" in
     /*) printf '%s\n' "$p" ;;
     *) printf '%s/%s\n' "$1" "$p" ;;
@@ -988,7 +989,7 @@ tighten_baseline() {
   ' "$scratch/commit.ids" "$scratch/index.tsv" "$scratch/tight.tsv" > "$scratch/tighten.raw" || return 2
   LC_ALL=C sort "$scratch/tighten.raw" > "$scratch/tighten.tsv" || return 2
   cp "$scratch/tight.tsv" "$root/.gauntlet/baseline.tsv" || return 2
-  (cd "$root" && git add .gauntlet/baseline.tsv) || return 2
+  git add .gauntlet/baseline.tsv || return 2
   if [ -s "$scratch/tighten.tsv" ]; then
     awk -F '\t' '{ printf "  %s  %s → %s   baseline updated and staged into this commit\n", $1, $2, $3 }' \
       "$scratch/tighten.tsv" || return 2

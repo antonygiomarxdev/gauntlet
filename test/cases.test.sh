@@ -24,7 +24,7 @@ test_bad_flagged_good_clean_passes() {
   rule todo
   printf 'TODO\n' > .gauntlet/rules/todo.bad.ts
   printf 'ok\n' > .gauntlet/rules/todo.good.ts
-  run run_rule_tests "$TMP/repo"
+  run run_rule_tests
   assert_eq 0 "$STATUS" "status"
   assert_eq "" "$OUT" "output"
 }
@@ -34,7 +34,7 @@ test_bad_not_flagged_fails() {
   cases_lib
   rule todo
   printf 'ok\n' > .gauntlet/rules/todo.bad.ts
-  run run_rule_tests "$TMP/repo"
+  run run_rule_tests
   assert_eq 1 "$STATUS" "status"
   assert_contains "$OUT" "  todo  todo.bad.ts  bad case not flagged"
 }
@@ -45,7 +45,7 @@ test_good_flagged_fails() {
   rule todo
   printf 'TODO\n' > .gauntlet/rules/todo.bad.ts
   printf 'TODO\n' > .gauntlet/rules/todo.good.ts
-  run run_rule_tests "$TMP/repo"
+  run run_rule_tests
   assert_eq 1 "$STATUS" "status"
   assert_contains "$OUT" "  todo  todo.good.ts  good case flagged"
 }
@@ -57,7 +57,7 @@ test_directory_case() {
   mkdir -p .gauntlet/rules/todo.bad
   printf 'ok\n' > .gauntlet/rules/todo.bad/a.ts
   printf 'TODO\n' > .gauntlet/rules/todo.bad/b.ts
-  run run_rule_tests "$TMP/repo"
+  run run_rule_tests
   assert_eq 0 "$STATUS" "status"
 }
 
@@ -66,7 +66,7 @@ test_case_name_with_space() {
   cases_lib
   rule todo
   printf 'TODO\n' > ".gauntlet/rules/todo.bad case.ts"
-  run run_rule_tests "$TMP/repo"
+  run run_rule_tests
   assert_eq 0 "$STATUS" "status"
 }
 
@@ -75,7 +75,7 @@ test_paths_ignored_for_cases() {
   cases_lib
   rule todo paths='src/**'
   printf 'TODO\n' > .gauntlet/rules/todo.bad.ts
-  run run_rule_tests "$TMP/repo"
+  run run_rule_tests
   assert_eq 0 "$STATUS" "status"
 }
 
@@ -83,7 +83,7 @@ test_rule_without_cases_fails() {
   mkrepo
   cases_lib
   rule todo
-  run run_rule_tests "$TMP/repo"
+  run run_rule_tests
   assert_eq 1 "$STATUS" "status"
   assert_contains "$OUT" "no cases"
 }
@@ -95,7 +95,7 @@ test_format_sample_matches_expected() {
   # The built-in formats must pass; a project format whose expected differs must fail.
   # shellcheck disable=SC2016 # the fence markers are literal text, not expansions
   printf -- '---\nmatch: ^([^:]+):([0-9]+): (.*)$\npath: 1\nline: 2\nmessage: 3\n---\n```sample\na.ts:1: bad\n```\n```expected\na.ts\t1\twrong\n```\n' > .gauntlet/formats/mine.md
-  run run_rule_tests "$TMP/repo"
+  run run_rule_tests
   assert_eq 1 "$STATUS" "status"
   assert_contains "$OUT" "  mine  expected"
   assert_not_contains "$OUT" "  path-line  "
@@ -106,7 +106,7 @@ test_format_sample_matches_expected() {
 test_builtin_formats_pass() {
   mkrepo
   cases_lib
-  run run_rule_tests "$TMP/repo"
+  run run_rule_tests
   assert_eq 0 "$STATUS" "status"
   assert_eq "" "$OUT" "output"
 }
@@ -116,7 +116,7 @@ test_format_without_cases_fails() {
   cases_lib
   mkdir -p .gauntlet/formats
   printf -- '---\nmatch: ^([^:]+):([0-9]+): (.*)$\npath: 1\nline: 2\nmessage: 3\n---\n' > .gauntlet/formats/bare.md
-  run run_rule_tests "$TMP/repo"
+  run run_rule_tests
   assert_eq 1 "$STATUS" "status"
   assert_contains "$OUT" "  bare  sample  no cases"
 }
@@ -144,7 +144,7 @@ test_markdown_case_file_is_not_a_rule() {
   cases_lib
   rule mdr
   printf 'TODO\n' > .gauntlet/rules/mdr.bad.md
-  run run_rule_tests "$TMP/repo"
+  run run_rule_tests
   assert_eq 0 "$STATUS" "status"
   assert_eq "" "$OUT" "output"
 }
@@ -156,7 +156,7 @@ test_project_format_shadowing_builtin_is_tested() {
   # Same name as the built-in path-line: the project file is the one tested.
   # shellcheck disable=SC2016 # fence markers are literal text
   printf -- '---\nmatch: ^([^:]+):([0-9]+): (.*)$\npath: 1\nline: 2\nmessage: 3\n---\n```sample\na.ts:1: bad\n```\n```expected\na.ts\t1\twrong\n```\n' > .gauntlet/formats/path-line.md
-  run run_rule_tests "$TMP/repo"
+  run run_rule_tests
   assert_eq 1 "$STATUS" "status"
   assert_contains "$OUT" "  path-line  expected"
 }
@@ -167,7 +167,7 @@ test_sample_that_does_not_parse_fails() {
   mkdir -p .gauntlet/formats
   # shellcheck disable=SC2016 # fence markers are literal text
   printf -- '---\nmatch: ^([^:]+):([0-9]+): (.*)$\npath: 1\nline: 2\nmessage: 3\n---\n```sample\nnot a match\n```\n```expected\na.ts\t1\tx\n```\n' > .gauntlet/formats/unparsed.md
-  run run_rule_tests "$TMP/repo"
+  run run_rule_tests
   assert_eq 1 "$STATUS" "status"
   assert_contains "$OUT" "  unparsed  sample  does not parse"
 }
@@ -179,7 +179,7 @@ test_bad_directory_without_violation_fails() {
   mkdir -p .gauntlet/rules/todo.bad
   printf 'ok\n' > .gauntlet/rules/todo.bad/a.ts
   printf 'ok\n' > .gauntlet/rules/todo.bad/b.ts
-  run run_rule_tests "$TMP/repo"
+  run run_rule_tests
   assert_eq 1 "$STATUS" "status"
   assert_contains "$OUT" "  todo  todo.bad  bad case not flagged"
 }

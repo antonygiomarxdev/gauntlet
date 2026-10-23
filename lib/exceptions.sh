@@ -41,7 +41,7 @@ exc_append() {
 # exc_waive <path> <reason>: waive a path on the current branch. The path is
 # relative to the repo root and must exist in git or in the working tree.
 exc_waive() {
-  local path reason root branch
+  local path reason branch
   [ "$#" -eq 2 ] || die "usage: gauntlet waive <path> <reason>"
   path=$1
   reason=$2
@@ -53,10 +53,9 @@ exc_waive() {
     ./*) die "path must be relative to the repo root, without ./: $path" ;;
     */) die "path must name a file, not end with /: $path" ;;
   esac
-  root=$(repo_root) || return 2
   branch=$(current_branch) || return 2
   [ "$branch" != HEAD ] || die "detached HEAD: check out a branch first"
-  if ! (cd "$root" && { [ -e "$path" ] || [ -n "$(git --literal-pathspecs ls-files -- "$path")" ]; }); then
+  if ! { [ -e "$path" ] || [ -n "$(git --literal-pathspecs ls-files -- "$path")" ]; }; then
     die "not a path in git or the working tree: $path"
   fi
   exc_append waive "$path" "$reason" "$branch" || return 2

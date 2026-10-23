@@ -4,18 +4,19 @@
 # Sourced, never executed. Bash 3.2 compatible; awk, git and coreutils only.
 # Needs core.sh, rules.sh, paths.sh and detect.sh sourced first.
 
-# run_rule_tests <workdir>: test every rule's cases and every format's sample in
-# the repo at <workdir>. Prints one "  <id>  <case>  <problem>" line per failure.
-# Returns 0 when all pass, 1 when any fails, 2 when the setup is broken.
+# run_rule_tests: test every rule's cases and every format's sample in the repo at
+# the working directory, which is the repo root. Prints one "  <id>  <case>  <problem>"
+# line per failure. Returns 0 when all pass, 1 when any fails, 2 when the setup is
+# broken.
 run_rule_tests() {
   local scratch rc=0
   scratch=$(mktemp -d) || return 2
-  (cd "$1" || exit 2; cases_check "$scratch") || rc=$?
+  cases_check "$scratch" || rc=$?
   rm -rf "$scratch"
   return "$rc"
 }
 
-# cases_check <scratch>: check every rule, then every format. Runs in the repo root.
+# cases_check <scratch>: check every rule, then every format, from the repo root.
 cases_check() {
   local scratch=$1 id name rc st=0
   all_files > "$scratch/listing" || return 2

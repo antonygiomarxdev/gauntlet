@@ -288,7 +288,6 @@ doctor_cmd() {
 # repeat that cause stay quiet.
 doctor_checks() {
   local root=$1 scratch=$2
-  cd "$root" || return 2
   hook_paths || return 2
   rule_ids > "$scratch/ids" || return 2
   : > "$scratch/causes" || return 2

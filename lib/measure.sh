@@ -25,11 +25,11 @@ measure_in() {
   local mode=$1 work=$2 root=$3 scratch=$4 id rf paths exclude t0 t1
   shift 4
   case "$mode" in
-    all) (cd "$root" && tracked_files) > "$scratch/inputs" || return 2 ;;
+    all) tracked_files > "$scratch/inputs" || return 2 ;;
     staged)
       # A staged path missing on disk (staged, then deleted) has no working-tree
       # content to measure, so the detector never sees it.
-      (cd "$root" && staged_files) > "$scratch/staged.all" || return 2
+      staged_files > "$scratch/staged.all" || return 2
       : > "$scratch/inputs" || return 2
       while IFS= read -r p; do
         if [ -e "$root/$p" ] || [ -L "$root/$p" ]; then printf '%s\n' "$p"; fi

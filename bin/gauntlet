@@ -43,11 +43,20 @@ GAUNTLET_BIN=$(cd "$(dirname "$gauntlet_entry")" && pwd -P) || exit 2
 # shellcheck source=lib/status.sh
 . "$GAUNTLET_BIN/../lib/status.sh"
 
+# R29: every repo command runs from the repo root, so a path given to git is never
+# relative to a subdirectory. --version needs no repo, install and install-hooks
+# resolve the root themselves, and a usage error needs nothing. Outside a repo,
+# repo_root exits 2 with one message before git can print its own usage.
+case "${1:-}" in
+  base|baseline|test-rules|waive|loosen|remove|check|status|promote|doctor)
+    gauntlet_root=$(repo_root) || exit 2
+    cd "$gauntlet_root" || die "cannot enter $gauntlet_root"
+    ;;
+esac
+
 case "${1:-}" in
   --version) printf 'gauntlet %s\n' "$GAUNTLET_VERSION" ;;
   base)
-    # Outside a repo, repo_root exits 2 before any lookup can fall back to main.
-    repo_root >/dev/null
     if [ -n "${2:-}" ]; then
       branch=$(current_branch)
       if [ "$branch" = HEAD ]; then die "detached HEAD: check out a branch first"; fi
@@ -68,9 +77,8 @@ case "${1:-}" in
     exit "$status"
     ;;
   test-rules)
-    root=$(repo_root) || exit 2
     status=0
-    run_rule_tests "$root" || status=$?
+    run_rule_tests || status=$?
     exit "$status"
     ;;
   waive)
