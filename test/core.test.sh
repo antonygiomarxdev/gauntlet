@@ -431,3 +431,38 @@ SHIM
   assert_contains "$OUT" "cannot enter the temp directory"
   assert_eq "" "$(ls -A "$TMP/priv")" "what the run left in TMPDIR"
 }
+
+# R33 pinned from the outside: no code path makes scratch anywhere but under the run root. A
+# mktemp on PATH logs every call. Per gauntlet run there is exactly one call that makes the root
+# (in TMPDIR) and every other call names a template inside a root; a bare `mktemp`, or one
+# aimed at TMPDIR itself, is a leak that no signal test sees until it is interrupted at the
+# right moment. The allow-list is empty on purpose.
+test_every_mktemp_call_is_inside_the_run_root() {
+  tmp_repo 0
+  must mkdir -p "$TMP/shim"
+  local real_mktemp
+  real_mktemp=$(command -v mktemp)
+  printf '#!/bin/sh\necho "$*" >> "%s/mktemp.log"\nexec "%s" "$@"\n' "$TMP" "$real_mktemp" > "$TMP/shim/mktemp"
+  must chmod +x "$TMP/shim/mktemp"
+  : > "$TMP/mktemp.log"
+  local runs=0 cmd
+  printf 'ok2\n' >> a.ts
+  must git add a.ts
+  for cmd in "baseline" "check --ci --base main" "check --staged" "test-rules" "doctor" "status"; do
+    # shellcheck disable=SC2086 # the words of $cmd are the arguments
+    run env TMPDIR="$TMP/priv" PATH="$TMP/shim:$PATH" "$G" $cmd
+    runs=$((runs + 1))
+    [ -s "$TMP/mktemp.log" ] || fail "gauntlet $cmd made no temp file at all: $OUT"
+  done
+  local line template roots=0 stray=
+  while IFS= read -r line; do
+    template=${line#-d }
+    case "$template" in
+      "$TMP"/priv/gauntlet.XXXXXX) roots=$((roots + 1)) ;;
+      "$TMP"/priv/gauntlet.??????/gauntlet.XXXXXX) ;;
+      *) stray="$stray [mktemp ${line:-with no template}]" ;;
+    esac
+  done < "$TMP/mktemp.log"
+  assert_eq "" "$stray" "mktemp calls outside the run root"
+  assert_eq "$runs" "$roots" "one root per run"
+}

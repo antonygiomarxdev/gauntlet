@@ -726,3 +726,26 @@ test_gates_refuse_a_format_with_a_group_above_9() {
   assert_eq 2 "$STATUS" "test-rules: $OUT"
   assert_contains "$OUT" "format ten: path is group 10; use a group from 0 to 9"
 }
+
+# The batch budget on its exact edge (guards; they fail only if the edge moves). A word of n
+# characters joins a batch when what the batch holds plus n is at most the limit; the list is
+# measured after the command text is taken off the budget. 'a' quotes to 3 characters and takes
+# 4 with its space.
+test_batch_budget_edge_is_inclusive() {
+  detect_lib
+  printf 'a\nb\nc\n' > "$TMP/in.txt"
+  assert_eq "$(printf " 'a' 'b'\n 'c'")" "$(detect_quote_batches 7 < "$TMP/in.txt")" "limit 7: 4 + 3 fits, 8 + 3 does not"
+  assert_eq "$(printf " 'a'\n 'b'\n 'c'")" "$(detect_quote_batches 6 < "$TMP/in.txt")" "limit 6: 4 + 3 does not fit"
+}
+
+test_batch_budget_counts_the_command_text() {
+  mkrepo
+  detect_lib
+  printf 'a\nb\nc\n' > "$TMP/files.txt"
+  : > "$TMP/err"
+  DETECT_RAW=
+  # ': {files}' is 10 characters, so a budget of 17 leaves 7 for the list.
+  DETECT_BATCH_CHARS=17
+  detect_scan "$PWD" ": {files}" r "$TMP/err" "$TMP/files.txt"
+  assert_eq "$(printf " 'a' 'b'\n 'c'")" "$(cat "$TMP/err.batches")" "batches under a budget of 17 for a 10 character command"
+}
