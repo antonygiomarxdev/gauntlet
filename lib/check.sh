@@ -218,23 +218,33 @@ rule_tests_due() {
 
 # check_key_rows <config>: the one parser of config keys, shared by check and doctor.
 # Prints a "<name>\t<ci>\t<paths>\t<command>" row for each declared check, a
-# "BAD\t<key>\t<reason>" row for each check key that is not valid, and an
-# "UNKNOWN\t<key>\t<message>" row for each key that is not base, touched or check.*.
-# Keys are check.<name>, check.<name>.paths and check.<name>.ci, names matching
-# ^[A-Za-z0-9_-]+$. Every reason and message names the fix. check_table refuses on a
-# BAD row and ignores UNKNOWN rows: check has always ignored keys it does not know.
+# "BAD\t<key>\t<reason>" row for each check key that is not valid, a
+# "#UNKNOWN\t<key>\t<message>" row for each key that is not base, touched or check.*,
+# and a "#MALFORMED\t<n>\t<message>" row for each line that has no key or no "=".
+# Blank lines and # comments are not lines of this kind. The "#" tags cannot be check
+# names, so a check is never mistaken for a row of this kind. Every message names the
+# fix. check_table refuses on a BAD row and ignores the "#" rows: check has always
+# ignored lines and keys it does not know.
 check_key_rows() {
   awk '
+    BEGIN { q = sprintf("%c", 39) }
     /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ { next }
     {
       eq = index($0, "=")
-      if (eq == 0) next
+      if (eq == 0) {
+        print "#MALFORMED\t" NR "\tconfig line " NR " has no " q "=" q ": write key=value"
+        next
+      }
       key = substr($0, 1, eq - 1)
       gsub(/^[ \t]+|[ \t]+$/, "", key)
+      if (key == "") {
+        print "#MALFORMED\t" NR "\tconfig line " NR " has no key: write key=value"
+        next
+      }
       if (key == "base" || key == "touched") next
       if (substr(key, 1, 6) != "check.") {
-        if (key == "") print "UNKNOWN\t\tline with no key is not known; use base, touched or check.<name>"
-        else print "UNKNOWN\t" key "\tconfig key " key " is not known; use base, touched or check.<name>"
+        print "#UNKNOWN\t" key "\tconfig key " key " is not known; use base, touched or check.<name>"
         next
       }
       val = substr($0, eq + 1)
@@ -274,7 +284,7 @@ check_table() {
   : > "$scratch/checks.all"
   if [ -f "$root/.gauntlet/config" ]; then
     check_key_rows "$root/.gauntlet/config" > "$scratch/checks.keys" || return 2
-    awk -F "$DETECT_TAB" '$1 != "UNKNOWN"' "$scratch/checks.keys" > "$scratch/checks.all" || return 2
+    awk -F "$DETECT_TAB" '$1 != "#UNKNOWN" && $1 != "#MALFORMED"' "$scratch/checks.keys" > "$scratch/checks.all" || return 2
   fi
   LC_ALL=C sort "$scratch/checks.all" > "$scratch/checks.raw" || return 2
   # Sorted before the first bad row is taken, so the reported key is the same on every run.
@@ -732,7 +742,7 @@ commit_times_path() {
 record_commit_times() {
   local dest tmp
   dest=$(commit_times_path "$1") || return 0
-  tmp=$(mktemp "$dest.XXXXXX") || return 0
+  tmp=$(mktemp "$dest.XXXXXX" 2> /dev/null) || return 0
   if cp "$2" "$tmp" 2> /dev/null && mv -f "$tmp" "$dest" 2> /dev/null; then
     return 0
   fi

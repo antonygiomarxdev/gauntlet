@@ -437,6 +437,7 @@ test_doctor_print_only_hook_names_manual_line() {
   assert_not_contains "$OUT" "install-hooks"
   printf '%s\n' '.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet' > "$TMP/shared/pre-commit"
   printf '%s\n' '.gauntlet/bin/gauntlet check --ci || exit $?  # gauntlet' > "$TMP/shared/pre-push"
+  must chmod +x "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
   run "$G" doctor
   assert_eq 0 "$STATUS" "doctor after the lines are added by hand"
 }
@@ -636,6 +637,57 @@ test_doctor_runner_all_fine_is_ok() {
   assert_contains "$OUT" "ok runner .gauntlet/bin/gauntlet"
 }
 
+test_doctor_runner_checks_every_lib_file() {
+  mkrepo
+  doctor_install
+  for f in .gauntlet/lib/*.sh; do
+    case "$f" in
+      */core.sh) continue ;;
+    esac
+    must cp "$f" "$TMP/lib.bak"
+    must rm -f "$f"
+    run "$G" doctor
+    assert_eq 1 "$STATUS" "doctor with $f removed"
+    assert_contains "$OUT" "FAIL .gauntlet/bin or .gauntlet/lib is broken or missing"
+    must cp "$TMP/lib.bak" "$f"
+  done
+}
+
+test_doctor_missing_builtin_format_fails() {
+  mkrepo
+  rule fmt
+  doctor_install
+  must rm .gauntlet/lib/formats/path-line.md
+  doctor_one_fail "FAIL built-in format path-line for rule fmt is missing from .gauntlet/lib"
+}
+
+test_doctor_project_format_needs_no_vendored_copy() {
+  mkrepo
+  rule fmt "format=mine"
+  must mkdir .gauntlet/formats
+  must cp "$ROOT/lib/formats/path-line.md" .gauntlet/formats/mine.md
+  doctor_install
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor with a project format"
+  assert_eq 0 "$(doctor_fails)" "FAIL lines"
+}
+
+test_doctor_other_rules_error_shows_next_to_a_missing_tool() {
+  mkrepo
+  mkdir -p src
+  printf 'x\n' > src/a.ts
+  must git add -A
+  must git commit -q -m content
+  rule bd engine=linter "detector=sh -c 'echo nope >&2; exit 3' {files}"
+  rule aghost engine=linter "detector=nosuchtool-gauntlet-xyz {files}"
+  doctor_install
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor with a missing tool and a broken detector"
+  assert_eq 2 "$(doctor_fails)" "FAIL lines"
+  assert_contains "$OUT" "FAIL tool nosuchtool-gauntlet-xyz for rule aghost is missing"
+  assert_contains "$OUT" "FAIL baseline cannot be checked: broken detector: bd: exit 3"
+}
+
 test_doctor_tool_shapes_are_not_checked() {
   mkrepo
   rule s1 engine=linter "detector='rg' --version {files}" paths=nothing/**
@@ -719,15 +771,52 @@ test_doctor_nonexec_plain_hook_fails() {
   doctor_one_fail "FAIL pre-commit hook .git/hooks/pre-commit is not executable: chmod +x .git/hooks/pre-commit"
 }
 
-test_doctor_nonexec_husky_hook_is_ok() {
+test_doctor_nonexec_husky_v8_hook_fails() {
   mkrepo
   must mkdir .husky
   must git config core.hooksPath .husky
   doctor_install
+  must chmod 644 .husky/pre-commit
+  doctor_one_fail "FAIL pre-commit hook .husky/pre-commit is not executable: chmod +x .husky/pre-commit"
+}
+
+test_doctor_nonexec_husky_v9_hook_is_ok() {
+  mkrepo
+  must mkdir .husky
+  must git config core.hooksPath .husky/_
+  doctor_install
   must chmod 644 .husky/pre-commit .husky/pre-push
   run "$G" doctor
-  assert_eq 0 "$STATUS" "doctor with husky hooks that are not executable"
+  assert_eq 0 "$STATUS" "doctor with husky v9 hooks that are not executable"
   assert_eq 0 "$(doctor_fails)" "FAIL lines"
+}
+
+test_husky_v8_nonexec_hook_is_ignored_by_git_and_doctor_fails() {
+  mkrepo
+  rule todo
+  must git add -A
+  must git commit -q -m rule
+  must mkdir .husky
+  must git config core.hooksPath .husky
+  doctor_install
+  must mkdir -p src
+  printf 'TODO fix\n' > src/a.ts
+  must git add src/a.ts
+  run git commit -q -m violation
+  assert_eq 1 "$STATUS" "an executable v8 hook runs the gate and blocks the commit"
+  must chmod 644 .husky/pre-commit
+  run git commit -q -m violation
+  assert_eq 0 "$STATUS" "git ignores a non-executable v8 hook, so the gate does not run"
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor with the non-executable v8 hook"
+  assert_contains "$OUT" "FAIL pre-commit hook .husky/pre-commit is not executable: chmod +x .husky/pre-commit"
+}
+
+test_doctor_nonexec_pre_push_hook_fails() {
+  mkrepo
+  doctor_install
+  must chmod 644 .git/hooks/pre-push
+  doctor_one_fail "FAIL pre-push hook .git/hooks/pre-push is not executable: chmod +x .git/hooks/pre-push"
 }
 
 test_doctor_fail_lines_name_the_fix() {
@@ -739,6 +828,54 @@ test_doctor_fail_lines_name_the_fix() {
   doctor_one_fail "FAIL bad check key check.lint: empty command; give check.lint a command or remove the line"
   printf 'check.lint=x\ncheck.lint.ci=maybe\n' > .gauntlet/config
   doctor_one_fail "FAIL bad check key check.lint.ci: .ci must be on or off, got [maybe]; write on or off"
+}
+
+test_doctor_malformed_config_line_fails() {
+  mkrepo
+  doctor_install
+  printf 'touched on\n' > .gauntlet/config
+  doctor_one_fail "FAIL config line 1 has no '=': write key=value"
+  printf 'touched=off\ntouched:on\n' > .gauntlet/config
+  doctor_one_fail "FAIL config line 2 has no '=': write key=value"
+  printf 'touched=off\ncheck.lint echo hi\n' > .gauntlet/config
+  doctor_one_fail "FAIL config line 2 has no '=': write key=value"
+}
+
+test_doctor_blank_and_comment_config_lines_are_ok() {
+  mkrepo
+  doctor_install
+  printf '\n# a comment\n   \n\t# indented comment\ntouched=off\n\n' > .gauntlet/config
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor"
+  assert_contains "$OUT" "ok config keys"
+}
+
+test_doctor_base_key_is_accepted() {
+  mkrepo
+  doctor_install
+  printf 'base=origin/main\ntouched=off\n' > .gauntlet/config
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor with base"
+  assert_contains "$OUT" "ok config keys"
+}
+
+test_doctor_empty_key_config_line_fails() {
+  mkrepo
+  doctor_install
+  printf '=1\n' > .gauntlet/config
+  doctor_one_fail "FAIL config line 1 has no key: write key=value"
+}
+
+test_doctor_config_problems_are_sorted() {
+  mkrepo
+  doctor_install
+  printf 'zeta=1\nalpha=1\n' > .gauntlet/config
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor with two unknown keys"
+  alpha=$(printf '%s\n' "$OUT" | grep -n 'config key alpha' | cut -d: -f1)
+  zeta=$(printf '%s\n' "$OUT" | grep -n 'config key zeta' | cut -d: -f1)
+  if [ -z "$alpha" ] || [ -z "$zeta" ]; then fail "both problems should be reported"; fi
+  if [ "$alpha" -gt "$zeta" ]; then fail "problems are not sorted: alpha on line $alpha, zeta on line $zeta"; fi
 }
 
 test_doctor_loosen_and_remove_rows_are_not_stale() {
@@ -829,6 +966,14 @@ test_days_between_calendar_edges() {
   assert_eq -9 "$(days_between 2026-11-08 2026-10-30)" "a future since"
 }
 
+test_valid_date_30_day_months() {
+  status_lib
+  valid_date 2026-11-30 || fail "2026-11-30 should be valid"
+  for d in 2026-11-31 2026-06-31 2026-09-31; do
+    if valid_date "$d"; then fail "$d should be rejected"; fi
+  done
+}
+
 test_valid_date_rejects_impossible_days() {
   status_lib
   for d in 2028-02-29 2026-02-28 2000-02-29 0000-02-29 2026-12-31; do
@@ -873,6 +1018,51 @@ test_status_escapes_pipe_in_path() {
   assert_contains "$OUT" "| src/a\\|b.ts | 2 |"
 }
 
+test_status_md_mode_follows_umask() {
+  mkrepo
+  rule a
+  printf 'a\tsrc/x.ts\tf1\t1\n' > .gauntlet/baseline.tsv
+  ( umask 022 && env GAUNTLET_TODAY=2026-10-30 "$G" status > /dev/null ) || fail "status under umask 022"
+  assert_eq 644 "$(file_mode .gauntlet/STATUS.md)" "mode under umask 022"
+  ( umask 002 && env GAUNTLET_TODAY=2026-10-30 "$G" status > /dev/null ) || fail "status under umask 002"
+  assert_eq 664 "$(file_mode .gauntlet/STATUS.md)" "mode under umask 002"
+}
+
+test_status_removes_its_temp_when_the_rename_fails() {
+  mkrepo
+  rule a
+  printf 'a\tsrc/x.ts\tf1\t1\n' > .gauntlet/baseline.tsv
+  must mkdir "$TMP/shim"
+  printf '#!/bin/sh\nexit 1\n' > "$TMP/shim/mv"
+  must chmod +x "$TMP/shim/mv"
+  run env PATH="$TMP/shim:$PATH" GAUNTLET_TODAY=2026-10-30 "$G" status
+  assert_eq 2 "$STATUS" "status when the rename fails"
+  assert_contains "$OUT" "cannot write .gauntlet/STATUS.md"
+  leftover=0
+  for f in .gauntlet/.STATUS.md.*; do
+    if [ -e "$f" ]; then leftover=1; fi
+  done
+  assert_eq 0 "$leftover" "no temp file left after the failed rename"
+  if [ -e .gauntlet/STATUS.md ]; then fail "STATUS.md was written although the rename failed"; fi
+}
+
+test_status_in_a_read_only_gauntlet_dir_fails_quietly() {
+  if [ "$(id -u)" -eq 0 ]; then
+    skip "running as root: a read-only directory is still writable here"
+    return 77
+  fi
+  mkrepo
+  rule a
+  printf 'a\tsrc/x.ts\tf1\t1\n' > .gauntlet/baseline.tsv
+  must chmod 555 .gauntlet
+  run env GAUNTLET_TODAY=2026-10-30 "$G" status
+  must chmod 755 .gauntlet
+  assert_eq 2 "$STATUS" "status in a read-only .gauntlet"
+  assert_contains "$OUT" "cannot write .gauntlet/STATUS.md"
+  assert_not_contains "$OUT" "mktemp"
+  assert_not_contains "$OUT" "Permission denied"
+}
+
 test_status_replaces_status_md_by_rename() {
   mkrepo
   rule a
@@ -915,6 +1105,67 @@ test_check_staged_records_times_for_status() {
   assert_eq "" "$(git status --porcelain | grep gauntlet-time || true)" "the time file is never in the work tree"
 }
 
+test_check_staged_records_every_rule_time() {
+  mkrepo
+  rule slowone "detector=sh -c 'sleep 0.2' {files}" paths=src/**
+  rule slowtwo "detector=sh -c 'sleep 0.2' {files}" paths=src/**
+  must git add -A
+  must git commit -q -m rules
+  mkdir -p src
+  printf 'x\n' > src/a.ts
+  must git add src/a.ts
+  run env GAUNTLET_COMMIT_BUDGET_MS=1 "$G" check --staged
+  assert_eq 0 "$STATUS" "check --staged"
+  run env GAUNTLET_TODAY=2026-10-30 GAUNTLET_COMMIT_BUDGET_MS=1 "$G" status
+  assert_contains "$OUT" "slow: slowone "
+  assert_contains "$OUT" "slow: slowtwo "
+}
+
+test_check_staged_time_file_replaces_the_previous_run() {
+  mkrepo
+  rule slowone "detector=sh -c 'sleep 0.2' {files}" paths=src/**
+  must git add -A
+  must git commit -q -m rules
+  mkdir -p src
+  printf 'x\n' > src/a.ts
+  must git add src/a.ts
+  run env GAUNTLET_COMMIT_BUDGET_MS=1 "$G" check --staged
+  assert_eq 0 "$STATUS" "first check --staged"
+  run env GAUNTLET_COMMIT_BUDGET_MS=1 "$G" check --staged
+  assert_eq 0 "$STATUS" "second check --staged"
+  lines=$(awk 'END { print NR }' "$(commit_times_file)")
+  assert_eq 1 "$lines" "one row per rule after two runs"
+}
+
+test_check_staged_time_file_leaves_no_temp_file() {
+  mkrepo
+  rule slowone "detector=sh -c 'sleep 0.2' {files}" paths=src/**
+  must git add -A
+  must git commit -q -m rules
+  mkdir -p src
+  printf 'x\n' > src/a.ts
+  must git add src/a.ts
+  run env GAUNTLET_COMMIT_BUDGET_MS=1 "$G" check --staged
+  assert_eq 0 "$STATUS" "check --staged"
+  count=0
+  for f in .git/gauntlet-time*; do
+    if [ -e "$f" ]; then count=$((count + 1)); fi
+  done
+  assert_eq 1 "$count" "the time file and nothing else"
+}
+
+test_status_does_not_list_a_rule_without_a_time_row() {
+  mkrepo
+  rule fast
+  rule other
+  printf 'fast\t40\ngone\t9000\n' > "$(commit_times_file)"
+  run env GAUNTLET_TODAY=2026-10-30 GAUNTLET_COMMIT_BUDGET_MS=0 "$G" status
+  assert_eq 0 "$STATUS" "status"
+  assert_contains "$OUT" "slow: fast 40 ms (consider stage: push)"
+  assert_not_contains "$OUT" "slow: other"
+  assert_not_contains "$OUT" "slow: gone"
+}
+
 test_status_linked_worktree_reads_its_own_times() {
   mkrepo
   rule slowrule "detector=sh -c 'sleep 0.2' {files}" paths=src/**
@@ -950,7 +1201,34 @@ test_check_staged_unwritable_git_dir_keeps_exit_code() {
   run env GAUNTLET_COMMIT_BUDGET_MS=1 "$G" check --staged
   must chmod 755 .git
   assert_eq 0 "$STATUS" "check --staged with an unwritable git dir"
+  assert_not_contains "$OUT" "mktemp"
   if [ -e "$(commit_times_file)" ]; then fail "the time file was written"; fi
+}
+
+test_check_ignores_malformed_config_lines() {
+  mkrepo
+  printf 'touched on\n' > .gauntlet/config
+  must git add -A
+  must git commit -q -m config
+  must git checkout -q -b feature
+  # A changed path that starts with the words of the malformed line's message: a line
+  # check ignores must never become a check that runs.
+  printf 'x\n' > configx.txt
+  must git add configx.txt
+  must git commit -q -m change
+  run "$G" check --ci
+  assert_eq 0 "$STATUS" "check --ci with a malformed config line"
+  assert_contains "$OUT" "gauntlet: ok"
+}
+
+test_check_named_like_a_row_tag_still_runs() {
+  mkrepo
+  printf 'check.UNKNOWN=sh -c "exit 3"\ncheck.UNKNOWN.ci=on\n' > .gauntlet/config
+  must git add -A
+  must git commit -q -m config
+  run "$G" check --ci
+  assert_eq 1 "$STATUS" "a check named UNKNOWN fails when it exits 3"
+  assert_contains "$OUT" "UNKNOWN  exit 3"
 }
 
 test_check_ignores_keys_it_does_not_know() {

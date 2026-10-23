@@ -88,11 +88,13 @@ status_cmd() {
 # .gauntlet/ and a rename, so a kill never leaves a partial file. Returns 1 with a
 # message when either step fails.
 status_write() {
-  local tmp
-  tmp=$(mktemp "$1/.gauntlet/STATUS.md.XXXXXX") || {
+  local tmp="$1/.gauntlet/.STATUS.md.$$"
+  # The temp file is made with the shell's umask, so the final file has the mode a
+  # plain write would have. noclobber: an existing file is never taken over.
+  if ! ( set -C; : > "$tmp" ) 2> /dev/null; then
     printf 'gauntlet: cannot write .gauntlet/STATUS.md\n' >&2
     return 1
-  }
+  fi
   if cat "$2" > "$tmp" && mv -f "$tmp" "$1/.gauntlet/STATUS.md"; then
     return 0
   fi
@@ -356,11 +358,45 @@ doctor_runner() {
   fi
 }
 
+# doctor_formats <root> <scratch>: a rule whose format is built in (no project file under
+# .gauntlet/formats/) needs that format in the vendored runner, or the hooks fail at commit
+# time. Checked only when the vendored lib is another copy than the running runner's, and
+# only when it exists: a missing lib is the runner FAIL.
+doctor_formats() {
+  local root=$1 scratch=$2 id engine format name vendored here
+  [ -d "$root/.gauntlet/lib" ] || return 0
+  vendored=$(cd "$root/.gauntlet/lib" && pwd -P) || return 0
+  here=$(cd "$GAUNTLET_LIB" && pwd -P) || return 0
+  if [ "$vendored" = "$here" ]; then
+    return 0
+  fi
+  while IFS= read -r id; do
+    engine=$(rule_get "$root/.gauntlet/rules/$id.md" engine) || engine=
+    format=$(rule_get "$root/.gauntlet/rules/$id.md" format) || format=
+    name=$(effective_format "$engine" "$format") || continue
+    if [ -f "$root/.gauntlet/formats/$name.md" ]; then
+      continue
+    fi
+    if [ ! -f "$vendored/formats/$name.md" ]; then
+      doctor_fail "built-in format $name for rule $id is missing from .gauntlet/lib: run gauntlet install from a gauntlet checkout (a .gitignore entry such as lib/ also drops .gauntlet/lib)"
+    fi
+  done < "$scratch/ids"
+  return 0
+}
+
 # doctor_hooks <root> <scratch>: the runner must load, then the gate line must be in each
 # hook install-hooks would use. A lefthook or prek config needs the snippet in it (HOOK-AC7).
 doctor_hooks() {
-  local root=$1 scratch=$2 target kind dir f
+  local root=$1 scratch=$2 target kind dir f hooks_path execcheck=1
   doctor_runner "$root"
+  doctor_formats "$root" "$scratch" || return 2
+  # git runs a hook in a plain hooks dir, and husky v8 is the same: a file without the
+  # exec bit is ignored. Husky v9 (core.hooksPath ending in /_) runs the user's file
+  # through its wrapper, so it needs no exec bit.
+  hooks_path=$(git config --path --get core.hooksPath) || hooks_path=
+  case "$hooks_path" in
+    */_) execcheck=0 ;;
+  esac
   target=$(hook_target) || return 2
   kind=${target%% *}
   dir=${target#"$kind"}
@@ -377,22 +413,21 @@ doctor_hooks() {
       done < "$scratch/configs"
       ;;
     husky|dir|print)
-      doctor_hook_file pre-commit "$dir/pre-commit" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED" "$kind"
-      doctor_hook_file pre-push "$dir/pre-push" "$HOOK_LINE_CI" "$HOOK_GATE_CI" "$kind"
+      doctor_hook_file pre-commit "$dir/pre-commit" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED" "$kind" "$execcheck"
+      doctor_hook_file pre-push "$dir/pre-push" "$HOOK_LINE_CI" "$HOOK_GATE_CI" "$kind" "$execcheck"
       ;;
   esac
   return 0
 }
 
-# doctor_hook_file <stage> <file> <plain> <gate> <kind>: <file> must hold a gate line. In
-# a plain hooks dir (kind dir) the hook must also be executable, since git runs it directly;
-# husky runs its hooks through a wrapper, so it needs no exec bit. A hook install-hooks
-# cannot edit, and a hooks dir it only prints for (kind print), get the line to add by
-# hand: running install-hooks would print the same thing.
+# doctor_hook_file <stage> <file> <plain> <gate> <kind> <execcheck>: <file> must hold a gate
+# line. When execcheck is 1 the hook must be executable, since git ignores it otherwise. A
+# hook install-hooks cannot edit, and a hooks dir it only prints for (kind print), get the
+# line to add by hand: running install-hooks would print the same thing.
 doctor_hook_file() {
-  local stage=$1 file=$2 line=$3 gate=$4 kind=$5 shown manual=0
+  local stage=$1 file=$2 line=$3 gate=$4 kind=$5 execcheck=$6 shown manual=0
   shown=$(display_path "$file")
-  if [ "$kind" = dir ] && [ -f "$file" ] && [ ! -x "$file" ]; then
+  if [ "$execcheck" -eq 1 ] && [ -f "$file" ] && [ ! -x "$file" ]; then
     doctor_fail "$stage hook $shown is not executable: chmod +x $shown"
   fi
   if [ -f "$file" ] && hook_has_gate "$file" "$line" "$gate"; then
@@ -417,23 +452,42 @@ doctor_hook_file() {
 # tree does not change that. When measuring fails for a cause a rule FAIL already names
 # (<scratch>/causes), this check says nothing more: it would repeat that cause.
 doctor_baseline() {
-  local root=$1 scratch=$2 rc=0 reason
+  local root=$1 scratch=$2 rc=0 reason id want="$1/.gauntlet/baseline.tsv"
   if [ ! -f "$root/.gauntlet/baseline.tsv" ]; then
     doctor_fail "baseline .gauntlet/baseline.tsv is missing: run gauntlet baseline and commit it"
     return 0
   fi
-  ( measure all "$scratch/measure" ) > "$scratch/measure.out" 2> "$scratch/measure.err" || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    if [ -s "$scratch/causes" ]; then
+  if [ -s "$scratch/causes" ]; then
+    # A rule with a tool or engine cause cannot be measured, and its FAIL line already says
+    # why. The other rules are measured and compared as usual, so an error from one of them
+    # is always shown, whatever the cause rules say.
+    awk 'NR == FNR { cause[$0] = 1; next } !($0 in cause)' "$scratch/causes" "$scratch/ids" > "$scratch/ids.rest" || return 2
+    if [ ! -s "$scratch/ids.rest" ]; then
       return 0
     fi
+    set --
+    while IFS= read -r id; do
+      set -- "$@" "$id"
+    done < "$scratch/ids.rest"
+    ( measure all "$scratch/measure" "$@" ) > "$scratch/measure.out" 2> "$scratch/measure.err" || rc=$?
+    awk -F "$DETECT_TAB" 'NR == FNR { rest[$0] = 1; next } ($1 in rest)' "$scratch/ids.rest" \
+      "$root/.gauntlet/baseline.tsv" > "$scratch/baseline.rest" || return 2
+    want="$scratch/baseline.rest"
+  else
+    ( measure all "$scratch/measure" ) > "$scratch/measure.out" 2> "$scratch/measure.err" || rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
     reason=$(awk '/^gauntlet: / { sub(/^gauntlet: /, ""); print; exit }' "$scratch/measure.err")
     if [ -z "$reason" ]; then
       reason="measuring the code failed"
     fi
     doctor_fail "baseline cannot be checked: $reason; fix the rule or tool it names"
-  elif cmp -s "$root/.gauntlet/baseline.tsv" "$scratch/measure/measure.tsv"; then
-    doctor_ok "baseline is exact"
+  elif cmp -s "$want" "$scratch/measure/measure.tsv"; then
+    if [ -s "$scratch/causes" ]; then
+      doctor_ok "baseline is exact for the rules that can be measured"
+    else
+      doctor_ok "baseline is exact"
+    fi
   else
     doctor_fail "baseline differs from the code: run gauntlet baseline and commit it"
   fi
@@ -450,7 +504,7 @@ doctor_config() {
     check_key_rows "$cfg" > "$scratch/keys" || return 2
     awk -F "$DETECT_TAB" '
       $1 == "BAD" { print "bad check key " $2 ": " $3 }
-      $1 == "UNKNOWN" { print $3 }
+      $1 == "#UNKNOWN" || $1 == "#MALFORMED" { print $3 }
     ' "$scratch/keys" > "$scratch/key-problems" || return 2
     LC_ALL=C sort "$scratch/key-problems" > "$scratch/key-problems.sorted" || return 2
     while IFS= read -r problem; do
