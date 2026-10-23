@@ -315,6 +315,32 @@ test_all_files_omits_deleted_tracked_file() {
   assert_not_contains "$OUT" "gone.txt"
 }
 
+# A tracked symlink whose target is missing is no file a detector can read (rg: "No such file or
+# directory"), so neither listing the measurement reads offers it. A link to a file or to a
+# directory that exists stays. all_files keeps it, as the test after this one pins.
+test_listings_leave_out_a_dangling_symlink_and_keep_live_ones() {
+  mkrepo
+  paths_lib
+  printf 'x\n' > real.ts
+  must mkdir realdir
+  printf 'y\n' > realdir/f.ts
+  must ln -s /nonexistent/target dangling.ts
+  must ln -s real.ts link-to-file.ts
+  must ln -s realdir link-to-dir
+  must git add -A
+  run tracked_files
+  assert_eq 0 "$STATUS" "tracked_files: $OUT"
+  assert_not_contains "$OUT" "dangling.ts"
+  assert_contains "$OUT" "link-to-file.ts"
+  assert_contains "$OUT" "link-to-dir"
+  assert_contains "$OUT" "real.ts"
+  run staged_files
+  assert_eq 0 "$STATUS" "staged_files: $OUT"
+  assert_not_contains "$OUT" "dangling.ts"
+  assert_contains "$OUT" "link-to-file.ts"
+  assert_contains "$OUT" "link-to-dir"
+}
+
 test_all_files_keeps_dangling_symlink() {
   mkrepo
   paths_lib

@@ -1500,6 +1500,27 @@ test_an_odd_path_that_survives_is_still_refused() {
   odd_path_refused 'a\tb.ts'
 }
 
+# I5: a tracked symlink to nothing is not a file the detectors can read; with the stock rg rule it
+# made every run exit 2 ("rg: dangling.ts: No such file or directory"). It is left out, and the
+# other files count as usual.
+test_a_dangling_symlink_does_not_break_the_gates() {
+  gate_setup 'ok'
+  printf 'TODO here\n' > b.ts
+  must ln -s /nonexistent/target dangling.ts
+  rebaseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  assert_eq "$(printf 'todo\tb.ts\tTODO here\t1')" "$(cat .gauntlet/baseline.tsv)" "the other file counts, the link does not"
+  run "$G" check --staged
+  assert_eq 1 "$STATUS" "check --staged sees the new violation in b.ts, not a broken detector: $OUT"
+  assert_contains "$OUT" "b.ts:1"
+  assert_not_contains "$OUT" "broken detector"
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "check --ci sees the new violation in b.ts, not a broken detector: $OUT"
+  assert_contains "$OUT" "b.ts:1"
+  assert_not_contains "$OUT" "broken detector"
+}
+
 # Counts read as English: 1 rule, 2 rules; 1 problem, 2 problems.
 test_report_counts_are_singular_for_one() {
   gate_setup 'ok'

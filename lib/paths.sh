@@ -49,7 +49,7 @@ select_files() {
 # or a newline (R31); the untracked part leaves such a name out, since git does not
 # track it and nothing is measured from it.
 all_files() {
-  tracked_files || return 2
+  tracked_list 0 || return 2
   untracked_files
 }
 
@@ -73,12 +73,20 @@ untracked_files() {
 
 # tracked_files: print every file in the index that exists in the working tree,
 # once each. Untracked files are left out, so a local measurement equals what
-# CI sees (decision 2, R19).
+# CI sees (decision 2, R19). A symlink whose target is missing is left out too: no
+# detector can read it, and the stock rg rule exits 2 on it.
 tracked_files() {
+  tracked_list 1
+}
+
+# tracked_list <1|0>: the work of tracked_files; 1 leaves out the dangling symlinks.
+# all_files passes 0: a case file that is a dangling link is a broken case, and test-rules
+# should run it and say so.
+tracked_list() {
   local list skip rc=0
   list=$(git_nul_lines -c core.quotepath=off ls-files -t -c -d -z) || return 2
   skip=$(tmp_new) || return 2
-  gitlink_paths > "$skip" || rc=2
+  { gitlink_paths && if [ "$1" = 1 ]; then dangling_link_paths; fi; } > "$skip" || rc=2
   if [ "$rc" -eq 0 ]; then printf '%s\n' "$list" | files_from_listing | skip_names "$skip" || rc=2; fi
   rm -f "$skip"
   return "$rc"
@@ -94,6 +102,24 @@ gitlink_paths() {
     LC_ALL=C tr '\0' '\n' < "$tmp" | LC_ALL=C awk '
       substr($0, 1, 7) == "160000 " { print substr($0, index($0, "\t") + 1) }
     ' || rc=2
+  fi
+  rm -f "$tmp"
+  return "$rc"
+}
+
+# dangling_link_paths: print the paths of the symlinks in the index (mode 120000) whose
+# target does not exist in the working tree, one per line. [ -e ] follows the link: a link to
+# a file or a directory that exists is not listed.
+dangling_link_paths() {
+  local tmp rc=0 p
+  tmp=$(tmp_new) || return 2
+  git -c core.quotepath=off ls-files -s -z > "$tmp" || rc=2
+  if [ "$rc" -eq 0 ]; then
+    LC_ALL=C tr '\0' '\n' < "$tmp" | LC_ALL=C awk '
+      substr($0, 1, 7) == "120000 " { print substr($0, index($0, "\t") + 1) }
+    ' | while IFS= read -r p; do
+      if [ ! -e "$p" ]; then printf '%s\n' "$p"; fi
+    done || rc=2
   fi
   rm -f "$tmp"
   return "$rc"
@@ -207,12 +233,13 @@ files_from_listing() {
 }
 
 # staged_files: print staged paths that are added, copied, modified, renamed or changed
-# in type (a symlink that became a file, or the reverse), leaving out the gitlinks.
+# in type (a symlink that became a file, or the reverse), leaving out the gitlinks and the
+# symlinks whose target is missing.
 staged_files() {
   local list skip rc=0
   list=$(git_nul_lines -c core.quotepath=off diff --cached --name-only --diff-filter=ACMRT -z) || return 2
   skip=$(tmp_new) || return 2
-  gitlink_paths > "$skip" || rc=2
+  { gitlink_paths && dangling_link_paths; } > "$skip" || rc=2
   if [ "$rc" -eq 0 ] && [ -n "$list" ]; then printf '%s\n' "$list" | skip_names "$skip" || rc=2; fi
   rm -f "$skip"
   return "$rc"
