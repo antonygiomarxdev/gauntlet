@@ -422,3 +422,93 @@ test_rule_added_here_not_counted() {
   assert_eq 0 "$STATUS" "status"
   assert_not_contains "$OUT" "[touched]"
 }
+
+test_new_file_two_todos_counts_two() {
+  gate_setup 'ok'
+  touched_on
+  printf 'TODO a\nTODO b\n' > c.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "FAIL (2 problems)"
+  assert_contains "$OUT" "  c.ts  0 → 2  (must be 0)"
+}
+
+test_touched_judges_quoted_path() {
+  mkrepo
+  printf 'TODO here\n' > 'q"x.ts'
+  rule todo paths='**/*.ts'
+  rebaseline
+  commit_all main
+  must git checkout -q -b feat
+  touched_on
+  printf 'TODO here\nok\n' > 'q"x.ts'
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  q\"x.ts  1 → 1  (must go down)"
+}
+
+test_touched_rejects_unknown_mode() {
+  gate_setup 'TODO here'
+  printf 'touched=ON\n' > .gauntlet/config
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 2 "$STATUS" "status"
+  assert_contains "$OUT" "touched must be on or off, got [ON]"
+}
+
+test_touched_deleted_file_skipped() {
+  gate_setup 'TODO here'
+  touched_on
+  must git rm -q a.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[touched]"
+}
+
+test_shadow_and_track_not_counted() {
+  mkrepo
+  printf 'TODO here\n' > a.ts
+  rule todo paths='**/*.ts'
+  rule fixme paths='**/*.ts' severity=shadow detector="rg --with-filename --line-number --no-heading 'FIXME' {files}"
+  rule xxx paths='**/*.ts' severity=track detector="rg --with-filename --line-number --no-heading 'XXX' {files}"
+  rebaseline
+  commit_all main
+  must git checkout -q -b feat
+  touched_on
+  printf 'FIXME x\nXXX y\nFIXME z\n' > a.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[touched]"
+}
+
+test_gauntlet_paths_not_judged() {
+  gate_setup 'TODO here'
+  touched_on
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[touched]"
+}
+
+test_base_zero_file_gaining_debt_must_stay_zero() {
+  gate_setup 'ok'
+  touched_on
+  printf 'ok\nTODO x\n' > a.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "[touched]"
+  assert_contains "$OUT" "  a.ts  0 → 1  (must stay 0)"
+  assert_contains "$OUT" "FAIL (1 problems)"
+}

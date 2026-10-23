@@ -47,8 +47,9 @@ check_ci() {
 # collected in a body file so the header can carry the whole-run time.
 check_run() {
   local scratch=$1 base_ref=$2 start=$3 root base sha id rf sev fix atb
-  local known=0 n_rules ms end n body new_n=0 global_n=0 touched_n=0 baseline_n=0
+  local known=0 n_rules ms end n body new_n=0 global_n=0 touched_n=0 baseline_n=0 mode
   root=$(repo_root) || return 2
+  mode=$(touched_mode) || return 2
   base=$(resolve_base "$base_ref") || return 2
   sha=$(merge_base "$base") || return 2
   measure all "$scratch/now" || return 2
@@ -105,9 +106,15 @@ check_run() {
       > "$scratch/touched.rows" || return 2
     if [ -s "$scratch/touched.rows" ]; then
       printf '[touched]\n' >> "$body"
-      cat "$scratch/touched.rows" >> "$body"
+      awk -F '\t' '{ printf "  %s  %s → %s  (%s)\n", $1, $2, $3, $4 }' "$scratch/touched.rows" >> "$body"
     fi
-    touched_n=$(awk 'END { print NR }' "$scratch/touched.rows") || return 2
+    # R20: a file with a [new] line is already explained by it, so it is not
+    # counted again here; [touched] still prints it.
+    touched_n=$(GL_NEW="$scratch/new.rows" awk -F '\t' '
+      FILENAME == ENVIRON["GL_NEW"] { covered[$2] = 1; next }
+      !($1 in covered) { n++ }
+      END { print n + 0 }
+    ' "$scratch/new.rows" "$scratch/touched.rows") || return 2
   fi
 
   # Exact: the committed baseline must be byte-equal to what the code measures.
@@ -235,15 +242,31 @@ violation_lines() {
   }' "$1"
 }
 
+# touched_mode: print the touched gate's setting, on or off (config touched=,
+# default off). Any other value is a broken setup: exit 2, so it never turns
+# the gate off silently.
+touched_mode() {
+  local value
+  value=$(config_get touched off) || return 2
+  case "$value" in
+    on|off) printf '%s\n' "$value" ;;
+    *)
+      printf 'gauntlet: touched must be on or off, got [%s]\n' "$value" >&2
+      return 2
+      ;;
+  esac
+}
+
 # cmp_touched <merge-base> <base.tsv> <measure.tsv> <rules.tsv>: the touched
 # gate (opt-in via config touched=on). Each file the branch changes must come
-# out with less block debt than it had at the merge-base. Prints one line per
-# file that breaks that rule and returns 0; prints nothing when the gate is off.
-# Debt counts only block rules that exist at base, and waived rows are skipped.
+# out with less block debt than it had at the merge-base. Prints one tab row
+# per file that breaks that rule (path, base, now, reason) and returns 0;
+# prints nothing when the gate is off. Debt counts only block rules that exist
+# at base, and waived rows are skipped.
 cmp_touched() {
-  local mb=$1 base=$2 now=$3 rules=$4 touched scratch status=0
-  touched=$(config_get touched off) || return 2
-  [ "$touched" = on ] || return 0
+  local mb=$1 base=$2 now=$3 rules=$4 mode scratch status=0
+  mode=$(touched_mode) || return 2
+  [ "$mode" = on ] || return 0
   scratch=$(mktemp -d) || return 2
   cmp_touched_in "$mb" "$base" "$now" "$rules" "$scratch" || status=$?
   rm -rf "$scratch"
@@ -255,11 +278,20 @@ cmp_touched() {
 cmp_touched_in() {
   local mb=$1 base=$2 now=$3 rules=$4 scratch=$5
   # R15: `.gauntlet/` is never judged. R100 (pure rename) and D are skipped.
-  git -c core.quotepath=off diff -M --name-status "$mb" HEAD > "$scratch/diff" || return 2
-  awk -F '\t' '
-    index($2, ".gauntlet/") == 1 || index($3, ".gauntlet/") == 1 { next }
-    $1 == "A" || $1 == "M" { print $1 "\t" $2 "\t" $2; next }
-    substr($1, 1, 1) == "R" && $1 != "R100" { print "R\t" $2 "\t" $3 }
+  # -z output is one token per line: a status, then one path (two for R or C).
+  git_nul_lines -c core.quotepath=off diff -M -z --name-status "$mb" HEAD > "$scratch/diff" || return 2
+  awk '
+    {
+      if (need == 0) { st = $0; need = (st ~ /^[RC]/) ? 2 : 1; k = 0; next }
+      p[++k] = $0
+      need--
+      if (need > 0) next
+      old = p[1]
+      nw = (k == 2) ? p[2] : p[1]
+      if (index(old, ".gauntlet/") == 1 || index(nw, ".gauntlet/") == 1) next
+      if (st == "A" || st == "M") printf "%s\t%s\t%s\n", st, old, old
+      else if (st ~ /^R/ && st != "R100") printf "R\t%s\t%s\n", old, nw
+    }
   ' "$scratch/diff" > "$scratch/changes" || return 2
 
   # sums: fingerprint rows of block rules that exist at base, for the changed
@@ -302,7 +334,7 @@ cmp_touched_in() {
           if (b > 0) { bad = c >= b; why = "must go down" }
           else { bad = c > 0; why = "must stay 0" }
         }
-        if (bad) printf "  %s  %d → %d  (%s)\n", p, b, c, why
+        if (bad) printf "%s\t%d\t%d\t%s\n", p, b, c, why
       }
     }
   ' "$scratch/changes" "$scratch/kept" > "$scratch/touched" || return 2

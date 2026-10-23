@@ -48,7 +48,7 @@ select_files() {
 # measurement reads tracked_files instead.
 all_files() {
   local list
-  list=$(git -c core.quotepath=off ls-files -t -c -d -o --exclude-standard) || return 2
+  list=$(git_nul_lines -c core.quotepath=off ls-files -t -c -d -o --exclude-standard -z) || return 2
   printf '%s\n' "$list" | files_from_listing
 }
 
@@ -57,8 +57,22 @@ all_files() {
 # CI sees (decision 2, R19).
 tracked_files() {
   local list
-  list=$(git -c core.quotepath=off ls-files -t -c -d) || return 2
+  list=$(git_nul_lines -c core.quotepath=off ls-files -t -c -d -z) || return 2
   printf '%s\n' "$list" | files_from_listing
+}
+
+# git_nul_lines <git-args...>: run git, which must be given -z, and print its
+# NUL-separated output one name per line. Names come out raw: git C-quotes
+# names with `"`, `\` or tabs unless -z is given, and such names would never
+# match a path the working tree reports. The output goes to a temp file first,
+# because command substitution drops NUL bytes and a pipe would hide git's status.
+git_nul_lines() {
+  local tmp rc=0
+  tmp=$(mktemp) || return 2
+  git "$@" > "$tmp" || rc=2
+  if [ "$rc" -eq 0 ]; then tr '\0' '\n' < "$tmp" || rc=2; fi
+  rm -f "$tmp"
+  return "$rc"
 }
 
 # files_from_listing: read `git ls-files -t` output on stdin. One tag marks each
@@ -86,5 +100,5 @@ files_from_listing() {
 
 # staged_files: print staged paths that are added, copied, modified or renamed.
 staged_files() {
-  git -c core.quotepath=off diff --cached --name-only --diff-filter=ACMR
+  git_nul_lines -c core.quotepath=off diff --cached --name-only --diff-filter=ACMR -z
 }

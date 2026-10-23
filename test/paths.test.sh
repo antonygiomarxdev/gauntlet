@@ -25,6 +25,22 @@ test_dot_is_literal() {
   assert_eq "a.ts" "$OUT"
 }
 
+test_listing_prints_special_names_raw() {
+  mkrepo
+  paths_lib
+  must sh -c 'echo one > "q\"x.ts" && echo two > "b\\s.ts"'
+  must git add -A
+  must git commit -q -m "special names"
+  OUT=$(tracked_files)
+  assert_contains "$OUT" 'b\s.ts'
+  assert_contains "$OUT" 'q"x.ts'
+  assert_not_contains "$OUT" '"b'
+  must sh -c 'echo three > "q\"x.ts"'
+  must git add -A
+  OUT=$(staged_files)
+  assert_eq 'q"x.ts' "$OUT" "staged_files"
+}
+
 test_staged_files_excludes_deleted() {
   mkrepo
   paths_lib
