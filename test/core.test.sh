@@ -32,6 +32,20 @@ test_config_default_for_missing_key() {
   assert_eq "fallback" "$(config_get nokey fallback)" "default"
 }
 
+# A config saved with CRLF line ends reads the same as one with LF.
+test_config_get_strips_a_carriage_return() {
+  mkrepo
+  # shellcheck source=lib/core.sh
+  # shellcheck disable=SC2153 # ROOT is set by test/lib.sh
+  . "$ROOT/lib/core.sh"
+  printf 'base=origin/main\r\ntouched=on\r\n# note\r\n' > .gauntlet/config
+  assert_eq "origin/main" "$(config_get base)" "base"
+  assert_eq "on" "$(config_get touched)" "touched"
+  assert_eq "fallback" "$(config_get nokey fallback)" "default"
+  run "$G" base
+  assert_eq "origin/main" "$OUT" "gauntlet base prints the value without the CR"
+}
+
 test_config_outside_repo_exits_2() {
   cd "$TMP" || fail "cd failed"
   run bash -c ". '$ROOT/lib/core.sh'; config_get touched"

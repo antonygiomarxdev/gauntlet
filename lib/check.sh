@@ -235,13 +235,15 @@ rule_tests_due() {
 # "#BAD\t<key>\t<reason>" row for each check key that is not valid, a
 # "#UNKNOWN\t<key>\t<message>" row for each key that is not base, touched or check.*,
 # and a "#MALFORMED\t<n>\t<message>" row for each line that has no key or no "=".
-# Blank lines and # comments are not lines of this kind. The "#" tags cannot be check
+# Blank lines and # comments are not lines of this kind. A carriage return ending a line
+# (a CRLF file) is not part of the line. The "#" tags cannot be check
 # names, so a check is never mistaken for a row of this kind. Every message names the
 # fix. check_table refuses on a #BAD row and ignores the other "#" rows: check has always
 # ignored lines and keys it does not know.
 check_key_rows() {
   awk '
     BEGIN { q = sprintf("%c", 39) }
+    { sub(/\r$/, "") }
     /^[[:space:]]*#/ { next }
     /^[[:space:]]*$/ { next }
     {

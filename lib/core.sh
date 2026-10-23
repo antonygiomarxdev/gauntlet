@@ -48,12 +48,14 @@ repo_root() {
 }
 
 # config_get <key> [default]: print the last value set for key in
-# .gauntlet/config (key=value lines, # comments skipped), or the default.
+# .gauntlet/config (key=value lines, # comments skipped), or the default. A CRLF file
+# reads like an LF one: the carriage return ending a line is not part of the value.
 config_get() {
   local root file value
   root=$(repo_root) || exit 2
   file="$root/.gauntlet/config"
   if [ -f "$file" ] && value=$(awk -v k="$1" '
+    { sub(/\r$/, "") }
     /^[[:space:]]*#/ { next }
     {
       eq = index($0, "=")

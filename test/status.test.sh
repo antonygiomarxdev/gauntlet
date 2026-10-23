@@ -481,6 +481,16 @@ test_doctor_invalid_check_name_says_what_a_name_may_hold() {
   doctor_one_fail "FAIL bad check key check.my check: check name my check: use letters, digits, - and _"
 }
 
+test_doctor_accepts_a_crlf_config() {
+  mkrepo
+  doctor_install
+  printf 'base=main\r\ntouched=on\r\ncheck.hello=echo hi\r\ncheck.hello.ci=on\r\n' > .gauntlet/config
+  run "$G" doctor
+  assert_eq 0 "$(doctor_fails)" "FAIL lines: $OUT"
+  assert_contains "$OUT" "ok config keys"
+  assert_not_contains "$OUT" "touched must be"
+}
+
 test_doctor_touched_value_fails() {
   mkrepo
   doctor_install

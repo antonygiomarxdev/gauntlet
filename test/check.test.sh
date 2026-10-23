@@ -1393,3 +1393,18 @@ test_report_counts_are_singular_for_one() {
   gate
   assert_contains "$OUT" "gauntlet  ci · 2 rules · "
 }
+
+# A CRLF config: the touched setting and a declared check read the same as with LF.
+test_crlf_config_reads_like_lf() {
+  gate_setup 'x'
+  printf 'touched=on\r\ncheck.hello=echo hi\r\ncheck.hello.paths=src/\r\ncheck.hello.ci=on\r\n' > .gauntlet/config
+  mkdir -p src
+  printf 'y\n' > src/b.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "check --ci: $OUT"
+  assert_contains "$OUT" "check:hello"
+  assert_not_contains "$OUT" "touched must be on or off"
+  assert_not_contains "$OUT" "bad check key"
+}
