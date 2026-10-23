@@ -47,7 +47,7 @@ check_ci() {
 # collected in a body file so the header can carry the whole-run time.
 check_run() {
   local scratch=$1 base_ref=$2 start=$3 root base sha id rf sev fix atb
-  local known=0 n_rules ms end n body new_n=0 global_n=0 baseline_n=0
+  local known=0 n_rules ms end n body new_n=0 global_n=0 touched_n=0 baseline_n=0
   root=$(repo_root) || return 2
   base=$(resolve_base "$base_ref") || return 2
   sha=$(merge_base "$base") || return 2
@@ -101,6 +101,13 @@ check_run() {
       awk -F '\t' '{ printf "  %s  %s → %s\n", $1, $2, $3 }' "$scratch/global.rows" >> "$body"
     fi
     global_n=$(count_global_extra "$scratch/new.rows" "$scratch/global.rows") || return 2
+    cmp_touched "$sha" "$scratch/base.tsv" "$scratch/now/measure.tsv" "$scratch/rules.tsv" \
+      > "$scratch/touched.rows" || return 2
+    if [ -s "$scratch/touched.rows" ]; then
+      printf '[touched]\n' >> "$body"
+      cat "$scratch/touched.rows" >> "$body"
+    fi
+    touched_n=$(awk 'END { print NR }' "$scratch/touched.rows") || return 2
   fi
 
   # Exact: the committed baseline must be byte-equal to what the code measures.
@@ -136,8 +143,9 @@ check_run() {
   awk -F '\t' '{ printf "  %s  %s ms\n", $1, $2 }' "$scratch/now/time.tsv" >> "$body"
 
   # R18: one problem per [new] line, one per [global] rule whose rise its [new]
-  # lines do not account for, one for [baseline]. Shadow and track count nothing.
-  n=$((new_n + global_n + baseline_n))
+  # lines do not account for, one per [touched] line, one for [baseline].
+  # Shadow and track count nothing.
+  n=$((new_n + global_n + touched_n + baseline_n))
 
   end=$(now_ms)
   ms=$((end - start))
@@ -225,4 +233,78 @@ violation_lines() {
     for (i = 0; i < 4; i++) sub(/^[^\t]*\t/, "", m)
     printf "  %s:%s  %s  %s\n      fix: %s\n", $2, $3, $1, m, $4
   }' "$1"
+}
+
+# cmp_touched <merge-base> <base.tsv> <measure.tsv> <rules.tsv>: the touched
+# gate (opt-in via config touched=on). Each file the branch changes must come
+# out with less block debt than it had at the merge-base. Prints one line per
+# file that breaks that rule and returns 0; prints nothing when the gate is off.
+# Debt counts only block rules that exist at base, and waived rows are skipped.
+cmp_touched() {
+  local mb=$1 base=$2 now=$3 rules=$4 touched scratch status=0
+  touched=$(config_get touched off) || return 2
+  [ "$touched" = on ] || return 0
+  scratch=$(mktemp -d) || return 2
+  cmp_touched_in "$mb" "$base" "$now" "$rules" "$scratch" || status=$?
+  rm -rf "$scratch"
+  return "$status"
+}
+
+# cmp_touched_in <merge-base> <base.tsv> <measure.tsv> <rules.tsv> <scratch>:
+# the work of cmp_touched, with intermediate files kept in <scratch>.
+cmp_touched_in() {
+  local mb=$1 base=$2 now=$3 rules=$4 scratch=$5
+  # R15: `.gauntlet/` is never judged. R100 (pure rename) and D are skipped.
+  git -c core.quotepath=off diff -M --name-status "$mb" HEAD > "$scratch/diff" || return 2
+  awk -F '\t' '
+    index($2, ".gauntlet/") == 1 || index($3, ".gauntlet/") == 1 { next }
+    $1 == "A" || $1 == "M" { print $1 "\t" $2 "\t" $2; next }
+    substr($1, 1, 1) == "R" && $1 != "R100" { print "R\t" $2 "\t" $3 }
+  ' "$scratch/diff" > "$scratch/changes" || return 2
+
+  # sums: fingerprint rows of block rules that exist at base, for the changed
+  # paths only. B rows are the base's debt at the old paths, N rows the current
+  # debt at the new paths. The base is never re-measured.
+  GL_CH="$scratch/changes" GL_RULES="$rules" GL_BASE="$base" GL_NOW="$now" awk -F '\t' '
+    FILENAME == ENVIRON["GL_CH"] { old[$2] = 1; nw[$3] = 1; next }
+    FILENAME == ENVIRON["GL_RULES"] { if ($2 == "block" && $3 == "1") blk[$1] = 1; next }
+    FILENAME == ENVIRON["GL_BASE"] { if (($2 in old) && ($1 in blk)) print "B\t" $1 "\t" $2 "\t" $4; next }
+    FILENAME == ENVIRON["GL_NOW"] { if (($2 in nw) && ($1 in blk)) print "N\t" $1 "\t" $2 "\t" $4 }
+  ' "$scratch/changes" "$rules" "$base" "$now" > "$scratch/sums" || return 2
+
+  # Waivers drop a row from the totals (is_waived is a stub until waivers land).
+  : > "$scratch/kept"
+  local row rest rule path
+  while IFS= read -r row; do
+    rest=${row#*"$DETECT_TAB"}
+    rule=${rest%%"$DETECT_TAB"*}
+    rest=${rest#*"$DETECT_TAB"}
+    path=${rest%%"$DETECT_TAB"*}
+    if ! is_waived "$rule" "$path"; then
+      printf '%s\n' "$row" >> "$scratch/kept"
+    fi
+  done < "$scratch/sums"
+
+  GL_CH="$scratch/changes" GL_KEPT="$scratch/kept" awk -F '\t' '
+    FILENAME == ENVIRON["GL_CH"] { st[++n] = $1; old[n] = $2; nw[n] = $3; next }
+    FILENAME == ENVIRON["GL_KEPT"] {
+      if ($1 == "B") base[$3] += $4
+      else now[$3] += $4
+      next
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        p = nw[i]
+        c = now[p] + 0
+        if (st[i] == "A") { b = 0; bad = c > 0; why = "must be 0" }
+        else {
+          b = base[old[i]] + 0
+          if (b > 0) { bad = c >= b; why = "must go down" }
+          else { bad = c > 0; why = "must stay 0" }
+        }
+        if (bad) printf "  %s  %d → %d  (%s)\n", p, b, c, why
+      }
+    }
+  ' "$scratch/changes" "$scratch/kept" > "$scratch/touched" || return 2
+  cat "$scratch/touched"
 }

@@ -297,3 +297,128 @@ test_added_file_is_measured() {
   rebaseline
   assert_contains "$(cat .gauntlet/baseline.tsv)" "v.ts"
 }
+
+# touched_on: turn the touched gate on for the branch under test.
+touched_on() {
+  printf 'touched=on\n' > .gauntlet/config
+}
+
+test_touched_off_by_default() {
+  gate_setup 'TODO here'
+  printf 'TODO here\nok\n' > a.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[touched]"
+}
+
+test_touched_requires_decrease() {
+  gate_setup 'TODO here'
+  touched_on
+  printf 'TODO here\nok\n' > a.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "[touched]"
+  assert_contains "$OUT" "  a.ts  1 → 1  (must go down)"
+  assert_contains "$OUT" "FAIL (1 problems)"
+}
+
+test_touched_path_with_space() {
+  mkrepo
+  mkdir -p "my dir"
+  printf 'TODO here\n' > "my dir/ä b.ts"
+  rule todo paths='**/*.ts'
+  rebaseline
+  commit_all main
+  must git checkout -q -b feat
+  touched_on
+  printf 'TODO here\nok\n' > "my dir/ä b.ts"
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  my dir/ä b.ts  1 → 1  (must go down)"
+}
+
+test_pay_one_any_rule_passes() {
+  mkrepo
+  printf 'TODO here\nFIXME here\n' > a.ts
+  rule todo paths='**/*.ts'
+  rule fixme paths='**/*.ts' detector="rg --with-filename --line-number --no-heading 'FIXME' {files}"
+  rebaseline
+  commit_all main
+  must git checkout -q -b feat
+  touched_on
+  printf 'FIXME here\n' > a.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[touched]"
+}
+
+test_added_file_must_be_zero() {
+  gate_setup 'ok'
+  touched_on
+  printf 'TODO x\n' > c.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "[touched]"
+  assert_contains "$OUT" "  c.ts  0 → 1  (must be 0)"
+}
+
+test_pure_rename_skipped() {
+  gate_setup 'TODO here'
+  touched_on
+  must git mv a.ts b.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_not_contains "$OUT" "[touched]"
+}
+
+test_rename_with_edit_follows_old_path() {
+  gate_setup 'TODO here'
+  touched_on
+  must git mv a.ts b.ts
+  printf 'TODO here\nok\n' > b.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  b.ts  1 → 1  (must go down)"
+}
+
+test_onboarding_branch_skips_touched() {
+  mkrepo
+  printf 'TODO here\n' > a.ts
+  rule todo paths='**/*.ts'
+  must git rm -q .gauntlet/baseline.tsv
+  commit_all main-no-baseline
+  must git checkout -q -b feat7
+  touched_on
+  printf 'TODO here\nok\n' > a.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status"
+  assert_contains "$OUT" "no baseline at base"
+  assert_not_contains "$OUT" "[touched]"
+}
+
+test_rule_added_here_not_counted() {
+  gate_setup 'TODO here'
+  touched_on
+  printf 'ok\nFIXME one\nFIXME two\n' > a.ts
+  rule fixme paths='**/*.ts' detector="rg --with-filename --line-number --no-heading 'FIXME' {files}"
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[touched]"
+}
