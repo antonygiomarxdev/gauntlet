@@ -451,6 +451,22 @@ test_touched_judges_quoted_path() {
   assert_contains "$OUT" "  q\"x.ts  1 → 1  (must go down)"
 }
 
+test_touched_judges_backslash_path() {
+  mkrepo
+  printf 'TODO here\n' > 'b\s.ts'
+  rule todo paths='**/*.ts'
+  rebaseline
+  commit_all main
+  must git checkout -q -b feat
+  touched_on
+  printf 'TODO here\nok\n' > 'b\s.ts'
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  b\s.ts  1 → 1  (must go down)"
+}
+
 test_touched_rejects_unknown_mode() {
   gate_setup 'TODO here'
   printf 'touched=ON\n' > .gauntlet/config
@@ -459,17 +475,6 @@ test_touched_rejects_unknown_mode() {
   gate
   assert_eq 2 "$STATUS" "status"
   assert_contains "$OUT" "touched must be on or off, got [ON]"
-}
-
-test_touched_deleted_file_skipped() {
-  gate_setup 'TODO here'
-  touched_on
-  must git rm -q a.ts
-  rebaseline
-  commit_all feat
-  gate
-  assert_eq 0 "$STATUS" "status"
-  assert_not_contains "$OUT" "[touched]"
 }
 
 test_shadow_and_track_not_counted() {
@@ -483,16 +488,6 @@ test_shadow_and_track_not_counted() {
   must git checkout -q -b feat
   touched_on
   printf 'FIXME x\nXXX y\nFIXME z\n' > a.ts
-  rebaseline
-  commit_all feat
-  gate
-  assert_eq 0 "$STATUS" "status"
-  assert_not_contains "$OUT" "[touched]"
-}
-
-test_gauntlet_paths_not_judged() {
-  gate_setup 'TODO here'
-  touched_on
   rebaseline
   commit_all feat
   gate

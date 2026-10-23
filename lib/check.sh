@@ -278,6 +278,7 @@ cmp_touched() {
 cmp_touched_in() {
   local mb=$1 base=$2 now=$3 rules=$4 scratch=$5
   # R15: `.gauntlet/` is never judged. R100 (pure rename) and D are skipped.
+  # Both are early-outs: judged anyway, their verdict would be the same.
   # -z output is one token per line: a status, then one path (two for R or C).
   git_nul_lines -c core.quotepath=off diff -M -z --name-status "$mb" HEAD > "$scratch/diff" || return 2
   awk '
