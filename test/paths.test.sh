@@ -129,3 +129,53 @@ test_all_files_lists_unmerged_path_once() {
   COUNT=$(printf '%s\n' "$OUT" | awk '$0 == "f" { n++ } END { print n + 0 }')
   assert_eq 1 "$COUNT" "f count"
 }
+
+test_tracked_files_omits_untracked() {
+  mkrepo
+  printf 'x\n' > t.ts
+  must git add t.ts
+  must git commit -q -m t
+  printf 'x\n' > u.ts
+  paths_lib
+  OUT=$(tracked_files | awk "!/^\.gauntlet\//")
+  assert_eq "t.ts" "$OUT" "tracked only"
+}
+
+test_tracked_files_omits_deleted_from_disk() {
+  mkrepo
+  printf 'x\n' > a.ts
+  printf 'x\n' > b.ts
+  must git add a.ts b.ts
+  must git commit -q -m ab
+  must rm b.ts
+  paths_lib
+  OUT=$(tracked_files | awk "!/^\.gauntlet\//")
+  assert_eq "a.ts" "$OUT" "deletion left unstaged"
+}
+
+test_tracked_files_lists_staged_new_file() {
+  mkrepo
+  printf 'x\n' > n.ts
+  must git add n.ts
+  paths_lib
+  OUT=$(tracked_files | awk "!/^\.gauntlet\//")
+  assert_eq "n.ts" "$OUT" "staged new file"
+}
+
+test_tracked_files_lists_unmerged_path_once() {
+  mkrepo
+  printf 'a\n' > f.txt
+  must git add f.txt
+  must git commit -q -m base
+  must git checkout -q -b other
+  printf 'x\n' > f.txt
+  must git commit -q -am other
+  must git checkout -q main
+  printf 'm\n' > f.txt
+  must git commit -q -am main
+  run git merge -q other
+  assert_eq 1 "$STATUS" "merge conflicts"
+  paths_lib
+  OUT=$(tracked_files | awk "!/^\.gauntlet\//")
+  assert_eq "f.txt" "$OUT" "unmerged path once"
+}

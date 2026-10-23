@@ -173,7 +173,7 @@ test_baseline_skips_deleted_tracked_file() {
   must git commit -q -m "add b"
   must rm b.ts
   rule todo paths='**/*.ts'
-  must git add -A
+  must git add a.ts
   run "$G" baseline
   assert_eq 0 "$STATUS" "status"
   assert_eq "$(printf 'todo\ta.ts\tTODO here\t1')" "$(cat .gauntlet/baseline.tsv)" "baseline"
