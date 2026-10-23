@@ -267,6 +267,12 @@ doctor_ok() {
   printf 'ok %s\n' "$(path_spell "$1")"
 }
 
+# doctor_note <text>: print a note line: something doctor could not check, said plainly. It is
+# neither a pass nor a failure, so it is not an ok line and does not count.
+doctor_note() {
+  printf 'note %s\n' "$(path_spell "$1")"
+}
+
 # doctor_fail <thing>: print a FAIL line and count it. The text is "<thing>: <how to fix>".
 doctor_fail() {
   printf 'FAIL %s\n' "$(path_spell "$1")"
@@ -300,6 +306,8 @@ doctor_checks() {
   rule_ids > "$scratch/ids" || return 2
   : > "$scratch/causes" || return 2
   doctor_tools "$root" "$scratch" || return 2
+  doctor_runner "$root"
+  doctor_formats "$root" "$scratch" || return 2
   doctor_hooks "$root" "$scratch" || return 2
   doctor_ignored || return 2
   doctor_base || return 2
@@ -334,7 +342,7 @@ doctor_tools() {
     fi
     case "$tool" in
       *=*|*\$*|*\'*|*\"*|*\`*|\~*)
-        doctor_ok "tool $id: cannot check ($tool)"
+        doctor_note "tool for rule $id not checked: the detector starts with $tool, which is not a plain command name, so doctor cannot tell whether it exists"
         continue
         ;;
     esac
@@ -354,13 +362,34 @@ doctor_tools() {
   return 0
 }
 
-# doctor_runner <root>: the vendored runner must load. `--version` sources the entry
-# point's libraries before it does anything, so it proves that every lib file loads
-# too. The hooks call this file, so a broken copy would fail every commit.
+# runner_lib_files <entry-point>: print the lib files the entry point sources, one name per line:
+# the <name> of each `. "$GAUNTLET_BIN/../lib/<name>"` line of bin/gauntlet.
+runner_lib_files() {
+  # shellcheck disable=SC2016 # the sed program matches the literal text $GAUNTLET_BIN
+  sed -n 's|^\. "\$GAUNTLET_BIN/\.\./lib/\(.*\)"[[:space:]]*$|\1|p' "$1"
+}
+
+# doctor_runner <root>: the vendored runner must be complete and load. The lib files it sources are
+# read from the vendored bin/gauntlet itself, so a runner of another version is judged by its own
+# list, and each must be there and not empty (an emptied or half-copied .gauntlet/lib is the case
+# nothing else names). Then `--version` sources the entry point's libraries before it does anything,
+# which proves they load too. The hooks call this file, so a broken copy would fail every commit.
 doctor_runner() {
-  local root=$1
-  if [ -f "$root/.gauntlet/bin/gauntlet" ] && [ -x "$root/.gauntlet/bin/gauntlet" ] \
-    && "$root/.gauntlet/bin/gauntlet" --version < /dev/null > /dev/null 2>&1; then
+  local root=$1 bin name missing=''
+  bin="$root/.gauntlet/bin/gauntlet"
+  if [ -f "$bin" ] && [ -x "$bin" ]; then
+    while IFS= read -r name; do
+      if [ ! -s "$root/.gauntlet/lib/$name" ]; then missing="$missing${missing:+, }$name"; fi
+    done <<LIBS
+$(runner_lib_files "$bin")
+LIBS
+    if [ -n "$missing" ]; then
+      doctor_fail ".gauntlet/lib lacks files the runner sources ($missing): run gauntlet install to re-vendor"
+      return 0
+    fi
+  fi
+  if [ -f "$bin" ] && [ -x "$bin" ] \
+    && "$bin" --version < /dev/null > /dev/null 2>&1; then
     doctor_ok "runner .gauntlet/bin/gauntlet"
   else
     doctor_fail ".gauntlet/bin or .gauntlet/lib is broken or missing: run gauntlet install from a gauntlet checkout (a .gitignore entry such as lib/ also drops .gauntlet/lib)"
@@ -416,12 +445,11 @@ doctor_formats() {
   return 0
 }
 
-# doctor_hooks <root> <scratch>: the runner must load, then the gate line must be in each
-# hook install-hooks would use. A lefthook or prek config needs the snippet in it (HOOK-AC7).
+# doctor_hooks <root> <scratch>: the gate line must be in each hook install-hooks would use. A
+# lefthook or prek config needs the snippet in it (HOOK-AC7). The runner and the formats are
+# checked by doctor_runner and doctor_formats before it.
 doctor_hooks() {
   local root=$1 scratch=$2 target kind dir f execcheck=1
-  doctor_runner "$root"
-  doctor_formats "$root" "$scratch" || return 2
   target=$(hook_target) || return 2
   kind=${target%% *}
   dir=${target#"$kind"}

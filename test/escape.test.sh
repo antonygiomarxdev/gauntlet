@@ -689,3 +689,24 @@ SHIM
   assert_contains "$OUT" 'gauntlet: cannot read core.hooksPath: fatal: bad value x\x1b[2Jy'
   assert_clean "$OUT" "the hooksPath message"
 }
+
+# The files doctor names are read from the vendored bin/gauntlet, so their names are text somebody wrote.
+test_doctor_prints_the_lib_files_it_names_escaped() {
+  mkrepo
+  must cp -R "$ROOT/bin" "$ROOT/lib" .gauntlet/
+  printf '. "$GAUNTLET_BIN/../lib/x%s.sh"\n' "$(printf '\033[2J')" >> .gauntlet/bin/gauntlet
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" 'FAIL .gauntlet/lib lacks files the runner sources (x\x1b[2J.sh)'
+  assert_clean "$OUT" "doctor"
+}
+
+# The note for a detector doctor cannot check prints the word it saw, which is the project's text.
+test_doctor_prints_the_unchecked_tool_word_escaped() {
+  mkrepo
+  rule s1 engine=linter "detector=\"r$(printf '\033[2J')g\" x {files}" paths=nothing/**
+  must cp -R "$ROOT/bin" "$ROOT/lib" .gauntlet/
+  run "$G" doctor
+  assert_contains "$OUT" 'note tool for rule s1 not checked: the detector starts with "r\x1b[2Jg"'
+  assert_clean "$OUT" "doctor"
+}

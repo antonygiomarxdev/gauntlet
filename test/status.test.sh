@@ -667,7 +667,8 @@ test_doctor_runner_lib_removed_fails() {
   mkrepo
   doctor_install
   must rm -rf .gauntlet/lib
-  doctor_one_fail "FAIL .gauntlet/bin or .gauntlet/lib is broken or missing"
+  doctor_one_fail "FAIL .gauntlet/lib lacks files the runner sources (core.sh"
+  assert_contains "$OUT" "run gauntlet install to re-vendor"
 }
 
 test_doctor_runner_bin_directory_fails() {
@@ -704,7 +705,7 @@ test_doctor_runner_checks_every_lib_file() {
     must rm -f "$f"
     run "$G" doctor
     assert_eq 1 "$STATUS" "doctor with $f removed"
-    assert_contains "$OUT" "FAIL .gauntlet/bin or .gauntlet/lib is broken or missing"
+    assert_contains "$OUT" "FAIL .gauntlet/lib lacks files the runner sources (${f##*/}): run gauntlet install to re-vendor"
     must cp "$TMP/lib.bak" "$f"
   done
 }
@@ -774,7 +775,7 @@ test_doctor_no_vendored_lib_prints_only_the_runner_fail() {
   rule r1
   doctor_install
   must rm -rf .gauntlet/lib
-  doctor_one_fail "FAIL .gauntlet/bin or .gauntlet/lib is broken or missing"
+  doctor_one_fail "FAIL .gauntlet/lib lacks files the runner sources"
 }
 
 test_doctor_project_format_needs_no_vendored_copy() {
@@ -866,11 +867,12 @@ test_doctor_tool_shapes_are_not_checked() {
   run "$G" doctor
   assert_eq 0 "$STATUS" "doctor"
   assert_eq 0 "$(doctor_fails)" "FAIL lines"
-  assert_contains "$OUT" "ok tool s1: cannot check ('rg')"
-  assert_contains "$OUT" "ok tool s2: cannot check (\"rg\")"
-  assert_contains "$OUT" "ok tool s3: cannot check (FOO=1)"
-  assert_contains "$OUT" "ok tool s4: cannot check (\$LINT)"
-  assert_contains "$OUT" "ok tool s5: cannot check (~/bin/tool)"
+  assert_contains "$OUT" "note tool for rule s1 not checked: the detector starts with 'rg', which is not a plain command name, so doctor cannot tell whether it exists"
+  assert_contains "$OUT" "note tool for rule s2 not checked: the detector starts with \"rg\", which is not a plain command name"
+  assert_contains "$OUT" "note tool for rule s3 not checked: the detector starts with FOO=1, which is not a plain command name"
+  assert_contains "$OUT" "note tool for rule s4 not checked: the detector starts with \$LINT, which is not a plain command name"
+  assert_contains "$OUT" "note tool for rule s5 not checked: the detector starts with ~/bin/tool, which is not a plain command name"
+  assert_not_contains "$OUT" "ok tool s"
 }
 
 test_doctor_unknown_engine_is_one_fail() {
@@ -1779,4 +1781,75 @@ SHIM
   run env PATH="$TMP/shim:$PATH" "$G" doctor
   assert_eq 2 "$STATUS" "doctor: $OUT"
   assert_contains "$OUT" "gauntlet: cannot read core.hooksPath: fatal: simulated failure reading core.hooksPath"
+}
+
+# I-final (review B): doctor could not tell an emptied or half-copied .gauntlet/lib. It reads the list
+# of lib files from the vendored bin/gauntlet itself and names the ones that are missing or empty.
+test_doctor_names_a_missing_lib_file() {
+  mkrepo
+  doctor_install
+  must rm .gauntlet/lib/check.sh
+  doctor_one_fail "FAIL .gauntlet/lib lacks files the runner sources (check.sh): run gauntlet install to re-vendor"
+}
+
+test_doctor_names_every_file_of_an_emptied_lib_directory() {
+  local f
+  mkrepo
+  doctor_install
+  must rm -rf .gauntlet/lib
+  must mkdir .gauntlet/lib
+  doctor_one_fail "FAIL .gauntlet/lib lacks files the runner sources ("
+  for f in "$ROOT"/lib/*.sh; do
+    assert_contains "$OUT" "${f##*/}"
+  done
+  assert_contains "$OUT" "): run gauntlet install to re-vendor"
+}
+
+test_doctor_names_a_lib_file_that_was_cut_to_nothing() {
+  mkrepo
+  doctor_install
+  : > .gauntlet/lib/rules.sh
+  doctor_one_fail "FAIL .gauntlet/lib lacks files the runner sources (rules.sh): run gauntlet install to re-vendor"
+}
+
+# The list is the vendored runner's own: a lib file it sources and the checkout does not have is
+# missing; a file it no longer sources is not demanded.
+test_doctor_reads_the_list_of_lib_files_from_the_vendored_runner() {
+  mkrepo
+  doctor_install
+  # shellcheck disable=SC2016 # the line is the literal text of an entry point
+  printf '. "$GAUNTLET_BIN/../lib/extra.sh"\n' >> .gauntlet/bin/gauntlet
+  run "$G" doctor
+  assert_contains "$OUT" "FAIL .gauntlet/lib lacks files the runner sources (extra.sh): run gauntlet install to re-vendor"
+  must cp "$ROOT/bin/gauntlet" .gauntlet/bin/gauntlet
+  grep -v 'lib/status.sh' "$ROOT/bin/gauntlet" > .gauntlet/bin/gauntlet
+  must chmod +x .gauntlet/bin/gauntlet
+  must rm .gauntlet/lib/status.sh
+  run "$G" doctor
+  assert_not_contains "$OUT" "lacks files the runner sources"
+}
+
+test_doctor_says_ok_for_a_complete_runner() {
+  mkrepo
+  doctor_install
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "ok runner .gauntlet/bin/gauntlet"
+  assert_not_contains "$OUT" "lacks files"
+}
+
+# doctor_hooks used to run the runner and format checks too; each is its own check now, in the
+# same order, so the lines come out as before.
+test_doctor_prints_runner_formats_and_hooks_in_that_order() {
+  local runner formats hooks
+  mkrepo
+  rule fmt
+  doctor_install
+  must rm .gauntlet/lib/formats/path-line.md
+  run "$G" doctor
+  runner=$(printf '%s\n' "$OUT" | grep -n '^ok runner \.gauntlet' | cut -d: -f1)
+  formats=$(printf '%s\n' "$OUT" | grep -n '^FAIL built-in format path-line' | cut -d: -f1)
+  hooks=$(printf '%s\n' "$OUT" | grep -n '^ok pre-commit gate' | cut -d: -f1)
+  if [ -z "$runner" ] || [ -z "$formats" ] || [ -z "$hooks" ]; then fail "a line is missing: $OUT"; fi
+  if [ "$runner" -ge "$formats" ] || [ "$formats" -ge "$hooks" ]; then fail "runner $runner, formats $formats, hooks $hooks: $OUT"; fi
 }
