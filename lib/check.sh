@@ -164,6 +164,11 @@ check_run() {
     printf 'rule-tests\t%s\n' "$((t1 - t0))" >> "$scratch/check.time"
     # A setup that cannot run the tests still prints what it found, then exits 2.
     if [ "$rt_rc" -gt 1 ]; then broken=1; fi
+    # Status 1 is what says a test failed, not the lines it printed: a failing run
+    # with nothing to count is still a problem.
+    if [ "$rt_rc" -eq 1 ] && [ ! -s "$scratch/rule-tests.out" ]; then
+      printf '  rule-tests  failed  no failure was reported\n' > "$scratch/rule-tests.out" || return 2
+    fi
     rt_n=$(awk 'END { print NR }' "$scratch/rule-tests.out") || return 2
     if [ -s "$scratch/rule-tests.out" ]; then
       printf '[rule-tests]\n' >> "$body"

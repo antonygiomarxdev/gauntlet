@@ -532,6 +532,54 @@ test_rule_change_runs_cases() {
   assert_contains "$OUT" "todo.good.txt  good case flagged"
 }
 
+# A detector that prints nothing and exits 1 says "no matches": on a bad case that is a
+# failure, with a message, at test-rules and at the gate.
+test_a_bad_case_with_no_output_from_the_detector_fails_the_rule_tests() {
+  mkrepo
+  printf 'x\n' > a.ts
+  rule todo paths='**/*.ts' 'detector=sh -c "exit 1" ignored {files}'
+  cases_of todo 'TODO x'
+  rebaseline
+  commit_all main
+  must git checkout -q -b feat
+  printf '# changed\n' >> .gauntlet/rules/todo.md
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "check --ci: $OUT"
+  assert_contains "$OUT" "todo  todo.bad.txt  bad case not flagged"
+  assert_contains "$OUT" "FAIL (1 problems)"
+  run "$G" test-rules
+  assert_eq 1 "$STATUS" "test-rules: $OUT"
+  assert_contains "$OUT" "todo  todo.bad.txt  bad case not flagged"
+}
+
+# The gate takes a failing run_rule_tests (status 1) as a problem even when it printed no
+# line to count: the status is what says the tests failed, not the number of lines. No
+# real run prints nothing and fails; the function is replaced here to say so.
+test_rule_tests_status_1_without_output_still_fails_the_gate() {
+  mkrepo
+  printf 'x\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  rebaseline
+  commit_all main
+  must git checkout -q -b feat
+  printf '# changed\n' >> .gauntlet/rules/todo.md
+  rebaseline
+  commit_all feat
+  run bash -c '
+    set -eu
+    for f in core rules paths detect measure cases base exceptions check; do . "$1/lib/$f.sh"; done
+    run_rule_tests() { return 1; }
+    check_ci --ci --base main
+  ' _ "$ROOT"
+  assert_eq 1 "$STATUS" "check --ci: $OUT"
+  assert_contains "$OUT" "[rule-tests]"
+  assert_contains "$OUT" "FAIL (1 problems)"
+  assert_not_contains "$OUT" "gauntlet: ok"
+}
+
 test_formats_change_runs_rule_tests() {
   mkrepo
   printf 'x\n' > a.ts
