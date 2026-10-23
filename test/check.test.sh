@@ -1146,3 +1146,98 @@ test_ripgrep_config_does_not_change_the_baseline() {
   assert_eq 0 "$STATUS" "baseline with a ripgrep config: $OUT"
   must cmp "$TMP/plain.tsv" .gauntlet/baseline.tsv
 }
+
+# R32: an unreadable base is not an absent one. With the base's baseline blob gone, the
+# tree still lists it: the gate exits 2 and never drops to onboarding, which would turn
+# off the new, global, shadow and track checks.
+test_ci_unreadable_base_baseline_is_exit_2_not_onboarding() {
+  gate_setup 'TODO x'
+  printf 'TODO x\nTODO y\n' > a.ts
+  rebaseline
+  commit_all feat
+  unreadable_object main:.gauntlet/baseline.tsv
+  gate
+  assert_eq 2 "$STATUS" "check --ci: $OUT"
+  assert_not_contains "$OUT" "no baseline at base"
+  assert_not_contains "$OUT" "gauntlet: ok"
+}
+
+test_staged_unreadable_head_baseline_is_exit_2_not_onboarding() {
+  gate_setup 'TODO x
+TODO z'
+  printf 'TODO x\n' > a.ts
+  rebaseline
+  must git add .gauntlet/baseline.tsv
+  unreadable_object HEAD:.gauntlet/baseline.tsv
+  run "$G" check --staged
+  assert_eq 2 "$STATUS" "check --staged: $OUT"
+  assert_not_contains "$OUT" "no baseline at HEAD"
+  assert_not_contains "$OUT" "gauntlet: ok"
+}
+
+# r32_ci_setup: main with one TODO and its baseline, feat with two; the gate has
+# something to compare. r32_refused: the gate stopped at exit 2 with git's error and
+# did not fall back to onboarding.
+r32_ci_setup() {
+  gate_setup 'TODO x'
+  printf 'TODO x\nTODO y\n' > a.ts
+  rebaseline
+  commit_all feat
+}
+
+r32_refused() {
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "simulated failure"
+  assert_not_contains "$OUT" "no baseline at"
+  assert_not_contains "$OUT" "gauntlet: ok"
+}
+
+# Each read of the base has its own site in the gate. A listing that fails at any of
+# them is exit 2: absent and unreadable are different answers.
+test_ci_failed_listing_of_a_rule_at_base_is_exit_2() {
+  r32_ci_setup
+  git_fails ls-tree .gauntlet/rules/todo.md
+  gate
+  r32_refused
+}
+
+test_ci_failed_listing_of_the_baseline_at_base_is_exit_2() {
+  r32_ci_setup
+  git_fails ls-tree .gauntlet/baseline.tsv "$(git rev-parse main)"
+  gate
+  r32_refused
+}
+
+test_ci_failed_listing_of_the_rules_dir_at_base_is_exit_2() {
+  r32_ci_setup
+  git_fails ls-tree .gauntlet/rules
+  gate
+  r32_refused
+}
+
+test_staged_failed_listing_of_a_rule_at_head_is_exit_2() {
+  gate_setup 'TODO x'
+  printf 'TODO x\n' > b.ts
+  must git add b.ts
+  git_fails ls-tree .gauntlet/rules/todo.md HEAD
+  run "$G" check --staged
+  r32_refused
+}
+
+test_staged_failed_listing_of_the_baseline_at_head_is_exit_2() {
+  gate_setup 'TODO x'
+  printf 'TODO x\n' > b.ts
+  must git add b.ts
+  git_fails ls-tree .gauntlet/baseline.tsv HEAD
+  run "$G" check --staged
+  r32_refused
+}
+
+test_staged_failed_listing_of_the_baseline_in_the_index_is_exit_2() {
+  gate_setup 'TODO x'
+  printf 'TODO x\n' > b.ts
+  must git add b.ts
+  git_fails ls-files .gauntlet/baseline.tsv
+  run "$G" check --staged
+  r32_refused
+}

@@ -174,3 +174,75 @@ test_at_base_bad_sha_dies() {
   assert_eq 2 "$STATUS" "empty sha status"
   assert_contains "$OUT" "bad sha:"
 }
+
+# base_has answers three ways: 0 present, 1 absent, 2 when git cannot tell.
+test_base_has_present_absent_and_directory() {
+  mkrepo
+  base_lib
+  must mkdir -p "my dir"
+  printf 'hi\n' > "my dir/a b.txt"
+  rule x
+  must git add -A
+  must git commit -q -m two
+  sha=$(git rev-parse HEAD)
+  run base_has "$sha" "my dir/a b.txt"
+  assert_eq 0 "$STATUS" "file with spaces: $OUT"
+  run base_has "$sha" ".gauntlet/rules"
+  assert_eq 0 "$STATUS" "directory: $OUT"
+  run base_has "$sha" "my dir/missing.txt"
+  assert_eq 1 "$STATUS" "absent file: $OUT"
+  assert_eq "" "$OUT" "absent is silent"
+  run base_has "$sha" "my dir/*.txt"
+  assert_eq 1 "$STATUS" "a glob names nothing: $OUT"
+}
+
+test_base_has_reads_root_relative_paths_from_a_subdirectory() {
+  mkrepo
+  base_lib
+  sha=$(git rev-parse HEAD)
+  must mkdir -p sub
+  must cd sub
+  run base_has "$sha" ".gauntlet/config"
+  assert_eq 0 "$STATUS" "root path from sub: $OUT"
+}
+
+test_base_has_returns_2_on_a_git_error_and_says_it_once() {
+  mkrepo
+  base_lib
+  run base_has 0000000000000000000000000000000000000000 .gauntlet/config
+  assert_eq 2 "$STATUS" "bad sha: $OUT"
+  assert_contains "$OUT" "0000000000000000000000000000000000000000"
+  assert_contains "$OUT" ".gauntlet/config"
+  assert_eq 1 "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" "one message line: $OUT"
+}
+
+# A blob git cannot read is not an absent file: the tree still lists it, so base_has
+# says present, and at_base fails instead of printing nothing.
+test_at_base_fails_on_an_unreadable_blob() {
+  mkrepo
+  base_lib
+  printf 'unique content\n' > f.txt
+  must git add -A
+  must git commit -q -m two
+  sha=$(git rev-parse HEAD)
+  unreadable_object "$sha:f.txt"
+  run base_has "$sha" f.txt
+  assert_eq 0 "$STATUS" "the tree still lists it: $OUT"
+  run at_base "$sha" f.txt
+  [ "$STATUS" -ne 0 ] || fail "at_base printed an unreadable blob as if it were absent: $OUT"
+}
+
+test_index_has_present_absent_and_error() {
+  mkrepo
+  base_lib
+  run index_has .gauntlet/baseline.tsv
+  assert_eq 0 "$STATUS" "in the index: $OUT"
+  run index_has nothing.txt
+  assert_eq 1 "$STATUS" "not in the index: $OUT"
+  run index_has ".gauntlet/base*.tsv"
+  assert_eq 1 "$STATUS" "a glob names nothing: $OUT"
+  printf 'not an index' > .git/index
+  run index_has .gauntlet/baseline.tsv
+  assert_eq 2 "$STATUS" "unreadable index: $OUT"
+  assert_contains "$OUT" ".gauntlet/baseline.tsv"
+}

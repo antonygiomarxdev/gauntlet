@@ -44,7 +44,7 @@ check_ci() {
 check_run() {
   local scratch=$1 base_ref=$2 start=$3 root base sha id rf sev fix atb
   local known=0 n_rules ms end n body new_n=0 global_n=0 touched_n=0 baseline_n=0
-  local loosened_n=0 rt_n=0 rt_rc=0 checks_n=0 broken=0 t0 t1
+  local loosened_n=0 rt_n=0 rt_rc=0 checks_n=0 broken=0 t0 t1 rc
   root=$(repo_root) || return 2
   touched_mode > /dev/null || return 2
   validate_rules || return 2
@@ -66,18 +66,25 @@ check_run() {
     rf="$root/.gauntlet/rules/$id.md"
     sev=$(rule_get "$rf" severity) || return 2
     fix=$(rule_get "$rf" fix) || return 2
-    atb=0
-    if git cat-file -e "$sha:.gauntlet/rules/$id.md" 2>/dev/null; then atb=1; fi
+    rc=0
+    base_has "$sha" ".gauntlet/rules/$id.md" || rc=$?
+    case "$rc" in 0) atb=1 ;; 1) atb=0 ;; *) return 2 ;; esac
     printf '%s\t%s\t%s\t%s\n' "$id" "$sev" "$atb" "$fix" >> "$scratch/rules.tsv"
   done < "$scratch/ids"
 
   # The base's baseline, never re-measured. Absent means onboarding: checks
   # new, global, shadow and track are skipped; exact still runs.
   : > "$scratch/base.tsv"
-  if git cat-file -e "$sha:.gauntlet/baseline.tsv" 2>/dev/null; then
-    known=1
-    at_base "$sha" .gauntlet/baseline.tsv > "$scratch/base.tsv" || return 2
-  fi
+  rc=0
+  base_has "$sha" .gauntlet/baseline.tsv || rc=$?
+  case "$rc" in
+    0)
+      known=1
+      at_base "$sha" .gauntlet/baseline.tsv > "$scratch/base.tsv" || return 2
+      ;;
+    1) ;;
+    *) return 2 ;;
+  esac
 
   # located.byline: located rows in line order within each fingerprint, so the
   # last occurrences of a key are the new ones.
@@ -131,14 +138,20 @@ check_run() {
 
   # Loosening runs even on the onboarding branch; it is skipped only when the
   # base has no rules to compare with at all.
-  if git cat-file -e "$sha:.gauntlet/rules" 2>/dev/null; then
-    cmp_loosened "$sha" > "$scratch/loosened.rows" || return 2
-    if [ -s "$scratch/loosened.rows" ]; then
-      printf '[loosened]\n' >> "$body"
-      awk -F '\t' '{ printf "  %s  %s\n", $1, $2 }' "$scratch/loosened.rows" >> "$body"
-    fi
-    loosened_n=$(awk 'END { print NR }' "$scratch/loosened.rows") || return 2
-  fi
+  rc=0
+  base_has "$sha" .gauntlet/rules || rc=$?
+  case "$rc" in
+    0)
+      cmp_loosened "$sha" > "$scratch/loosened.rows" || return 2
+      if [ -s "$scratch/loosened.rows" ]; then
+        printf '[loosened]\n' >> "$body"
+        awk -F '\t' '{ printf "  %s  %s\n", $1, $2 }' "$scratch/loosened.rows" >> "$body"
+      fi
+      loosened_n=$(awk 'END { print NR }' "$scratch/loosened.rows") || return 2
+      ;;
+    1) ;;
+    *) return 2 ;;
+  esac
 
   # Rule tests and declared checks run on the onboarding branch too: only the
   # baseline comparisons above need a baseline at base.
@@ -614,7 +627,7 @@ cmp_loosened_in() {
 # are not loosening.
 loosen_changes() {
   local mb=$1 scratch=$2 id=$3 brule=$4 crule=$5
-  local root bsev csev rb rc bp cp be ce beng ceng bdet cdet bfe cfe bfmt cfmt gp
+  local root bsev csev rb rc bp cp be ce beng ceng bdet cdet bfe cfe bfmt cfmt gp has
   root=$(repo_root) || return 2
   bsev=$(rule_get "$brule" severity) || return 2
   csev=$(rule_get "$crule" severity) || return 2
@@ -657,13 +670,21 @@ loosen_changes() {
     if [ "$bfmt" != "$cfmt" ]; then printf 'format %s → %s\n' "$bfmt" "$cfmt"; fi
     gp=.gauntlet/formats/$cfmt.md
     if blob_changed "$mb" "$gp"; then
-      if ! git cat-file -e "$mb:$gp" 2>/dev/null; then
-        printf 'format file %s added\n' "$gp"
-      elif ! git cat-file -e "HEAD:$gp" 2>/dev/null; then
-        printf 'format file %s removed\n' "$gp"
-      else
-        printf 'format file %s changed\n' "$gp"
-      fi
+      has=0
+      base_has "$mb" "$gp" || has=$?
+      case "$has" in
+        0)
+          has=0
+          base_has HEAD "$gp" || has=$?
+          case "$has" in
+            0) printf 'format file %s changed\n' "$gp" ;;
+            1) printf 'format file %s removed\n' "$gp" ;;
+            *) return 2 ;;
+          esac
+          ;;
+        1) printf 'format file %s added\n' "$gp" ;;
+        *) return 2 ;;
+      esac
     fi
   fi
 }
@@ -752,7 +773,7 @@ record_commit_times() {
 # Auto-tighten starts from the baseline as the index holds it (the one this
 # commit would carry), so a regenerated baseline is never reverted by the hook.
 check_staged_run() {
-  local scratch=$1 start=$2 root branch id stage sev fix atb rf budget base_name
+  local scratch=$1 start=$2 root branch id stage sev fix atb rf budget base_name rc
   local known=0 partial=0 by_path=0 has_index=0 unstaged_base=0
   local new_n=0 touched_n=0 problems=0 n_commit ms end body
   local -a ids
@@ -785,8 +806,9 @@ check_staged_run() {
     if [ "$stage" = push ]; then continue; fi
     sev=$(rule_get "$rf" severity) || return 2
     fix=$(rule_get "$rf" fix) || return 2
-    atb=0
-    if git cat-file -e "HEAD:.gauntlet/rules/$id.md" 2>/dev/null; then atb=1; fi
+    rc=0
+    base_has HEAD ".gauntlet/rules/$id.md" || rc=$?
+    case "$rc" in 0) atb=1 ;; 1) atb=0 ;; *) return 2 ;; esac
     printf '%s\n' "$id" >> "$scratch/commit.ids"
     printf '%s\t%s\t%s\t%s\n' "$id" "$sev" "$atb" "$fix" >> "$scratch/rules.tsv"
   done < "$scratch/ids"
@@ -835,16 +857,28 @@ check_staged_run() {
 
   # HEAD's baseline is the reference for the new, touched, shadow and track checks.
   : > "$scratch/base.tsv"
-  if git cat-file -e "HEAD:.gauntlet/baseline.tsv" 2>/dev/null; then
-    known=1
-    at_base HEAD .gauntlet/baseline.tsv > "$scratch/base.tsv" || return 2
-  fi
+  rc=0
+  base_has HEAD .gauntlet/baseline.tsv || rc=$?
+  case "$rc" in
+    0)
+      known=1
+      at_base HEAD .gauntlet/baseline.tsv > "$scratch/base.tsv" || return 2
+      ;;
+    1) ;;
+    *) return 2 ;;
+  esac
   # The index's baseline is what auto-tighten starts from.
   : > "$scratch/index.tsv"
-  if git cat-file -e ":.gauntlet/baseline.tsv" 2>/dev/null; then
-    has_index=1
-    git show ":.gauntlet/baseline.tsv" > "$scratch/index.tsv" || return 2
-  fi
+  rc=0
+  index_has .gauntlet/baseline.tsv || rc=$?
+  case "$rc" in
+    0)
+      has_index=1
+      git show ":.gauntlet/baseline.tsv" > "$scratch/index.tsv" || return 2
+      ;;
+    1) ;;
+    *) return 2 ;;
+  esac
   # Unstaged work in the baseline: tighten never overwrites it.
   if [ "$known" -eq 1 ] && [ "$has_index" -eq 1 ]; then
     if [ ! -f "$root/.gauntlet/baseline.tsv" ] || ! cmp -s "$root/.gauntlet/baseline.tsv" "$scratch/index.tsv"; then

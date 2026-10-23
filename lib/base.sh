@@ -65,11 +65,52 @@ merge_base() {
   die "no merge-base between HEAD and $ref"
 }
 
-# at_base <sha> <path>: print the file as it was at sha; nothing when the path is
-# absent. An sha that is not a commit dies with exit 2.
-at_base() {
-  git cat-file -e "$1^{commit}" 2>/dev/null || die "bad sha: $1"
-  if git cat-file -e "$1:$2" 2>/dev/null; then
-    git show "$1:$2"
+# git_has <what> <git args...>: run git and tell "there" from "not there" from "cannot
+# tell". Returns 0 when git prints something, 1 when it succeeds and prints nothing,
+# and 2 when git fails, after printing "gauntlet: cannot read <what>: <git's first
+# error line>" once. The caller says what to list, so a failure to read (a damaged
+# object, a bad sha, a corrupt index) is never taken for an absent path.
+git_has() {
+  local what=$1 out err rc=0
+  shift
+  out=$(mktemp) || return 2
+  err=$(mktemp) || { rm -f "$out"; return 2; }
+  git "$@" > "$out" 2> "$err" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'gauntlet: cannot read %s: %s\n' "$what" "$(head -n 1 "$err")" >&2
+    rc=2
+  elif [ -s "$out" ]; then
+    rc=0
+  else
+    rc=1
   fi
+  rm -f "$out" "$err"
+  return "$rc"
+}
+
+# base_has <sha> <path>: succeed (0) when <path> exists at <sha>, return 1 when it does
+# not and 2 when git cannot tell (R32). The path is root-relative, whatever the working
+# directory. ls-tree reads trees only, so a damaged blob still lists as present: the
+# read that follows (at_base) is where a blob that cannot be read fails.
+base_has() {
+  git_has "$2 at $1" ls-tree --full-tree --name-only -z "$1" -- "$2"
+}
+
+# index_has <path>: base_has for the index, with the same 0, 1 and 2.
+index_has() {
+  git_has "$1 in the index" --literal-pathspecs ls-files -z -- "$1"
+}
+
+# at_base <sha> <path>: print the file as it was at sha; nothing when the path is
+# absent. An sha that is not a commit dies with exit 2, and so does a path that is
+# listed but cannot be read: only an absent path is silent.
+at_base() {
+  local rc=0
+  git cat-file -e "$1^{commit}" 2>/dev/null || die "bad sha: $1"
+  base_has "$1" "$2" || rc=$?
+  case "$rc" in
+    0) git show "$1:$2" ;;
+    1) ;;
+    *) return 2 ;;
+  esac
 }

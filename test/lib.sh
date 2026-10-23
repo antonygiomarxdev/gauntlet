@@ -140,6 +140,48 @@ script_row() {
   printf 'script\t%s\tfixture\t2026-10-22\t-\n' "$1" >> .gauntlet/exceptions.tsv || fail "cannot write exceptions.tsv"
 }
 
+# unreadable_object <rev:path>: delete the loose git object behind a path, so the
+# tree still lists the path and git cannot read its content. Fails the test when the
+# object is not loose or still reads, so a test never passes without a damaged object.
+unreadable_object() {
+  local oid obj
+  oid=$(git rev-parse "$1") || fail "unreadable_object: no such path $1"
+  obj=".git/objects/${oid:0:2}/${oid:2}"
+  [ -f "$obj" ] || fail "unreadable_object: $1 is not a loose object"
+  rm -f "$obj" || fail "unreadable_object: cannot remove $obj"
+  if git cat-file -p "$oid" > /dev/null 2>&1; then fail "unreadable_object: $1 still reads"; fi
+}
+
+# git_fails <ls-tree|ls-files> <path> [<rev>]: put a git first on PATH that fails the
+# first listing of <path> (and, when given, only at <rev>) with a git error, as a
+# damaged repository would, and runs every other call through the real git. Only the
+# first, so a later read of the same path cannot stand in for the site under test.
+git_fails() {
+  local real
+  real=$(command -v git) || fail "git_fails: no git on PATH"
+  must mkdir -p "$TMP/shim"
+  cat > "$TMP/shim/git" <<'SHIM'
+#!/bin/sh
+cmd= ; path= ; rev= ; prev=
+for a in "$@"; do
+  case "$a" in ls-tree|ls-files) if [ -z "$cmd" ]; then cmd=$a; fi ;; esac
+  if [ "$prev" = -- ]; then path=$a; fi
+  if [ "$a" = -- ]; then rev=$prev; fi
+  prev=$a
+done
+if [ "$cmd" = "$SHIM_CMD" ] && [ "$path" = "$SHIM_PATH" ] && { [ -z "$SHIM_REV" ] || [ "$rev" = "$SHIM_REV" ]; } && [ ! -e "$SHIM_DONE" ]; then
+  : > "$SHIM_DONE"
+  echo "fatal: simulated failure reading $path" >&2
+  exit 128
+fi
+exec "$SHIM_REAL" "$@"
+SHIM
+  must chmod +x "$TMP/shim/git"
+  export SHIM_REAL=$real SHIM_CMD=$1 SHIM_PATH=$2 SHIM_REV=${3:-} SHIM_DONE="$TMP/shim/done"
+  PATH="$TMP/shim:$PATH"
+  export PATH
+}
+
 # run <cmd...>: run a command, capturing combined output in $OUT and status in $STATUS.
 run() {
   # shellcheck disable=SC2034 # read by test files

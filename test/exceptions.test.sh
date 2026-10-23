@@ -799,3 +799,38 @@ test_cmp_loosened_lists_base_rules_from_a_subdirectory() {
   assert_contains "$OUT" "todo"
   assert_contains "$OUT" "severity block → track"
 }
+
+# R32 at the format file: when the listing of it fails, at the base or at HEAD, the
+# gate stops at exit 2 instead of calling the file added or removed.
+exc_format_setup() {
+  mkrepo
+  printf 'TODO\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO FIXME x'
+  mkdir -p .gauntlet/formats
+  printf -- '---\nmatch: ^([^:]+):([0-9]+)(:[0-9]+)?(: ?(.*))?$\npath: 1\nline: 2\nmessage: 5\nignore: nomatch\n---\n' > .gauntlet/formats/path-line.md
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  must git rm -q .gauntlet/formats/path-line.md
+  exc_rebase
+  exc_commit feat
+}
+
+test_failed_listing_of_the_format_file_at_the_base_is_exit_2() {
+  exc_format_setup
+  git_fails ls-tree .gauntlet/formats/path-line.md "$(git rev-parse main)"
+  run "$G" check --ci --base main
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "simulated failure"
+  assert_not_contains "$OUT" "format file"
+}
+
+test_failed_listing_of_the_format_file_at_head_is_exit_2() {
+  exc_format_setup
+  git_fails ls-tree .gauntlet/formats/path-line.md HEAD
+  run "$G" check --ci --base main
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "simulated failure"
+  assert_not_contains "$OUT" "format file"
+}
