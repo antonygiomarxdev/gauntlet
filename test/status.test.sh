@@ -478,7 +478,7 @@ test_doctor_invalid_check_name_says_what_a_name_may_hold() {
   mkrepo
   doctor_install
   printf 'check.my check=echo hi\n' >> .gauntlet/config
-  doctor_one_fail "FAIL bad check key check.my check: check name my check: use letters, digits, - and _"
+  doctor_one_fail "FAIL bad check key check.my check: name [my check] must use letters, digits, - and _"
 }
 
 test_doctor_accepts_a_crlf_config() {
@@ -772,6 +772,33 @@ test_doctor_other_rules_error_shows_next_to_a_missing_tool() {
   assert_eq 2 "$(doctor_fails)" "FAIL lines"
   assert_contains "$OUT" "FAIL tool nosuchtool-gauntlet-xyz for rule aghost is missing"
   assert_contains "$OUT" "FAIL baseline cannot be checked: broken detector: bd: exit 3"
+}
+
+# The doctor line for a refused path already says what to do; "fix the rule or tool it names" is
+# for a broken detector or a missing tool, which name one.
+test_doctor_odd_path_line_does_not_point_at_a_rule_or_tool() {
+  mkrepo
+  rule todo
+  printf 'x\n' > "$(printf 'a\tb.ts')"
+  must git add -A
+  must git commit -q -m content
+  doctor_install
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor status"
+  assert_contains "$OUT" 'FAIL baseline cannot be checked: path with a tab or newline: a\tb.ts; rename the file'
+  assert_not_contains "$OUT" "fix the rule or tool it names"
+}
+
+test_doctor_broken_detector_line_still_points_at_the_rule_or_tool() {
+  mkrepo
+  mkdir -p src
+  printf 'x\n' > src/a.ts
+  must git add -A
+  must git commit -q -m content
+  rule bd engine=linter "detector=sh -c 'echo nope >&2; exit 3' {files}"
+  doctor_install
+  run "$G" doctor
+  assert_contains "$OUT" "FAIL baseline cannot be checked: broken detector: bd: exit 3; fix the rule or tool it names"
 }
 
 test_doctor_partial_baseline_ignores_orphan_rows_until_the_tool_is_fixed() {

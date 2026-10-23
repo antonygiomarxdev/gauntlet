@@ -278,7 +278,7 @@ check_key_rows() {
         # not (a space, a dot, nothing at all).
         nm = rest
         sub(/\.(paths|ci)$/, "", nm)
-        bad[key] = "check name " (nm == "" ? "(empty)" : nm) ": use letters, digits, - and _"
+        bad[key] = (nm == "" ? "name is empty; it must use" : "name [" nm "] must use") " letters, digits, - and _"
       }
     }
     END {

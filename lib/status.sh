@@ -477,7 +477,7 @@ doctor_hook_file() {
 # tree does not change that. When measuring fails for a cause a rule FAIL already names
 # (<scratch>/causes), this check says nothing more: it would repeat that cause.
 doctor_baseline() {
-  local root=$1 scratch=$2 rc=0 reason id want="$1/.gauntlet/baseline.tsv"
+  local root=$1 scratch=$2 rc=0 reason hint id want="$1/.gauntlet/baseline.tsv"
   if [ ! -f "$root/.gauntlet/baseline.tsv" ]; then
     doctor_fail "baseline .gauntlet/baseline.tsv is missing: run gauntlet baseline and commit it"
     return 0
@@ -506,7 +506,12 @@ doctor_baseline() {
     if [ -z "$reason" ]; then
       reason="measuring the code failed"
     fi
-    doctor_fail "baseline cannot be checked: $reason; fix the rule or tool it names"
+    # Only a reason that names a rule or a tool is fixed there; the others say what to do.
+    case "$reason" in
+      "broken detector"*|"missing tool"*|"unknown format"*|"format "*|"unknown rule"*|"measuring the code failed") hint="; fix the rule or tool it names" ;;
+      *) hint= ;;
+    esac
+    doctor_fail "baseline cannot be checked: $reason$hint"
   elif cmp -s "$want" "$scratch/measure/measure.tsv"; then
     if [ -s "$scratch/causes" ]; then
       doctor_ok "baseline is exact for the rules that can be measured"

@@ -200,7 +200,11 @@ odd_paths_refuse() (
       printf 'gauntlet: path with a tab or newline: %s; rename the file\n' "$(path_spell "$name")" >&2
     fi
   done < "$1"
-  if [ "$n" -gt 5 ]; then printf 'gauntlet: and %s more; rename the files\n' "$((n - 5))" >&2; fi
+  if [ "$n" -eq 6 ]; then
+    printf 'gauntlet: and 1 more path; rename it\n' >&2
+  elif [ "$n" -gt 6 ]; then
+    printf 'gauntlet: and %s more paths; rename them\n' "$((n - 5))" >&2
+  fi
   return 2
 )
 

@@ -86,7 +86,12 @@ test_listing_names_a_few_odd_paths_and_counts_the_rest() {
   assert_contains "$OUT" 'p1\tq.ts'
   assert_contains "$OUT" 'p5\tq.ts'
   assert_not_contains "$OUT" 'p6\tq.ts'
-  assert_contains "$OUT" "and 2 more"
+  assert_contains "$OUT" "and 2 more paths; rename them"
+  rm -f p7*
+  must git add -A
+  run tracked_files
+  assert_contains "$OUT" "and 1 more path; rename it"
+  assert_not_contains "$OUT" "1 more paths"
 }
 
 # The refusal prints a name somebody else chose: no raw control byte may reach the terminal. Every

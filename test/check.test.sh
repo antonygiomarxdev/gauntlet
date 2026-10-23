@@ -744,8 +744,8 @@ test_a_check_named_BAD_is_an_ordinary_check() {
 test_an_invalid_check_name_says_what_a_name_may_hold() {
   gate_setup 'x'
   local row key shown
-  for row in 'check.my check=true|check.my check|my check' 'check.a.b=true|check.a.b|a.b' \
-    'check.=true|check.|(empty)' 'check.x y.paths=src/|check.x y.paths|x y'; do
+  for row in 'check.my check=true|check.my check|name [my check] must use' 'check.a.b=true|check.a.b|name [a.b] must use' \
+    'check.=true|check.|name is empty; it must use' 'check.x y.paths=src/|check.x y.paths|name [x y] must use'; do
     printf '%s\n' "${row%%|*}" > .gauntlet/config
     key=${row#*|}
     shown=${key#*|}
@@ -753,7 +753,8 @@ test_an_invalid_check_name_says_what_a_name_may_hold() {
     commit_all "config $shown"
     gate
     assert_eq 2 "$STATUS" "status for [$key]: $OUT"
-    assert_contains "$OUT" "bad check key $key: check name $shown: use letters, digits, - and _"
+    assert_contains "$OUT" "bad check key $key: $shown letters, digits, - and _"
+    assert_not_contains "$OUT" "check name"
   done
 }
 
