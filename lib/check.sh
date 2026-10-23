@@ -216,47 +216,53 @@ rule_tests_due() {
   ' "$1"
 }
 
-# check_key_rows <config>: print the declared checks of a config file, one
-# "<name>\t<ci>\t<paths>\t<command>" row each, and a "BAD\t<key>\t<reason>" row for
-# each check key that is not valid. Keys are check.<name>, check.<name>.paths and
-# check.<name>.ci, names matching ^[A-Za-z0-9_-]+$. Any other check. key, an
-# attribute with no command, an empty command, or a ci that is not on or off is bad.
-# check_table and doctor both read the keys through this function.
+# check_key_rows <config>: the one parser of config keys, shared by check and doctor.
+# Prints a "<name>\t<ci>\t<paths>\t<command>" row for each declared check, a
+# "BAD\t<key>\t<reason>" row for each check key that is not valid, and an
+# "UNKNOWN\t<key>\t<message>" row for each key that is not base, touched or check.*.
+# Keys are check.<name>, check.<name>.paths and check.<name>.ci, names matching
+# ^[A-Za-z0-9_-]+$. Every reason and message names the fix. check_table refuses on a
+# BAD row and ignores UNKNOWN rows: check has always ignored keys it does not know.
 check_key_rows() {
   awk '
-      /^[[:space:]]*#/ { next }
-      {
-        eq = index($0, "=")
-        if (eq == 0) next
-        key = substr($0, 1, eq - 1)
-        gsub(/^[ \t]+|[ \t]+$/, "", key)
-        if (substr(key, 1, 6) != "check.") next
-        val = substr($0, eq + 1)
-        gsub(/^[ \t]+|[ \t]+$/, "", val)
-        rest = substr(key, 7)
-        if (rest ~ /^[A-Za-z0-9_-]+$/) { cmd[rest] = val; declared[rest] = key }
-        else if (rest ~ /^[A-Za-z0-9_-]+\.(paths|ci)$/) {
-          name = substr(rest, 1, index(rest, ".") - 1)
-          attr_key[name] = key
-          if (rest ~ /\.paths$/) paths[name] = val
-          else ci[name] = val
-        }
-        else bad[key] = 1
+    /^[[:space:]]*#/ { next }
+    {
+      eq = index($0, "=")
+      if (eq == 0) next
+      key = substr($0, 1, eq - 1)
+      gsub(/^[ \t]+|[ \t]+$/, "", key)
+      if (key == "base" || key == "touched") next
+      if (substr(key, 1, 6) != "check.") {
+        if (key == "") print "UNKNOWN\t\tline with no key is not known; use base, touched or check.<name>"
+        else print "UNKNOWN\t" key "\tconfig key " key " is not known; use base, touched or check.<name>"
+        next
       }
-      END {
-        for (name in attr_key)
-          if (!(name in declared)) print "BAD\t" attr_key[name] "\tattribute without a command"
-        for (name in declared) {
-          if (cmd[name] == "") { print "BAD\t" declared[name] "\tempty command"; continue }
-          c = (name in ci) ? ci[name] : "off"
-          if (c != "on" && c != "off") {
-            print "BAD\t" declared[name] ".ci\t.ci must be on or off, got [" c "]"
-            continue
-          }
-          printf "%s\t%s\t%s\t%s\n", name, c, paths[name], cmd[name]
-        }
-        for (key in bad) print "BAD\t" key "\tnot a check key; use check.<name>, check.<name>.paths or check.<name>.ci"
+      val = substr($0, eq + 1)
+      gsub(/^[ \t]+|[ \t]+$/, "", val)
+      rest = substr(key, 7)
+      if (rest ~ /^[A-Za-z0-9_-]+$/) { cmd[rest] = val; declared[rest] = key }
+      else if (rest ~ /^[A-Za-z0-9_-]+\.(paths|ci)$/) {
+        name = substr(rest, 1, index(rest, ".") - 1)
+        attr_key[name] = key
+        if (rest ~ /\.paths$/) paths[name] = val
+        else ci[name] = val
       }
+      else bad[key] = 1
+    }
+    END {
+      for (name in attr_key)
+        if (!(name in declared)) print "BAD\t" attr_key[name] "\tattribute without a command; add check." name "=<command> or remove the line"
+      for (name in declared) {
+        if (cmd[name] == "") { print "BAD\t" declared[name] "\tempty command; give check." name " a command or remove the line"; continue }
+        c = (name in ci) ? ci[name] : "off"
+        if (c != "on" && c != "off") {
+          print "BAD\t" declared[name] ".ci\t.ci must be on or off, got [" c "]; write on or off"
+          continue
+        }
+        printf "%s\t%s\t%s\t%s\n", name, c, paths[name], cmd[name]
+      }
+      for (key in bad) print "BAD\t" key "\tnot a check key; use check.<name>, check.<name>.paths or check.<name>.ci"
+    }
   ' "$1"
 }
 
@@ -267,7 +273,8 @@ check_table() {
   local root=$1 scratch=$2 bad
   : > "$scratch/checks.all"
   if [ -f "$root/.gauntlet/config" ]; then
-    check_key_rows "$root/.gauntlet/config" > "$scratch/checks.all" || return 2
+    check_key_rows "$root/.gauntlet/config" > "$scratch/checks.keys" || return 2
+    awk -F "$DETECT_TAB" '$1 != "UNKNOWN"' "$scratch/checks.keys" > "$scratch/checks.all" || return 2
   fi
   LC_ALL=C sort "$scratch/checks.all" > "$scratch/checks.raw" || return 2
   # Sorted before the first bad row is taken, so the reported key is the same on every run.
@@ -707,6 +714,32 @@ commit_budget() {
   printf '%s\n' "$budget"
 }
 
+# commit_times_path <root>: print the absolute path of the file the commit gate keeps
+# its per-rule times in: gauntlet-time.tsv in the git dir of this worktree, so it is
+# never in the work tree and never committed. status reads the same path.
+commit_times_path() {
+  local p
+  p=$(cd "$1" && git rev-parse --git-path gauntlet-time.tsv) || return 1
+  case "$p" in
+    /*) printf '%s\n' "$p" ;;
+    *) printf '%s/%s\n' "$1" "$p" ;;
+  esac
+}
+
+# record_commit_times <root> <time-file>: copy the rule<TAB>ms rows that measure wrote for
+# this commit-gate run to commit_times_path, through a temp file and a rename. Every
+# error is ignored: the gate's result never depends on this file.
+record_commit_times() {
+  local dest tmp
+  dest=$(commit_times_path "$1") || return 0
+  tmp=$(mktemp "$dest.XXXXXX") || return 0
+  if cp "$2" "$tmp" 2> /dev/null && mv -f "$tmp" "$dest" 2> /dev/null; then
+    return 0
+  fi
+  rm -f "$tmp"
+  return 0
+}
+
 # check_staged_run <scratch> <start-ms>: the work of check_staged, with every
 # intermediate file kept in <scratch>. The checks compare with HEAD's baseline.
 # Auto-tighten starts from the baseline as the index holds it (the one this
@@ -775,6 +808,10 @@ check_staged_run() {
     : > "$scratch/now/located.tsv" || return 2
     : > "$scratch/now/time.tsv" || return 2
   fi
+
+  # The per-rule times of this run are kept for status; a failure to keep them never
+  # changes the gate's result.
+  record_commit_times "$root" "$scratch/now/time.tsv" || true
 
   # staged.diff: HEAD against the index, renames followed. staged.paths: every
   # path it names, both sides of a rename and deletions included.

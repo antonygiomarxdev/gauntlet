@@ -1,11 +1,62 @@
 # shellcheck shell=bash
 # status, promote and doctor: the rule lifecycle and the setup check (FRD-06 §4 and
 # §9, FRD-07 §4.6, FRD-04 §6). Sourced, never executed. Bash 3.2 compatible; awk,
-# cmp, grep, head, tail, date and coreutils only. Needs core.sh, rules.sh, paths.sh,
+# cmp, grep, head, date, mv and coreutils only. Needs core.sh, rules.sh, paths.sh,
 # detect.sh, measure.sh, base.sh, exceptions.sh, check.sh and hooks.sh sourced first.
 
 # DOCTOR_FAILS: how many FAIL lines the current doctor run has printed.
 DOCTOR_FAILS=0
+
+# STATUS_AWK_FUNCS: awk functions every awk program in this file shares. is_date: a
+# YYYY-MM-DD text that is a real calendar day, leap years included. civil: the day
+# number of a valid date, from the days-from-civil formula (only differences are used,
+# so the epoch does not matter). cell: a markdown table cell, with | escaped.
+STATUS_AWK_FUNCS='
+function is_leap(y) { return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 }
+function days_in(y, m) {
+  if (m == 2) return is_leap(y) ? 29 : 28
+  return (m == 4 || m == 6 || m == 9 || m == 11) ? 30 : 31
+}
+function is_date(s,   y, m, d) {
+  if (s !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) return 0
+  y = substr(s, 1, 4) + 0
+  m = substr(s, 6, 2) + 0
+  d = substr(s, 9, 2) + 0
+  return m >= 1 && m <= 12 && d >= 1 && d <= days_in(y, m)
+}
+function civil(s,   y, m, d, era, yoe, doy, doe) {
+  y = substr(s, 1, 4) + 0
+  m = substr(s, 6, 2) + 0
+  d = substr(s, 9, 2) + 0
+  if (m <= 2) y--
+  era = int((y >= 0 ? y : y - 399) / 400)
+  yoe = y - era * 400
+  doy = int((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5) + d - 1
+  doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy
+  return era * 146097 + doe - 719468
+}
+function cell(s,   n, i, out, p) {
+  n = split(s, p, "|")
+  out = p[1]
+  for (i = 2; i <= n; i++) out = out "\\|" p[i]
+  return out
+}
+'
+
+# days_between <earlier> <later>: print the days from one valid date to the other,
+# negative when the later date is first.
+days_between() {
+  GL_FROM=$1 GL_TO=$2 awk "$STATUS_AWK_FUNCS"'
+    BEGIN { print civil(ENVIRON["GL_TO"]) - civil(ENVIRON["GL_FROM"]) }
+  '
+}
+
+# valid_date <text>: succeed when <text> is YYYY-MM-DD and a real calendar day.
+valid_date() {
+  GL_DAY=$1 awk "$STATUS_AWK_FUNCS"'
+    BEGIN { exit !is_date(ENVIRON["GL_DAY"]) }
+  '
+}
 
 # status_cmd: regenerate .gauntlet/STATUS.md and print the same text. The totals are
 # the committed baseline's, summed per rule, so no detector runs. The text has a rule
@@ -17,15 +68,15 @@ status_cmd() {
   root=$(repo_root) || return 2
   [ -d "$root/.gauntlet" ] || die "not a gauntlet repo: run gauntlet install"
   [ -f "$root/.gauntlet/baseline.tsv" ] || die "baseline .gauntlet/baseline.tsv is missing: run gauntlet install"
+  [ ! -d "$root/.gauntlet/STATUS.md" ] || die ".gauntlet/STATUS.md is a directory; remove it, then run gauntlet status"
   today=$(status_today) || return 2
   budget=$(commit_budget) || return 2
   scratch=$(mktemp -d) || return 2
   status_body "$root" "$scratch" "$today" "$budget" || status=$?
   if [ "$status" -eq 0 ]; then
-    if cp "$scratch/body" "$root/.gauntlet/STATUS.md"; then
+    if status_write "$root" "$scratch/body"; then
       cat "$scratch/body" || status=2
     else
-      printf 'gauntlet: cannot write .gauntlet/STATUS.md\n' >&2
       status=2
     fi
   fi
@@ -33,27 +84,41 @@ status_cmd() {
   return "$status"
 }
 
+# status_write <root> <body>: put the text in .gauntlet/STATUS.md through a temp file in
+# .gauntlet/ and a rename, so a kill never leaves a partial file. Returns 1 with a
+# message when either step fails.
+status_write() {
+  local tmp
+  tmp=$(mktemp "$1/.gauntlet/STATUS.md.XXXXXX") || {
+    printf 'gauntlet: cannot write .gauntlet/STATUS.md\n' >&2
+    return 1
+  }
+  if cat "$2" > "$tmp" && mv -f "$tmp" "$1/.gauntlet/STATUS.md"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  printf 'gauntlet: cannot write .gauntlet/STATUS.md\n' >&2
+  return 1
+}
+
 # status_today: print the day status measures against: GAUNTLET_TODAY when set,
-# else today's date. Returns 2 with a message when it is not YYYY-MM-DD.
+# else today's date. Returns 2 with a message when it is not a real YYYY-MM-DD date.
 status_today() {
   local day=${GAUNTLET_TODAY:-}
   if [ -z "$day" ]; then
     day=$(date +%Y-%m-%d) || return 2
   fi
-  case "$day" in
-    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
-    *)
-      printf 'gauntlet: GAUNTLET_TODAY must be YYYY-MM-DD, got [%s]\n' "$day" >&2
-      return 2
-      ;;
-  esac
+  if ! valid_date "$day"; then
+    printf 'gauntlet: GAUNTLET_TODAY must be a real date, YYYY-MM-DD, got [%s]\n' "$day" >&2
+    return 2
+  fi
   printf '%s\n' "$day"
 }
 
 # status_body <root> <scratch> <today> <budget>: write the STATUS.md text to
 # <scratch>/body. The intermediate tables are kept in <scratch> too.
 status_body() {
-  local root=$1 scratch=$2 today=$3 budget=$4 id rf sev stage since
+  local root=$1 scratch=$2 today=$3 budget=$4 id rf sev stage since times
   : > "$scratch/rules.tsv" || return 2
   rule_ids > "$scratch/ids" || return 2
   while IFS= read -r id; do
@@ -89,46 +154,36 @@ status_body() {
   LC_ALL=C sort -t "$DETECT_TAB" -k1,1nr -k2,2 "$scratch/files.raw" > "$scratch/files.sorted" || return 2
   head -n 5 "$scratch/files.sorted" > "$scratch/files.top" || return 2
 
-  # due: a shadow rule at 7 days or more since its since date. Days come from the
-  # days-from-civil formula, so leap years and year ends need no calendar library.
-  GL_TODAY="$today" awk -F "$DETECT_TAB" '
-    function civil(s,   y, m, d, era, yoe, doy, doe) {
-      y = substr(s, 1, 4) + 0
-      m = substr(s, 6, 2) + 0
-      d = substr(s, 9, 2) + 0
-      if (m <= 2) y--
-      era = int(y / 400)
-      yoe = y - era * 400
-      doy = int((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5) + d - 1
-      doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy
-      return era * 146097 + doe - 719468
-    }
-    $2 == "shadow" && $4 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ {
+  # due: a shadow rule whose since date is a real day, 7 days or more before today. A
+  # since in the future gives 0 days and is not due.
+  GL_TODAY="$today" awk -F "$DETECT_TAB" "$STATUS_AWK_FUNCS"'
+    $2 == "shadow" && is_date($4) {
       days = civil(ENVIRON["GL_TODAY"]) - civil($4)
       if (days < 0) days = 0
       if (days >= 7) printf "promote due: %s (shadow since %s, %d days), %d found\n", $1, $4, days, $5
     }
   ' "$scratch/status.tsv" > "$scratch/due" || return 2
 
-  # slow: commit-stage rules whose recorded time is at or over the budget. time.tsv
-  # is the rule<TAB>ms file measure writes; when it is absent nothing is listed.
+  # slow: commit-stage rules whose recorded time is at or over the budget. The times are
+  # the file check --staged keeps (commit_times_path); when it is absent nothing is listed.
   : > "$scratch/slow"
-  if [ -f "$root/.gauntlet/time.tsv" ]; then
-    GL_TIME="$root/.gauntlet/time.tsv" GL_BUDGET="$budget" awk -F "$DETECT_TAB" '
+  times=$(commit_times_path "$root") || return 2
+  if [ -f "$times" ]; then
+    GL_TIME="$times" GL_BUDGET="$budget" awk -F "$DETECT_TAB" '
       FILENAME == ENVIRON["GL_TIME"] { ms[$1] = $2; next }
       $3 == "commit" && ($1 in ms) && ms[$1] + 0 >= ENVIRON["GL_BUDGET"] + 0 {
         printf "slow: %s %s ms (consider stage: push)\n", $1, ms[$1]
       }
-    ' "$root/.gauntlet/time.tsv" "$scratch/status.tsv" > "$scratch/slow" || return 2
+    ' "$times" "$scratch/status.tsv" > "$scratch/slow" || return 2
   fi
 
   {
     printf '| rule | severity | total |\n'
     printf '| --- | --- | --- |\n'
-    awk -F "$DETECT_TAB" '{ printf "| %s | %s | %s |\n", $1, $2, $5 }' "$scratch/status.tsv"
+    awk -F "$DETECT_TAB" "$STATUS_AWK_FUNCS"'{ printf "| %s | %s | %s |\n", cell($1), cell($2), $5 }' "$scratch/status.tsv"
     if [ -s "$scratch/files.top" ]; then
       printf '\n| file | block total |\n| --- | --- |\n'
-      awk -F "$DETECT_TAB" '{ printf "| %s | %s |\n", $2, $1 }' "$scratch/files.top"
+      awk -F "$DETECT_TAB" "$STATUS_AWK_FUNCS"'{ printf "| %s | %s |\n", cell($2), $1 }' "$scratch/files.top"
     fi
     if [ -s "$scratch/due" ]; then
       printf '\n'
@@ -150,12 +205,14 @@ promote_cmd() {
   id=$1
   root=$(repo_root) || return 2
   ids=$(mktemp) || return 2
-  if rule_ids > "$ids" && grep -Fxq -- "$id" "$ids"; then found=1; fi
+  if rule_ids > "$ids" && GL_ID=$id awk '$0 == ENVIRON["GL_ID"] { found = 1 } END { exit !found }' "$ids"; then
+    found=1
+  fi
   rm -f "$ids"
   [ "$found" -eq 1 ] || die "unknown rule $id"
 
   file="$root/.gauntlet/rules/$id.md"
-  sev=$(rule_get "$file" severity) || return 2
+  sev=$(rule_get "$file" severity) || die "cannot read rule $id; run gauntlet doctor"
   if [ "$sev" != shadow ]; then
     die "rule $id has severity [$sev]; only a shadow rule can be promoted"
   fi
@@ -224,12 +281,15 @@ doctor_cmd() {
 }
 
 # doctor_checks <root> <scratch>: run the checks in order. Each prints its lines and
-# counts its FAILs; a check returns 2 only when it cannot run at all.
+# counts its FAILs; a check returns 2 only when it cannot run at all. <scratch>/causes
+# lists the rules whose tool or engine is already a FAIL, so later checks that would
+# repeat that cause stay quiet.
 doctor_checks() {
   local root=$1 scratch=$2
   cd "$root" || return 2
   hook_paths || return 2
   rule_ids > "$scratch/ids" || return 2
+  : > "$scratch/causes" || return 2
   doctor_tools "$root" "$scratch" || return 2
   doctor_hooks "$root" "$scratch" || return 2
   doctor_baseline "$root" "$scratch" || return 2
@@ -238,9 +298,12 @@ doctor_checks() {
   doctor_waivers "$root" "$scratch" || return 2
 }
 
-# doctor_tools <root> <scratch>: each rule's engine tool must be on PATH, or be an
-# executable path. ast-grep names its own tool; rg, linter and script rules name it
-# as the first word of the detector. One line per rule.
+# doctor_tools <root> <scratch>: each rule's engine tool must be on PATH or be an
+# executable path. ast-grep names its own tool; rg, linter and script rules name it as
+# the first word of the detector. A first word with quoting, a variable, an assignment
+# or a leading ~ is not a plain name, and bash -c may run it fine, so it is not
+# checked. An unknown engine or an empty detector is doctor_rules' to report; it is
+# only recorded here.
 doctor_tools() {
   local root=$1 scratch=$2 id engine detector tool hint fix
   while IFS= read -r id; do
@@ -250,15 +313,24 @@ doctor_tools() {
       ast-grep) tool=ast-grep ;;
       rg|linter|script) tool=${detector%%[[:space:]]*} ;;
       *)
-        doctor_fail "tool for rule $id: engine [$engine] is not known; fix .gauntlet/rules/$id.md"
+        printf '%s\n' "$id" >> "$scratch/causes"
         continue
         ;;
     esac
     if [ -z "$tool" ]; then
-      doctor_fail "tool for rule $id: the detector is empty; fix .gauntlet/rules/$id.md"
-    elif tool_present "$tool" "$root"; then
+      printf '%s\n' "$id" >> "$scratch/causes"
+      continue
+    fi
+    case "$tool" in
+      *=*|*\$*|*\'*|*\"*|*\`*|\~*)
+        doctor_ok "tool $id: cannot check ($tool)"
+        continue
+        ;;
+    esac
+    if tool_present "$tool" "$root"; then
       doctor_ok "tool $tool for rule $id"
     else
+      printf '%s\n' "$id" >> "$scratch/causes"
       hint=$(missing_tool_hint "$tool")
       if [ -n "$hint" ]; then
         fix=${hint#. }
@@ -271,16 +343,24 @@ doctor_tools() {
   return 0
 }
 
-# doctor_hooks <root> <scratch>: the vendored runner must exist and be executable,
-# since the hooks call it. Then the gate line must be in each hook install-hooks
-# would use. A lefthook or prek config needs the snippet in it (HOOK-AC7).
-doctor_hooks() {
-  local root=$1 scratch=$2 target kind dir f
-  if [ -x "$root/.gauntlet/bin/gauntlet" ]; then
+# doctor_runner <root>: the vendored runner must load. `--version` sources the entry
+# point's libraries before it does anything, so it proves that every lib file loads
+# too. The hooks call this file, so a broken copy would fail every commit.
+doctor_runner() {
+  local root=$1
+  if [ -f "$root/.gauntlet/bin/gauntlet" ] && [ -x "$root/.gauntlet/bin/gauntlet" ] \
+    && "$root/.gauntlet/bin/gauntlet" --version < /dev/null > /dev/null 2>&1; then
     doctor_ok "runner .gauntlet/bin/gauntlet"
   else
-    doctor_fail "runner .gauntlet/bin/gauntlet is missing or not executable: run gauntlet install"
+    doctor_fail ".gauntlet/bin or .gauntlet/lib is broken or missing: run gauntlet install from a gauntlet checkout (a .gitignore entry such as lib/ also drops .gauntlet/lib)"
   fi
+}
+
+# doctor_hooks <root> <scratch>: the runner must load, then the gate line must be in each
+# hook install-hooks would use. A lefthook or prek config needs the snippet in it (HOOK-AC7).
+doctor_hooks() {
+  local root=$1 scratch=$2 target kind dir f
+  doctor_runner "$root"
   target=$(hook_target) || return 2
   kind=${target%% *}
   dir=${target#"$kind"}
@@ -304,12 +384,17 @@ doctor_hooks() {
   return 0
 }
 
-# doctor_hook_file <stage> <file> <plain> <gate> <kind>: <file> must hold one of the
-# gate lines. A hook install-hooks can edit is fixed by running it. A hook it only
-# prints (kind print), or one hook_editable refuses, also gets the line to add by hand.
+# doctor_hook_file <stage> <file> <plain> <gate> <kind>: <file> must hold a gate line. In
+# a plain hooks dir (kind dir) the hook must also be executable, since git runs it directly;
+# husky runs its hooks through a wrapper, so it needs no exec bit. A hook install-hooks
+# cannot edit, and a hooks dir it only prints for (kind print), get the line to add by
+# hand: running install-hooks would print the same thing.
 doctor_hook_file() {
   local stage=$1 file=$2 line=$3 gate=$4 kind=$5 shown manual=0
   shown=$(display_path "$file")
+  if [ "$kind" = dir ] && [ -f "$file" ] && [ ! -x "$file" ]; then
+    doctor_fail "$stage hook $shown is not executable: chmod +x $shown"
+  fi
   if [ -f "$file" ] && hook_has_gate "$file" "$line" "$gate"; then
     doctor_ok "$stage gate in $shown"
     return 0
@@ -320,7 +405,7 @@ doctor_hook_file() {
     hook_editable "$file" || manual=1
   fi
   if [ "$manual" -eq 1 ]; then
-    doctor_fail "$stage gate missing from $shown: run gauntlet install-hooks, or add this line by hand: $gate"
+    doctor_fail "$stage gate missing from $shown: add this line by hand as the first command, after the shebang line if there is one: $gate"
   else
     doctor_fail "$stage gate missing from $shown: run gauntlet install-hooks"
   fi
@@ -329,16 +414,24 @@ doctor_hook_file() {
 
 # doctor_baseline <root> <scratch>: the committed baseline must equal what the code
 # measures now: the same comparison check --ci makes, over the tracked files. A dirty
-# tree does not change that.
+# tree does not change that. When measuring fails for a cause a rule FAIL already names
+# (<scratch>/causes), this check says nothing more: it would repeat that cause.
 doctor_baseline() {
-  local root=$1 scratch=$2 rc=0
+  local root=$1 scratch=$2 rc=0 reason
   if [ ! -f "$root/.gauntlet/baseline.tsv" ]; then
     doctor_fail "baseline .gauntlet/baseline.tsv is missing: run gauntlet baseline and commit it"
     return 0
   fi
-  ( measure all "$scratch/measure" ) || rc=$?
+  ( measure all "$scratch/measure" ) > "$scratch/measure.out" 2> "$scratch/measure.err" || rc=$?
   if [ "$rc" -ne 0 ]; then
-    doctor_fail "baseline cannot be checked: measuring the code failed (see above); fix the rule or tool it names"
+    if [ -s "$scratch/causes" ]; then
+      return 0
+    fi
+    reason=$(awk '/^gauntlet: / { sub(/^gauntlet: /, ""); print; exit }' "$scratch/measure.err")
+    if [ -z "$reason" ]; then
+      reason="measuring the code failed"
+    fi
+    doctor_fail "baseline cannot be checked: $reason; fix the rule or tool it names"
   elif cmp -s "$root/.gauntlet/baseline.tsv" "$scratch/measure/measure.tsv"; then
     doctor_ok "baseline is exact"
   else
@@ -348,38 +441,22 @@ doctor_baseline() {
 }
 
 # doctor_config <root> <scratch>: the keys of .gauntlet/config are base, touched and
-# check.*. Check keys are validated by the same rules check --ci uses, and touched
-# must be on or off.
+# check.*. check_key_rows validates them, the same way check does, so the two cannot
+# drift. touched must be on or off. Each problem is one FAIL line, and its text names the fix.
 doctor_config() {
-  local root=$1 scratch=$2 key before=$DOCTOR_FAILS cfg
+  local root=$1 scratch=$2 before=$DOCTOR_FAILS cfg problem
   cfg="$root/.gauntlet/config"
-  if [ ! -f "$cfg" ]; then
-    doctor_ok "config keys"
-    return 0
+  if [ -f "$cfg" ]; then
+    check_key_rows "$cfg" > "$scratch/keys" || return 2
+    awk -F "$DETECT_TAB" '
+      $1 == "BAD" { print "bad check key " $2 ": " $3 }
+      $1 == "UNKNOWN" { print $3 }
+    ' "$scratch/keys" > "$scratch/key-problems" || return 2
+    LC_ALL=C sort "$scratch/key-problems" > "$scratch/key-problems.sorted" || return 2
+    while IFS= read -r problem; do
+      doctor_fail "$problem"
+    done < "$scratch/key-problems.sorted"
   fi
-  awk '
-    /^[[:space:]]*#/ { next }
-    {
-      eq = index($0, "=")
-      if (eq == 0) next
-      key = substr($0, 1, eq - 1)
-      gsub(/^[ \t]+|[ \t]+$/, "", key)
-      print key
-    }
-  ' "$cfg" > "$scratch/keys" || return 2
-  while IFS= read -r key; do
-    case "$key" in
-      base|touched|check.*) ;;
-      *) doctor_fail "config key $key is not known: use base, touched or check.<name>" ;;
-    esac
-  done < "$scratch/keys"
-
-  check_key_rows "$cfg" > "$scratch/checks" || return 2
-  awk -F "$DETECT_TAB" '$1 == "BAD" { print $2 ": " $3 }' "$scratch/checks" > "$scratch/bad" || return 2
-  while IFS= read -r key; do
-    doctor_fail "bad check key $key"
-  done < "$scratch/bad"
-
   if ! touched_mode > /dev/null 2>&1; then
     doctor_fail "touched must be on or off, got [$(config_get touched off)]: fix the touched line in .gauntlet/config"
   fi
@@ -405,9 +482,9 @@ doctor_rules() {
   return 0
 }
 
-# doctor_waivers <root> <scratch>: list the waive rows whose branch is not the
-# current one (EXC-AC11). They never fail: a stale waiver exempts nothing, and
-# removing it is a later step.
+# doctor_waivers <root> <scratch>: list the waive rows whose branch is not the current one
+# (EXC-AC11). They never fail: a stale waiver exempts nothing, and removing it is a later
+# step. Loosen and remove rows are not waivers and are never listed.
 doctor_waivers() {
   local root=$1 scratch=$2 branch file
   file=$(exc_file) || return 2
