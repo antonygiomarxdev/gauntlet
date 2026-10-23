@@ -20,6 +20,8 @@ set -eu
 . "$(dirname "$0")/../lib/exceptions.sh"
 # shellcheck source=lib/check.sh
 . "$(dirname "$0")/../lib/check.sh"
+# shellcheck source=lib/hooks.sh
+. "$(dirname "$0")/../lib/hooks.sh"
 
 case "${1:-}" in
   --version) printf 'gauntlet %s\n' "$GAUNTLET_VERSION" ;;
@@ -77,6 +79,12 @@ case "${1:-}" in
       *) check_ci "$@" || status=$? ;;
     esac
     exit "$status"
+    ;;
+  install)
+    install_runner
+    ;;
+  install-hooks)
+    install_hooks
     ;;
   *) die "unknown command: ${1:-}" ;;
 esac
