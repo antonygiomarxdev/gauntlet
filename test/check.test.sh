@@ -694,3 +694,109 @@ test_checks_run_on_onboarding_branch() {
   assert_contains "$OUT" "no baseline at base"
   assert_contains "$OUT" "  t  exit 1"
 }
+
+test_renamed_away_triggers_scoped_check() {
+  mkrepo
+  printf 'x\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  mkdir -p src
+  printf 'y\n' > src/z
+  rebaseline
+  commit_all main
+  must git checkout -q -b feat
+  mkdir -p docs
+  printf 'check.t=false\ncheck.t.paths=src/\n' > .gauntlet/config
+  must git mv src/z docs/z
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  t  exit 1"
+}
+
+test_renamed_out_of_rules_triggers_rule_tests() {
+  mkrepo
+  printf 'x\n' > a.ts
+  rule todo paths='**/*.ts'
+  rule x paths='**/*.ts'
+  rebaseline
+  commit_all main
+  must git checkout -q -b feat
+  mkdir -p docs
+  must git mv .gauntlet/rules/x.md docs/x.md
+  commit_all feat
+  gate
+  assert_contains "$OUT" "[rule-tests]"
+  assert_contains "$OUT" "  todo  bad  no cases"
+}
+
+test_deleted_file_triggers_scoped_check() {
+  mkrepo
+  printf 'x\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  mkdir -p src
+  printf 'y\n' > src/a
+  rebaseline
+  commit_all main
+  must git checkout -q -b feat
+  printf 'check.t=false\ncheck.t.paths=src/\n' > .gauntlet/config
+  must git rm -q src/a
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  t  exit 1"
+}
+
+test_check_stdin_is_devnull() {
+  gate_setup 'x'
+  # a reads stdin; b must still run after it, so a stdin reader cannot eat the table.
+  printf 'check.a=cat; true\ncheck.b=false\n' > .gauntlet/config
+  commit_all feat
+  # A stdin that never closes: a check that reads it would hang, so timeout ends it.
+  timeout 10 "$G" check --ci --base main < <(sleep 30 2> /dev/null) > "$TMP/out" 2>&1
+  STATUS=$?
+  OUT=$(cat "$TMP/out")
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  b  exit 1"
+}
+
+test_rule_tests_broken_detector_exits_2() {
+  gate_setup 'x'
+  rule broken paths='**/*.ts' engine=script detector="sh -c 'for f; do case \$f in *.txt) exit 2;; esac; done' sh {files}"
+  cases_of broken 'TODO x'
+  commit_all feat
+  gate
+  assert_eq 2 "$STATUS" "status"
+  assert_contains "$OUT" "rule tests could not run"
+}
+
+test_bad_check_key_says_why() {
+  gate_setup 'x'
+  printf 'check.t=\n' > .gauntlet/config
+  commit_all feat
+  gate
+  assert_eq 2 "$STATUS" "empty command"
+  assert_contains "$OUT" "bad check key check.t: empty command"
+  printf 'check.t=true\ncheck.t.ci=maybe\n' > .gauntlet/config
+  commit_all feat2
+  gate
+  assert_eq 2 "$STATUS" "ci value"
+  assert_contains "$OUT" "bad check key check.t.ci: .ci must be on or off, got [maybe]"
+  printf 'check.u.paths=src/\n' > .gauntlet/config
+  commit_all feat3
+  gate
+  assert_eq 2 "$STATUS" "attribute alone"
+  assert_contains "$OUT" "bad check key check.u.paths: attribute without a command"
+}
+
+test_bad_check_key_first_in_sorted_order() {
+  gate_setup 'x'
+  # The attribute orphan is found first by the awk pass; sorted, check.a is first.
+  printf 'check.z.paths=x\ncheck.a=\n' > .gauntlet/config
+  commit_all feat
+  gate
+  assert_eq 2 "$STATUS" "status"
+  assert_contains "$OUT" "bad check key check.a: empty command"
+  assert_not_contains "$OUT" "check.z.paths"
+}

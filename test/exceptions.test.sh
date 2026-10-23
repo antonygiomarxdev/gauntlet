@@ -33,9 +33,12 @@ exc_rebase() {
   run "$G" baseline
 }
 
-# exc_gate: run check --ci against main; result in $OUT and $STATUS.
+# exc_gate: run check --ci against main; result in $OUT and $STATUS. These tests
+# are about [loosened] alone, so their rules must pass their cases: a
+# [rule-tests] section here is a test fixture gap, never the thing under test.
 exc_gate() {
   run "$G" check --ci --base main
+  assert_not_contains "$OUT" "[rule-tests]"
 }
 
 test_waive_exempts_new_on_branch() {
@@ -246,12 +249,15 @@ test_format_change_is_loosening() {
   printf 'ok\n' > a.ts
   rule todo paths='**/*.ts'
   rule fixme paths='**/*.ts' detector="rg --with-filename --line-number --no-heading 'FIXME' {files}"
+  cases_of todo 'TODO FIXME x'
+  cases_of fixme 'TODO FIXME x'
   exc_rebase
   exc_commit main
   must git checkout -q -b feat
   mkdir -p .gauntlet/formats
-  printf -- '---\nmatch: ^([^:]+):([0-9]+)(:[0-9]+)?(: ?(.*))?$\npath: 1\nline: 2\nmessage: 5\nignore: .*\n---\n' \
-    > .gauntlet/formats/path-line.md
+  # The built-in format, as a project file: it has samples, so the format
+  # tests pass and only the loosening is under test.
+  cp "$ROOT/lib/formats/path-line.md" .gauntlet/formats/path-line.md
   exc_rebase
   exc_commit feat
   exc_gate
@@ -302,6 +308,7 @@ test_loosen_runs_on_onboarding_branch() {
   mkrepo
   printf 'ok\n' > a.ts
   rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
   must git rm -q .gauntlet/baseline.tsv
   exc_commit main-no-baseline
   must git checkout -q -b feat
@@ -409,6 +416,8 @@ test_loosen_of_ab_does_not_cover_a() {
   printf 'ok\n' > a.ts
   rule a paths='**/*.ts'
   rule ab paths='**/*.ts'
+  cases_of a 'TODO x'
+  cases_of ab 'TODO x'
   exc_rebase
   exc_commit main
   must git checkout -q -b feat
@@ -512,6 +521,7 @@ test_format_file_deleted_is_loosening() {
   mkrepo
   printf 'TODO\n' > a.ts
   rule todo paths='**/*.ts'
+  cases_of todo 'TODO FIXME x'
   mkdir -p .gauntlet/formats
   printf -- '---\nmatch: ^([^:]+):([0-9]+)(:[0-9]+)?(: ?(.*))?$\npath: 1\nline: 2\nmessage: 5\nignore: nomatch\n---\n' > .gauntlet/formats/path-line.md
   exc_rebase

@@ -49,7 +49,8 @@ check_run() {
   base=$(resolve_base "$base_ref") || return 2
   sha=$(merge_base "$base") || return 2
   # Every file the branch changes, deletions included: the scope of declared checks.
-  git_nul_lines -c core.quotepath=off diff --name-only -z "$sha" HEAD > "$scratch/changed" || return 2
+  # --no-renames: a rename lists both its old path (deleted) and its new one.
+  git_nul_lines -c core.quotepath=off diff --name-only --no-renames -z "$sha" HEAD > "$scratch/changed" || return 2
   measure all "$scratch/now" || return 2
   rule_ids > "$scratch/ids" || return 2
   n_rules=$(awk 'END { print NR }' "$scratch/ids") || return 2
@@ -226,43 +227,48 @@ check_table() {
   : > "$scratch/checks.all"
   if [ -f "$root/.gauntlet/config" ]; then
     awk '
-    /^[[:space:]]*#/ { next }
-    {
-      eq = index($0, "=")
-      if (eq == 0) next
-      key = substr($0, 1, eq - 1)
-      gsub(/^[ \t]+|[ \t]+$/, "", key)
-      if (substr(key, 1, 6) != "check.") next
-      val = substr($0, eq + 1)
-      gsub(/^[ \t]+|[ \t]+$/, "", val)
-      rest = substr(key, 7)
-      if (rest ~ /^[A-Za-z0-9_-]+$/) { cmd[rest] = val; declared[rest] = key }
-      else if (rest ~ /^[A-Za-z0-9_-]+\.(paths|ci)$/) {
-        name = substr(rest, 1, index(rest, ".") - 1)
-        attr_key[name] = key
-        if (rest ~ /\.paths$/) paths[name] = val
-        else ci[name] = val
+      /^[[:space:]]*#/ { next }
+      {
+        eq = index($0, "=")
+        if (eq == 0) next
+        key = substr($0, 1, eq - 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", key)
+        if (substr(key, 1, 6) != "check.") next
+        val = substr($0, eq + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", val)
+        rest = substr(key, 7)
+        if (rest ~ /^[A-Za-z0-9_-]+$/) { cmd[rest] = val; declared[rest] = key }
+        else if (rest ~ /^[A-Za-z0-9_-]+\.(paths|ci)$/) {
+          name = substr(rest, 1, index(rest, ".") - 1)
+          attr_key[name] = key
+          if (rest ~ /\.paths$/) paths[name] = val
+          else ci[name] = val
+        }
+        else bad[key] = 1
       }
-      else bad[key] = 1
-    }
-    END {
-      for (name in attr_key) if (!(name in declared)) print "BAD\t" attr_key[name]
-      for (name in declared) {
-        if (cmd[name] == "") { print "BAD\t" declared[name]; continue }
-        c = (name in ci) ? ci[name] : "off"
-        if (c != "on" && c != "off") { print "BAD\t" declared[name] ".ci"; continue }
-        printf "%s\t%s\t%s\t%s\n", name, c, paths[name], cmd[name]
+      END {
+        for (name in attr_key)
+          if (!(name in declared)) print "BAD\t" attr_key[name] "\tattribute without a command"
+        for (name in declared) {
+          if (cmd[name] == "") { print "BAD\t" declared[name] "\tempty command"; continue }
+          c = (name in ci) ? ci[name] : "off"
+          if (c != "on" && c != "off") {
+            print "BAD\t" declared[name] ".ci\t.ci must be on or off, got [" c "]"
+            continue
+          }
+          printf "%s\t%s\t%s\t%s\n", name, c, paths[name], cmd[name]
+        }
+        for (key in bad) print "BAD\t" key "\tnot a check key; use check.<name>, check.<name>.paths or check.<name>.ci"
       }
-      for (key in bad) print "BAD\t" key
-    }
     ' "$root/.gauntlet/config" > "$scratch/checks.all" || return 2
   fi
-  bad=$(awk -F '\t' '$1 == "BAD" { print $2; exit }' "$scratch/checks.all") || return 2
+  LC_ALL=C sort "$scratch/checks.all" > "$scratch/checks.raw" || return 2
+  # Sorted before the first bad row is taken, so the reported key is the same on every run.
+  bad=$(awk -F '\t' '$1 == "BAD" { print $2 ": " $3; exit }' "$scratch/checks.raw") || return 2
   if [ -n "$bad" ]; then
     printf 'gauntlet: bad check key %s\n' "$bad" >&2
     return 2
   fi
-  LC_ALL=C sort "$scratch/checks.all" > "$scratch/checks.raw" || return 2
 }
 
 # run_declared_checks <root> <scratch>: run each check of <scratch>/checks.raw
@@ -276,7 +282,8 @@ run_declared_checks() {
   kept="$scratch/check.kept"
   : > "$scratch/checks.body"
   : > "$scratch/checks.failed"
-  while IFS= read -r row; do
+  # The table is read on fd 3, so no check can consume its rows through stdin.
+  while IFS= read -r row <&3; do
     name=${row%%"$DETECT_TAB"*}
     row=${row#*"$DETECT_TAB"}
     ci=${row%%"$DETECT_TAB"*}
@@ -287,7 +294,7 @@ run_declared_checks() {
     if ! check_in_scope "$paths" "$scratch/changed"; then continue; fi
 
     t0=$(now_ms)
-    (cd "$root" && bash -c "$cmd") < /dev/null > "$out" 2>&1 && code=0 || code=$?
+    (cd "$root" && bash -c "$cmd") < /dev/null 3<&- > "$out" 2>&1 && code=0 || code=$?
     t1=$(now_ms)
     printf 'check:%s\t%s\n' "$name" "$((t1 - t0))" >> "$scratch/check.time"
     if [ "$code" -ne 0 ]; then
@@ -297,7 +304,7 @@ run_declared_checks() {
       awk '{ printf "    %s\n", $0 }' "$kept" >> "$scratch/checks.body" || return 2
     fi
     rm -f "$out" "$kept"
-  done < "$scratch/checks.raw"
+  done 3< "$scratch/checks.raw"
 }
 
 # check_in_scope <paths> <changed>: succeed when the check has no paths (always)
