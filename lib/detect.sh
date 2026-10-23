@@ -102,7 +102,7 @@ detect_batch() {
 # has {files}, once per batch of quoted paths from <files>. An empty list runs
 # nothing.
 detect_scan() {
-  local root=$1 cmd=$2 id=$3 errf=$4 files=$5 batch="" blen=0 p
+  local root=$1 cmd=$2 id=$3 errf=$4 files=$5 batch="" blen=0 p full limit
   case "$cmd" in
     *'{files}'*) ;;
     *)
@@ -110,10 +110,15 @@ detect_scan() {
       return 0
       ;;
   esac
+  # The command's own text counts against the budget too.
+  limit=$((DETECT_BATCH_CHARS - ${#cmd}))
   while IFS= read -r p || [ -n "$p" ]; do
     quote_word "$p"
-    if [ -n "$batch" ] && [ $((blen + ${#QUOTED})) -gt "$DETECT_BATCH_CHARS" ]; then
-      detect_batch "$root" "${cmd//'{files}'/"$batch"}" "$id" "$errf" || return 2
+    if [ -n "$batch" ] && [ $((blen + ${#QUOTED})) -gt "$limit" ]; then
+      # Assign before passing: inside an argument, ${var//pat/"rep"} keeps its
+      # inner quotes on bash 4.2 and older (compat32 mode), breaking the batch.
+      full=${cmd//'{files}'/"$batch"}
+      detect_batch "$root" "$full" "$id" "$errf" || return 2
       batch=""
       blen=0
     fi
@@ -121,7 +126,8 @@ detect_scan() {
     blen=$((blen + ${#QUOTED} + 1))
   done < "$files"
   if [ -n "$batch" ]; then
-    detect_batch "$root" "${cmd//'{files}'/"$batch"}" "$id" "$errf" || return 2
+    full=${cmd//'{files}'/"$batch"}
+    detect_batch "$root" "$full" "$id" "$errf" || return 2
   fi
   return 0
 }

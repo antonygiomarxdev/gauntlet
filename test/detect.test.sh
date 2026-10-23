@@ -281,3 +281,47 @@ test_uncompilable_format_is_broken() {
   assert_eq 2 "$STATUS" "status"
   assert_contains "$OUT" "does not compile"
 }
+
+test_batched_command_portable_under_compat32() {
+  mkrepo
+  printf 'TODO\n' > "my a.ts"
+  printf 'TODO\n' > "my b.ts"
+  printf 'my a.ts\nmy b.ts\n' > "$TMP/files.txt"
+  rule todo
+  # compat32 selects the bash 3.2 quoting rules that broke argument-position
+  # ${var//pat/"rep"} on bash 4.2 and older. Run in a fresh bash so errexit is
+  # active, as in bin/gauntlet.
+  OUT=$(bash -c '
+    shopt -s compat32 2>/dev/null || true
+    set -eu
+    . "$1/core.sh"; . "$1/rules.sh"; . "$1/paths.sh"; . "$1/detect.sh"
+    run_detector .gauntlet/rules/todo.md "$2" "$3"
+    LC_ALL=C sort "$3"
+  ' _ "$ROOT/lib" "$TMP/files.txt" "$TMP/out.tsv") || fail "run failed: $OUT"
+  assert_eq "$(printf 'todo\tmy a.ts\t1\tTODO\ntodo\tmy b.ts\t1\tTODO')" "$OUT" "rows"
+}
+
+
+
+test_command_length_counts_against_budget() {
+  mkrepo
+  detect_lib
+  mkdir -p "$TMP/bin"
+  # Stub records the byte total of its argv on each run.
+  # shellcheck disable=SC2016 # the stub script body is meant to stay literal
+  printf '#!/bin/bash\nt=0\nfor a in "$@"; do t=$((t + ${#a})); done\necho "$t" >> "%s/sizes"\n' "$TMP" > "$TMP/bin/ztool"
+  must chmod +x "$TMP/bin/ztool"
+  PATH="$TMP/bin:$PATH"
+  export PATH
+  local pad name i
+  pad=$(printf 'x%.0s' $(seq 1 99000))
+  name=$(printf 'y%.0s' $(seq 1 190))
+  : > "$TMP/files.txt"
+  for i in 1 2 3 4 5 6; do printf 'f_%04d_%s.ts\n' "$i" "$name" >> "$TMP/files.txt"; done
+  rule r engine=linter "detector=ztool {files} $pad"
+  run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 0 "$STATUS" "status"
+  local max
+  max=$(sort -n "$TMP/sizes" | tail -1)
+  if [ "$max" -gt 100000 ]; then fail "one command was $max bytes, over 100000"; fi
+}
