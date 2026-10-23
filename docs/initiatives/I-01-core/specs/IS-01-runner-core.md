@@ -55,7 +55,7 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
 1. **The runner is split into `lib/` files and vendored as a folder.** Design §6 lists only `bin/gauntlet`; split files keep each concern small enough to review.
 2. **`check --ci` refuses a dirty tree.** It exits 2 when tracked files differ from `HEAD`, with the message `gauntlet checks what you push; commit or stash first`. Measuring the working tree while pushing `HEAD` would break parity. Untracked files do not count.
 3. **Partial staging** (HOOK-AC3). The `pre-commit` check runs on the working tree. When a staged file also has unstaged changes, auto-tighten is skipped and a notice is printed. Push and CI still verify the exact baseline. The ceiling: a commit check can pass on code that is not what gets committed. The push gate catches it.
-4. **lefthook and prek configs are YAML.** `install-hooks` prints the exact snippet for them and does not edit the file. `doctor` fails until the snippet is present. husky, a custom `core.hooksPath` and plain `.git/hooks` get the line added automatically.
+4. **lefthook and prek configs are YAML.** `install-hooks` prints the exact snippet for them and does not edit the file. `doctor` fails until the snippet is present. husky, a `core.hooksPath` inside the repo and plain `.git/hooks` get the line added automatically. A shared hooks directory outside the repo is printed only (R25).
 5. **Waivers apply only on their own branch.** A `waive` row applies only when its `branch` column equals the current branch (`GITHUB_HEAD_REF` in CI, `git symbolic-ref --short HEAD` locally). Rows from merged branches are ignored, and `doctor` lists them as stale. Deleting them on merge is left for later.
 6. **Loosening needs a new exception row.** A `loosen` or `remove` row counts only if it is new since the merge-base: present in the current `exceptions.tsv` and absent from the base's. Otherwise one old row would permit every future loosening.
 7. **New rules, and the onboarding branch, are exempt from checks 1–3.**
@@ -75,7 +75,7 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
 2. **CRLF files and files edited on Windows** must fingerprint the same as LF. Tested in Task 5.
 3. **CI runs on a detached HEAD.** Waivers must resolve the branch from `GITHUB_HEAD_REF`, or they silently never apply. Tested in Task 10.
 4. **The onboarding PR, and a PR that adds a rule,** must not fail on the debt they introduce. Tested in Task 8.
-5. **A hook file whose last line is `exit 0`,** common in hand-written hooks, must get the gauntlet line inserted before the `exit`, or the gate never runs. Tested in Task 13.
+5. **A hook file whose last line is `exit 0`,** common in hand-written hooks, must still run the gate. The gauntlet line goes first, right after the shebang, so no early exit, trailing exit, `exec` or failing last command can skip it (R26). Tested in Task 13.
 
 ---
 
@@ -437,7 +437,7 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
 **Interfaces:**
 - Consumes: `run_rule_tests`.
 - Produces:
-  - **Rule tests** run when `git diff --name-only <mb> HEAD -- .gauntlet/rules` is non-empty, reported under `[rule-tests]`.
+  - **Rule tests** run when a file under `.gauntlet/rules/` or `.gauntlet/formats/` changed since the merge-base (R5), reported under `[rule-tests]`.
   - **Declared checks** come from config keys:
     - `check.<name>=<cmd>`;
     - `check.<name>.paths=<prefix> ...`, where an empty value means always;
@@ -471,13 +471,13 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
     - The rules that exist at `HEAD` play the role of "rules at base".
   - **Checks:** new (block, minus waived) and touched (when enabled, from `git diff --cached -M --name-status`), plus the `[shadow]` and `[track]` reporting. There is no global or exact check at commit; push owns those.
   - **Auto-tighten**, on pass:
-    1. Take the `HEAD` baseline.
+    1. Take the baseline as the index holds it, not HEAD's (R22).
     2. Drop the rows for commit-stage rules on every staged path, including deleted paths and both sides of a rename.
     3. Add the rows just measured.
     4. If the result differs from the working-tree `baseline.tsv`, write it and `git add` it.
     5. Print `  <rule>  <old> → <new>   baseline updated and staged into this commit`.
 
-    Shadow and track rows may rise here: the baseline must stay exact. Block rows only fall, because a rise has already failed the check. When a staged file has unstaged changes, auto-tighten is skipped and the output says `partially staged; run gauntlet baseline before pushing` (decision 3).
+    Shadow and track rows may rise here: the baseline must stay exact. Block rows only fall, because a rise has already failed the check. When a staged file has unstaged changes, auto-tighten is skipped and the output says `partially staged; run gauntlet baseline before pushing` (decision 3). Auto-tighten is also skipped when the working-tree `baseline.tsv` has unstaged changes, and when the commit is `git commit <path>` (R22). A skip never skips the check.
   - **Budget:** the header shows the elapsed time, and a run over the budget adds `[slow] over the 5 s commit budget`. It never changes the exit code. The budget is 5 s; `GAUNTLET_COMMIT_BUDGET_MS` overrides it for tests only, like `GAUNTLET_TODAY`.
 
 - [ ] **Step 1: Failing tests:**
@@ -509,20 +509,20 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
 
     It is idempotent.
   - `gauntlet install-hooks` adds the marker lines `.gauntlet/bin/gauntlet check --staged  # gauntlet` (pre-commit) and `.gauntlet/bin/gauntlet check --ci  # gauntlet` (pre-push). Where they go:
-    - **husky** (`core.hooksPath` is `.husky` or `.husky/_`): appended to `.husky/pre-commit` and `.husky/pre-push`, each created if missing.
-    - **lefthook** (`lefthook.yml` or `lefthook.yaml`) or **prek** (`.pre-commit-config.yaml`): no edit. It prints `ACTION NEEDED: add to <file>:` followed by the exact YAML snippet, and exits 0 (decision 4).
-    - **Another `core.hooksPath`:** that directory.
+    - **husky** (`core.hooksPath` is `.husky` or `.husky/_`): the gate goes first in `.husky/pre-commit` and `.husky/pre-push`, each created if missing (R26).
+    - **lefthook** (`lefthook.{yml,yaml,json,toml}`, `.lefthook.*`, `.config/lefthook.*`) or **prek** (`.pre-commit-config.yaml`, `prek.toml`): no edit. It prints `ACTION NEEDED: add to <file>:` followed by the exact snippet, and exits 0 (decision 4; R25).
+    - **Another `core.hooksPath`:** that directory when it is inside the repo or its git dir. Outside both, the lines are printed only (R25).
     - **Otherwise:** `$(git rev-parse --git-path hooks)`.
   - Rules for every location:
-    - a hook file that is created gets `#!/usr/bin/env sh` and `chmod +x`;
-    - when the last non-empty line starts with `exit`, the marker is inserted before it;
-    - a marker that is already present is not added again;
+    - a hook file that is created gets `#!/usr/bin/env sh`, the plain form and `chmod +x`;
+    - an existing hook gets the gate form `<cmd> || exit $?  # gauntlet` on the line after its shebang (line 1 when there is none), so it runs first (R26). A hook this project must not edit is printed as `ACTION NEEDED` instead (R25);
+    - a gate line that is already present, in either form, is not added again;
     - `core.hooksPath` is never written.
 
 - [ ] **Step 1: Failing tests:**
   - `test_plain_repo_gets_hooks`;
   - `test_existing_hook_keeps_content`: the original lines are unchanged and the marker is added once, even after running install twice;
-  - `test_insert_before_exit` (Review Focus 5);
+  - `test_gate_first_before_exit` (Review Focus 5);
   - `test_husky_v9_layout`: with `core.hooksPath=.husky/_`, the line lands in `.husky/pre-commit`;
   - `test_lefthook_prints_snippet_no_edit`: the file hash is unchanged and the output contains `ACTION NEEDED`;
   - `test_hookspath_never_set`;
@@ -631,3 +631,61 @@ Not covered here, and owned by later specs:
   - partial staging: decision 3;
   - write-time latency: plan 2;
   - `rg` multi-line normalization: deferred. A reformat that splits one flagged line produces a new fingerprint, and the check reports it. That fails closed, not open.
+
+## Implementation rulings
+
+Binding rulings made while this spec was built, condensed from the controller's `rulings.md`. Each one says what it is, why, and what it costs if it is wrong. Rulings marked **Needs owner approval (FRD change)** go beyond the approved FRD text and are for the owner to accept or reject.
+
+**R1. Doc paths.** The plan's `docs/getting-started.md`, `docs/gates.md` and `docs/rules-and-detectors.md` live under `docs/guide/`. Why: the guide moved before the build. Cost if wrong: a path fix.
+
+**R2. Comment stripping.** `format` is read like `severity`, `stage`, `engine` and `since`: a trailing `# comment` is removed. Why: `format` is an enum-like name, while a `detector` may contain `#`. Cost if wrong: one key in a list.
+
+**R3. Format resolution.** `format_file <name>` prints a format's path: the project's `.gauntlet/formats/<name>.md` first, then the built-in one. An unknown name exits 2. Why: rules, `test-rules` and loosening all read formats, and one resolver keeps them in agreement. Cost if wrong: one function moves.
+
+**R4. Changelog for formats.** Declarative output formats get a changelog note: a new linter is one format file in `.gauntlet/formats/`, never runner code. Why: the owner's decision of 2026-10-22. Cost: none.
+
+**R5. Rule tests on format changes.** The rule cases run in `check --ci` when a file under `.gauntlet/rules/` or `.gauntlet/formats/` changed since the merge-base. Why: a format change can break a rule's output without touching the rule. Cost if wrong: extra test runs on renames.
+
+**R6. Commits and process.** No commit trailers of any kind. `CHANGELOG.md` is never edited by hand. Git user config is never touched. Nothing is pushed without the owner's go. Why: history and attribution belong to the owner. Cost if wrong: a rewritten history.
+
+**R7. Changie runs.** Two `changie new` runs in the same second overwrite each other, so each run waits one second. Cost if wrong: a lost changelog entry.
+
+**R8. Tooling on the build machine.** The build machine runs bash 5.2, but the code must stay bash 3.2 compatible. The macOS CI job is the real 3.2 check. Cost if wrong: a bash 4 feature reaches users, and macOS CI catches it.
+
+**R9. `severity_rank`.** It prints the rank (block 3, shadow 2, track 1) and returns 1 for any other severity. Callers read it with `$(...)`. Why: an exit status of 3 would trip `set -e` and collide with the exit codes. Cost if wrong: one line in each caller.
+
+**R10. Glob conversion.** One left-to-right scan in POSIX awk. `**/` matches zero or more directories, `**` matches anything, `*` matches within one directory, `?` matches one character, and the other regex metacharacters are escaped. Why: the order in the brief escaped the brackets it had just produced. Cost if wrong: one function rewrite.
+
+**R11. Runner library path.** `lib/detect.sh` sets `GAUNTLET_LIB` from its own location, and the built-in formats live under it. Format frontmatter is read by the same reader as rule frontmatter. Why: no runner-root variable existed yet. Cost if wrong: the variable moves to `core.sh`.
+
+**R12. `path-line` regex.** It is `^([^:]+):([0-9]+)(:[0-9]+)?(: ?(.*))?$`, so the path is everything before the first colon. Why: a greedy path group swallowed the line number when a column was present. Known ceiling: a path with a colon in its name. Cost if wrong: one regex.
+
+**R13. Batching.** A `{files}` list is split so that each `bash -c` command stays under 100000 bytes. A batch that exits 2 or more makes the detector broken. Why: the 128 KiB per-argument limit is reached on real repos. Cost if wrong: a loop.
+
+**R14. Detector stderr.** The detector's stderr goes to a temp file. The broken-detector and missing-tool messages show its first five lines. Why: a bare exit code is hard to act on. Cost if wrong: noisier messages.
+
+**R15. `.gauntlet/` is never measured.** Files under `.gauntlet/` are skipped whatever a rule's `paths` say. Why: rule files contain the patterns they detect, so the default `**` would make a rule flag itself. Cost if wrong: no rule can lint gauntlet's own config.
+
+**R16. Format tests.** `test-rules` checks every built-in format and every project format. A project file replaces the built-in of the same name. Each sample is parsed by the same parser that reads detector output. Why: one parser, and unused formats are still checked. Cost if wrong: a filter added later.
+
+**R17. The base side of the comparisons.** The merge-base's `baseline.tsv` is read as committed and never re-measured. Severity and fix come from the current rule file. A rule exists at the base if its file exists at the merge-base commit. Per-rule times are written by `measure`. Cost if wrong: re-measuring the base later is additive.
+
+**R18. Problem count.** One problem per `[new]` line. One per rule whose total rose and is not already explained by its `[new]` lines (the rise came from waived paths). One for `[baseline]`. One each for an unexplained `[touched]` line, a `[loosened]` line, a `[rule-tests]` line and a failed check. Shadow and track count nothing. A rising violation reports its last occurrences. Cost if wrong: one counting function.
+
+**R19. Tracked files only.** `baseline` and `check --ci` measure tracked files only. Why: CI never sees untracked files, so a local baseline would disagree with CI. Cost if wrong: a mode switch. A new file must be `git add`ed before it is measured.
+
+**R20. Touched rows.** A `[touched]` line is a problem only when its file has no `[new]` line, because that line already explains it. Every failing file is still printed, with the rule it failed: `(must go down)`, `(must be 0)` for an added file, or `(must stay 0)` for a file with no debt at the base. Cost if wrong: one counting rule.
+
+**R21. Newline and tab in paths.** Paths with a newline or a tab are unsupported, because the tables cannot carry them. Known ceiling, with no detection yet: such a file is not measured, and nothing reports it. Cost if wrong: a guard in the path listers.
+
+**R22. Tighten from the index, with skip modes.** **Needs owner approval (FRD change):** Auto-tighten starts from the baseline the index holds, not from HEAD's. The new, touched, shadow and track checks still compare with HEAD, so nothing new can be smuggled in. Tightening is skipped (the check still runs and blocks) when a staged file has unstaged changes, when the working-tree baseline has unstaged changes, or when the commit is `git commit <path>`. Why: starting from HEAD would revert a baseline regenerated on the branch, which deadlocks push recovery. Cost if wrong: a hand-staged baseline is kept as staged, and push's exact check still catches a wrong one.
+
+**R23. Renames carry their debt.** **Needs owner approval (FRD change):** A rename that git reports as `R` in `git diff -M` moves the old path's baseline rows to the new path, in `check --ci` and at commit (FRD-03 §4.6). Copies, and delete-plus-add pairs below git's similarity threshold, do not carry debt. Limits: a file moved over an existing one (git reports `M` plus `D`) and an `A` ↔ `B` swap count as new debt; `waive` is the escape. A branch that changes too many files for git's `diff.renameLimit` (default 1000) loses rename detection, with a warning from git. Why: existing debt must not fail the gate by itself, and a rename is not new debt. Cost if wrong: renamed legacy files get blocked.
+
+**R24. A deleted rule leaves its rows.** Deleting a rule that has debt leaves its baseline rows in place until `gauntlet baseline` runs, and push's exact check reports them. Why: the rows stay the record until someone regenerates the baseline, and the deletion is judged as a loosening anyway. Cost if wrong: one extra step on rule removal.
+
+**R25. Editing existing hooks.** The runner edits only hooks it can change without changing what the project's own code does. For the others it prints `ACTION NEEDED` and the line to add: a shebang that is not a shell, CRLF line endings, a NUL byte, a dangling symlink, a symlink to a file outside the repo, a shared hooks directory outside the repo and its git dir, and lefthook or prek configs (which get a snippet). A non-executable existing hook gets a warning on stderr, and its mode is never changed. Vendoring copies into `.new` directories and swaps them in only after the copy succeeds, rolling back on failure. The exit-detection parts of this ruling are superseded by R26. Cost if wrong: a hook needs a hand edit.
+
+**R26. The gate goes first.** **Needs owner approval (FRD change):** In an existing hook the runner may edit, the gate line goes on the line right after the shebang (line 1 when there is none), as `<cmd> || exit $?  # gauntlet`. Why: a line placed at the end can be skipped by an early exit, `exec`, a line continuation or a failing last command, and review rounds showed each of these. A created hook uses the plain form. The gate runs before the project's own steps, so a formatter in lint-staged runs after it. `doctor` checks that the line is present and that the vendored runner loads, not that the gate runs. Cost if wrong: the gate runs before the project's own steps.
+
+**Open: config and `stage:` loosening.** **Needs owner approval (FRD change):** Changes to `.gauntlet/config` (`base=`, `touched=`) and `stage:` changes in a rule file (for example `commit` to `push`) are not flagged as loosening, so they need no exception row. FRD-04 §4.8 does not list them. This is not detected yet, and the owner has not decided how to handle it. Cost if wrong: the gate can be relaxed without a human-written row.

@@ -14,12 +14,12 @@ loosen	raw-status: exclude += src/generated/**	generated code, regenerated on bu
 
 | Type | Target | Lifetime |
 |---|---|---|
-| `waive` | one path | this branch only; removed when the branch merges |
-| `loosen` | a rule, plus what changed | permanent, recorded |
+| `waive` | one path | applies on its own branch only. The row stays in the file. On any other branch `doctor` lists it as stale, and a stale waiver never fails. |
+| `loosen` | a rule, plus what changes | permanent, recorded |
 | `remove` | a rule | permanent, recorded |
-| `script` | a custom detector | permanent, recorded |
+| `script` | a custom detector | permanent, recorded. Added by hand: no command writes it. |
 
-A path waiver exempts that path from the new-violation and touched-file checks. The rule's total still applies.
+A path waiver exempts that path from the new-violation and touched-file checks. The rule's total still applies, so a waiver cannot hide a rise in the rule's total. A waived file that adds a violation still fails `[global]`.
 
 ## Only humans create exceptions
 
@@ -29,10 +29,27 @@ gauntlet loosen <rule> "<what changes>" "<reason>"
 gauntlet remove <rule> "<reason>"
 ```
 
-- The agent may **propose** the exact command, with its reason. It never writes the file.
-- The Claude Code adapter denies agent edits to `exceptions.tsv`. In that harness you run the command yourself with `! gauntlet waive …`, which is your own shell command and not an agent tool call.
-- In every harness, the runner fails any loosening that has no matching row, and CI comments each new exception on the PR.
-- **When the agent is blocked and you are away**, it stops, leaves the command ready with its reason, and notifies you. It does not route around the gate.
+- Each command appends one row, dated today. Commit the file on the branch: `check --ci` refuses a dirty tree, and a `loosen` or `remove` row counts only once it is in the base-to-HEAD history.
+- The runner does not check who wrote a row. A row written by hand works the same way, so review the diff of `exceptions.tsv` like any other change.
+- The agent may **propose** the exact command, with its reason. Keeping agents from writing the file themselves is the skill's job and the Claude Code adapter's, both planned (IS-02).
+
+## What counts as a loosening
+
+When `check --ci` finds one of these since the merge-base, the rule needs a `loosen` row. A rule file deleted needs a `remove` row.
+- severity lowered (`block` → `shadow` → `track`);
+- `paths` narrowed, or `exclude` widened;
+- `engine` or `detector` changed, or a file the detector names changed;
+- for a `block` rule, its `format` changed, or its format file changed.
+
+A `loosen` row must be new on the branch. A row already in the merge-base does not count. One row covers every loosening of its rule found since the merge-base, not only the one its text describes. The text is a note for reviewers.
+
+**Not detected yet:** changes to `.gauntlet/config` (`base=`, `touched=`), and `stage:` changes in a rule file (for example `commit` to `push`). These need no exception row today. The owner has not decided how they should be handled. A detector file that is named inside quotes with spaces is not recognised as changed either.
+
+## Waivers
+
+- The path must exist in git or in the working tree, and it is matched literally. A `./` prefix, a trailing `/` and globs are refused.
+- A waiver needs a branch. It is refused on a detached HEAD. In CI the branch is `GITHUB_HEAD_REF`. The commit gate applies no waivers on a detached HEAD.
+- The reason must not be empty, and must not contain a tab or a newline. The same goes for the reasons of `loosen` and `remove`.
 
 ## Why not commit trailers?
 

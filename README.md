@@ -4,9 +4,9 @@
 
 gauntlet studies your repository, agrees a set of rules with you, measures every existing violation, and from then on lets that number only go down. A new violation is caught when it is committed, when it is pushed, and in CI, whichever agent or human wrote it.
 
-> **Status: pre-release.** The specification is drafted: [vision, per-initiative PRD, FRDs and specs, and ADRs](docs/README.md). The runner and the skill are being built. The process itself is not new: it ran by hand in a large production monorepo before it became gauntlet. See the [case study](docs/guide/case-study.md).
+> **Status: runner usable by hand; skill in progress.** The runner works in this repo: `install`, `baseline`, `check`, `waive` and the rest, all in the [command reference](docs/guide/reference.md). The agent skill is not in yet, so onboarding is by hand. The specification is drafted: [vision, per-initiative PRD, FRDs and specs, and ADRs](docs/README.md). The process itself is not new: it ran by hand in a large production monorepo before it became gauntlet. See the [case study](docs/guide/case-study.md).
 
-[Getting started](docs/guide/getting-started.md) · [Concepts](docs/guide/concepts.md) · [Rules & detectors](docs/guide/rules-and-detectors.md) · [Gates](docs/guide/gates.md) · [Exceptions](docs/guide/exceptions.md) · [Agents](docs/guide/agents.md) · [Comparison](docs/guide/comparison.md) · [FAQ](docs/guide/faq.md)
+[Getting started](docs/guide/getting-started.md) · [Concepts](docs/guide/concepts.md) · [Rules & detectors](docs/guide/rules-and-detectors.md) · [Gates](docs/guide/gates.md) · [Exceptions](docs/guide/exceptions.md) · [Reference](docs/guide/reference.md) · [Agents](docs/guide/agents.md) · [Comparison](docs/guide/comparison.md) · [FAQ](docs/guide/faq.md)
 
 ---
 
@@ -21,39 +21,39 @@ The usual fixes miss in two ways:
 
 A **ratchet** does neither. It accepts today's debt as the floor and refuses to let the floor rise. gauntlet is a ratchet built for repositories where agents write most of the code:
 
-- **It onboards itself.** An agent infers your stack, researches each technology's own guidance, and proposes rules one at a time for you to accept or reject. It never imposes a standard.
+- **It onboards itself** (planned). An agent will infer your stack, research each technology's own guidance, and propose rules one at a time for you to accept or reject. It never imposes a standard.
 - **Every rule has a detector.** A rule that cannot be counted is not admitted. Detectors are declarative: a linter rule, an `ast-grep` rule or an `rg` pattern. No one writes a bespoke script "their own way".
-- **The agent cannot loosen it.** The baseline is derived and only the runner writes it. Exceptions are human-only. Loosening a rule fails CI unless a person signed for it.
-- **It coexists.** gauntlet adds one line to the hooks you already have and never takes them over.
+- **The agent cannot loosen it.** The baseline is derived and only the runner writes it. Exceptions are human-only. Loosening a rule fails CI unless a person wrote an exception for it.
+- **It coexists.** gauntlet adds one line to each shell hook you already have, placed first, and never takes them over.
 - **It is agnostic** to language, agent harness and model. The runner is bash + awk + git.
 
 ## What it looks like
 
 ```console
 $ git commit -m "feat: add invoice export"
-gauntlet  commit · 6 rules · 0.8 s
-
-  src/export/invoice.ts:42   silent-catch   catch block neither handles, logs nor rethrows
-      fix: log the error with context and rethrow, or handle it; never leave the catch empty
-  src/export/invoice.ts:88   raw-status     status compared to a string literal; use the InvoiceStatus enum
-      fix: import { InvoiceStatus } from "@/domain/invoice" and compare to its members
-
-  2 new violations · baseline unchanged · commit blocked
-  waiver: ask a human to run `gauntlet waive src/export/invoice.ts "<reason>"`
+gauntlet  commit · 1 rules · 0.1 s
+[new]
+  src/export/invoice.ts:42  todo  // TODO handle partial exports
+      fix: Remove the TODO or ticket it.
+[time]
+  todo  50 ms
+gauntlet: FAIL (1 problems)
 ```
 
 ```console
-$ git commit -m "refactor: handle export errors"
-gauntlet  commit · 6 rules · 0.7 s
-  silent-catch  51 → 49   baseline lowered and staged into this commit
-  ok
+$ git commit -m "refactor: remove a TODO"
+gauntlet  commit · 1 rules · 0.1 s
+  todo  2 → 1   baseline updated and staged into this commit
+[time]
+  todo  59 ms
+gauntlet: ok
 ```
 
 ## How it works
 
 ```mermaid
 flowchart LR
-  A[onboard<br/>infer stack · research · propose] -->|owner approves each rule| B[rules<br/>.gauntlet/rules/*.md]
+  A[onboard, planned<br/>infer stack · research · propose] -->|owner approves each rule| B[rules<br/>.gauntlet/rules/*.md]
   B --> C[measure<br/>baseline.tsv]
   C --> D{gates}
   D --> E[pre-commit<br/>staged files · under 5 s]
@@ -63,7 +63,7 @@ flowchart LR
   E & F & G -->|new violation| I[blocked<br/>with the fix]
 ```
 
-1. **Onboard.** Run once per repository, existing or empty. Each proposed rule comes with its rationale, a primary source, the current count, the worst files, a detector and a fix hint. You pick `block`, `track` or reject. New `block` rules start in **shadow**: they report "would have failed" until you promote them.
+1. **Onboard** (planned). An agent skill will run once per repository, existing or empty, and propose each rule with its rationale, a primary source, the current count, the worst files, a detector and a fix hint, for you to accept, adjust or reject. Today you write the rule files yourself. New rules start in **shadow**: they report "would have failed" until you promote them.
 2. **Measure.** Every violation gets a **fingerprint** (rule + file + normalized line text), so moving or reformatting code changes nothing.
 3. **Gate.** In order of what is checked:
    - no new `block` fingerprint;
@@ -105,36 +105,32 @@ Shipping did not slow down: merged PRs per week went *up* after the ratchets lan
 
 ## Quick start
 
-> Planned interface. It works once v0.1 ships; follow the [changelog](CHANGELOG.md).
+> The runner works by hand today. The agent skill and the v0.1 release are planned; follow the [changelog](CHANGELOG.md).
 
-Ask your agent, in any harness:
-
-```text
-Install gauntlet from https://github.com/antonygiomarxdev/gauntlet and onboard this repository.
-```
-
-Or by hand:
+From a checkout of gauntlet that has `bin/gauntlet` (the runner is not on `main` until it is merged), in your repo:
 
 ```sh
-git clone --depth 1 --branch v0.1.0 https://github.com/antonygiomarxdev/gauntlet ~/.gauntlet
-~/.gauntlet/bin/gauntlet install     # vendors the runner and the skill into this repo
-# then ask your agent to run the gauntlet `onboard` skill
+git clone --depth 1 https://github.com/antonygiomarxdev/gauntlet ~/.gauntlet
+cd your-repo
+~/.gauntlet/bin/gauntlet install     # copies the runner into .gauntlet/ and wires the hooks
 ```
 
-After onboarding:
+Then write your rules in `.gauntlet/rules/` (the [getting started](docs/guide/getting-started.md) guide shows how), and run:
 
 ```sh
-.gauntlet/bin/gauntlet status        # debt per rule, worst files, trend
+.gauntlet/bin/gauntlet baseline      # measure the existing debt, then commit .gauntlet/baseline.tsv
+.gauntlet/bin/gauntlet status        # debt per rule, worst files, shadow rules due for promotion
 .gauntlet/bin/gauntlet check --ci    # exactly what CI runs
-.gauntlet/bin/gauntlet fix           # apply linter / ast-grep autofixes
 .gauntlet/bin/gauntlet doctor        # tools present, hooks wired, baseline exact
 ```
+
+Onboarding by an agent (`ask your agent to onboard this repository`) is planned.
 
 ## Compared with
 
 | | Rules from | Baseline | Language-agnostic | New-violation check | Touched-file check | Agent onboarding | Agent can't loosen |
 |---|---|---|---|---|---|---|---|
-| **gauntlet** | owner-approved, researched | fingerprints, in repo | ✅ | ✅ fingerprint | ✅ | ✅ | ✅ runner-enforced |
+| **gauntlet** | owner-approved | fingerprints, in repo | ✅ | ✅ fingerprint | ✅ | planned | ✅ runner-enforced |
 | [pawl](https://github.com/tiangong-dev/pawl) | any command | counts, in repo | ✅ | ✅ added lines | — | — | trailer + guard |
 | [cleat](https://github.com/svetdev/cleat) | built-in gates | findings, in repo | ✅ | partial | — | partial | hook-enforced |
 | [betterer](https://github.com/phenomnomnominal/betterer) | JS test files | results file | JS/TS | — | — | — | — |

@@ -97,12 +97,12 @@ Every rise in every baseline was inspected, commit by commit:
 |---|---:|---|---|
 | New rule or wider measurement | 7 | A new rule or a newly counted folder entered with its existing debt. Not new debt, but indistinguishable from it in a single total. | A new rule gets its own baseline entries. It is never mixed into an existing rule's total. |
 | Tool bug | 1 | The diff gate overwrote the repo-wide lock with the diff's own count. Main was already 7 above the lock and nobody saw it. | The baseline is derived: only the runner writes it, and CI requires it to equal what the code measures. |
-| New debt with a reason | 2 | +1 colour literal each, one explained in the commit ("a shared constant used by nine tokens, raised on purpose"). | Allowed only as a human-signed `loosen` exception with its reason. |
-| New debt without a reason | 3 | +7 duplicate definitions in the first week ("raise baseline to 120"), before the diff gate covered that ratchet. | Impossible without a human-signed exception. |
+| New debt with a reason | 2 | +1 colour literal each, one explained in the commit ("a shared constant used by nine tokens, raised on purpose"). | Allowed only as a human-written `loosen` exception with its reason. |
+| New debt without a reason | 3 | +7 duplicate definitions in the first week ("raise baseline to 120"), before the diff gate covered that ratchet. | Impossible without a human-written exception. |
 
 ### 2. The escape hatch became routine
 
-The trailer exception appeared in **38 commits** (136 waiver lines), between 7 % and 17 % of a week's commits. The agents could write it themselves, so they did. In gauntlet, exceptions live in `.gauntlet/exceptions.tsv`, only a human creates one, and a path waiver expires with its branch.
+The trailer exception appeared in **38 commits** (136 waiver lines), between 7 % and 17 % of a week's commits. The agents could write it themselves, so they did. In gauntlet, exceptions live in `.gauntlet/exceptions.tsv`, only a human creates one, and a path waiver applies only on its own branch.
 
 ### 3. Lowered baselines depended on memory
 
@@ -114,7 +114,7 @@ The project grew from 16 to 41 bespoke check and ratchet scripts. Each had its o
 - a single runner;
 - one rule file format;
 - declarative detectors only;
-- one cached linter run shared by every rule that needs it.
+- a shared linter run for every rule that needs it, planned (IS-03).
 
 ### 5. Line numbers lie
 
