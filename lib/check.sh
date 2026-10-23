@@ -846,11 +846,12 @@ loosen_changes() {
   bdet=$(rule_get "$brule" detector) || return 2
   cdet=$(rule_get "$crule" detector) || return 2
   if [ "$bdet" != "$cdet" ]; then printf 'detector changed\n'; fi
-  # Each word of an unchanged detector that names a file is judged by that
-  # file's blob. The words are split with globbing off, so {files} and flags
-  # are plain words that name nothing. A changed string is reported above.
+  # Each word of an unchanged detector that names a file is judged by that file's content
+  # (blob_changed). The words are cut the way the shell cuts them (detector_words), with
+  # nothing expanded, so {files}, flags and globs are plain words that name nothing. A
+  # changed string is reported above.
   if [ "$bdet" = "$cdet" ]; then
-    (set -f; for w in $cdet; do printf '%s\n' "$w"; done) > "$scratch/words" || return 2
+    detector_words "$cdet" > "$scratch/words" || return 2
     while IFS= read -r w; do
       w=${w#./}
       st=0
@@ -897,40 +898,109 @@ loosen_changes() {
   fi
 }
 
-# blob_changed <merge-base> <path>: succeed (0) when <path> has a different git blob at the
-# merge-base than at HEAD, a path absent on one side being a different blob; return 1 when it
-# is the same on both sides, and 2 when git cannot tell for either side (R32): an unreadable
-# side is neither "absent" nor "unchanged". Blob ids, not file reads: a symlink compares by
-# its link text, and HEAD is clean (check --ci refuses a dirty tree), so HEAD is what CI runs.
-blob_changed() {
-  local a b
-  a=$(blob_id "$1" "$2") || return 2
-  b=$(blob_id HEAD "$2") || return 2
-  [ "$a" != "$b" ]
+# detector_words <command>: print the words of a detector command, one per line, cut the
+# way the shell cuts a command line and with nothing expanded. A space or a tab ends a word
+# outside quotes. 'single quotes' keep everything. "Double quotes" keep everything but a
+# backslash before ", \, $ or a backtick, which makes that character literal. Outside quotes a
+# backslash makes the next character literal. Quoted and unquoted parts that touch are one
+# word ("tools"/find.sh is tools/find.sh); the quotes and escaping backslashes are gone; an
+# empty word ("") is dropped; a quote left open takes the rest of the line. No $variable, `
+# command, glob, ~ or operator (| ; & < >) is interpreted: the command is judged as text, and
+# a word made of those characters names no file.
+detector_words() {
+  GL_CMD=$1 LC_ALL=C awk '
+    function emit() { if (inword && w != "") print w; w = ""; inword = 0 }
+    BEGIN {
+      s = ENVIRON["GL_CMD"]; n = length(s); q = ""; w = ""; inword = 0
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (q == "\047") { if (c == "\047") q = ""; else w = w c; continue }
+        if (q == "\"") {
+          if (c == "\"") { q = ""; continue }
+          if (c == "\\" && i < n) {
+            d = substr(s, i + 1, 1)
+            if (d == "\"" || d == "\\" || d == "$" || d == "`") { w = w d; i++; continue }
+          }
+          w = w c
+          continue
+        }
+        if (c == "\047" || c == "\"") { q = c; inword = 1; continue }
+        if (c == "\\" && i < n) { w = w substr(s, i + 1, 1); i++; inword = 1; continue }
+        if (c == " " || c == "\t") { emit(); continue }
+        w = w c; inword = 1
+      }
+      emit()
+    }
+  '
 }
 
-# blob_id <rev> <path>: print the git id of <path> at <rev>; nothing when the path is absent
-# there, and return 2 (after a message) when git cannot tell. base_has answers present, absent
-# or unreadable first, so a failed listing is never read as an absent path. A detector word is
-# any text, and most of it names no file of the repository: an empty or absolute word, one that
-# starts with ":" (git's pathspec magic), and one that folds to the root or climbs above it
-# ("." and "..") are absent; the others are read as the tree path they fold to (tree_join).
-blob_id() {
-  local rc=0 path
-  case "$2" in '' | /* | :*) return 0 ;; esac
-  path=$(tree_join "" "$2")
+# tree_entry <rev> <path>: print the ls-tree entry of <path> at <rev> ("<mode> <type> <id>",
+# a tab, the name), nothing when the path is absent, and return 2 after a message when git
+# cannot tell (R32). The listing is the one base_has makes, with its content kept.
+tree_entry() {
+  local out err rc=0
+  out=$(tmp_new) || return 2
+  err=$(tmp_new) || { rm -f "$out"; return 2; }
+  git ls-tree --full-tree -z "$1" -- "$2" > "$out" 2> "$err" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'gauntlet: cannot read %s at %s: %s\n' "$2" "$1" "$(head -n 1 "$err")" >&2
+    rc=2
+  else
+    LC_ALL=C tr '\0' '\n' < "$out" | head -n 1
+  fi
+  rm -f "$out" "$err"
+  return "$rc"
+}
+
+# path_identity <rev> <path> [hops]: print what <path> is at <rev> as far as a command that
+# runs it can tell: the blob id of a file; for a symlink its text and then the identity of the
+# file it leads to in the same tree, links followed up to ten deep. Prints nothing when the
+# path is absent, is a directory (a tree id is never read as a blob), a link leads out of the
+# tree or nowhere, or the word is no path of the tree: an empty or absolute one, one that
+# starts with ":" (git's pathspec magic), one with a trailing slash (a directory), and one
+# that folds to the root or climbs above it ("." and ".."). Returns 2 when git cannot tell
+# (R32).
+path_identity() {
+  local rev=$1 path=$2 hops=${3:-0} entry mode rest type oid text dir
+  case "$path" in /* | :* | */) return 0 ;; esac
+  path=$(tree_join "" "$path")
   if [ -z "$path" ]; then return 0; fi
-  base_has "$1" "$path" || rc=$?
-  case "$rc" in
-    0)
-      git rev-parse "$1:$path" 2> /dev/null || {
-        printf 'gauntlet: cannot read %s at %s\n' "$path" "$1" >&2
-        return 2
-      }
-      ;;
-    1) ;;
-    *) return 2 ;;
-  esac
+  entry=$(tree_entry "$rev" "$path") || return 2
+  mode=${entry%% *}
+  rest=${entry#* }
+  type=${rest%% *}
+  rest=${rest#* }
+  oid=${rest%%$'\t'*}
+  if [ "$type" != blob ]; then return 0; fi
+  if [ "$mode" != 120000 ]; then
+    printf 'blob %s\n' "$oid"
+    return 0
+  fi
+  text=$(git cat-file blob "$oid" 2> /dev/null) || {
+    printf 'gauntlet: cannot read %s at %s\n' "$path" "$rev" >&2
+    return 2
+  }
+  printf 'link %s\n' "$text"
+  case "$text" in /*) return 0 ;; esac
+  if [ "$hops" -ge 10 ]; then
+    printf 'too many links\n'
+    return 0
+  fi
+  dir=${path%/*}
+  if [ "$dir" = "$path" ]; then dir=; fi
+  path_identity "$rev" "${dir:+$dir/}$text" "$((hops + 1))"
+}
+
+# blob_changed <merge-base> <path>: succeed (0) when <path> is a different file at the
+# merge-base than at HEAD (path_identity: a blob, or a link and what it leads to), a path
+# absent on one side being a different file; return 1 when it is the same on both sides, and 2
+# when git cannot tell for either side (R32): an unreadable side is neither "absent" nor
+# "unchanged". HEAD is clean (check --ci refuses a dirty tree), so HEAD is what CI runs.
+blob_changed() {
+  local a b
+  a=$(path_identity "$1" "$2") || return 2
+  b=$(path_identity HEAD "$2") || return 2
+  [ "$a" != "$b" ]
 }
 
 # tree_join <dir> <relative>: print "<dir>/<relative>" with "." and ".." folded, as a path

@@ -1473,8 +1473,9 @@ test_removed_checks_are_listed_by_name() {
 # feat branch.
 exc_script_rule() {
   mkrepo
-  must mkdir -p tools
+  must mkdir -p tools "my tools"
   printf '#!/bin/sh\nrg --with-filename --line-number --no-heading TODO "$@"\n' > tools/find.sh
+  cp tools/find.sh "my tools/find.sh"
   printf 'ok\n' > a.ts
   rule todo paths='**/*.ts' engine=script "detector=$1"
   script_row todo
@@ -1600,6 +1601,25 @@ test_detector_words_that_name_no_file_in_the_tree_are_not_read() {
   assert_not_contains "$OUT" "cannot read"
 }
 
+# A quoted word keeps its parentheses and its colon: git's pathspec magic is not read as a
+# path whatever way the word is quoted.
+test_a_quoted_pathspec_magic_word_is_not_a_file_of_the_tree() {
+  mkrepo
+  must mkdir -p tools
+  printf '#!/bin/sh\nexit 1\n' > tools/quiet.sh
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script "detector=bash tools/quiet.sh {files} ':(glob)x' \":(top)y\""
+  script_row todo
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  exc_tool_commit
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "detector file"
+  assert_not_contains "$OUT" "cannot read"
+}
+
 # An absolute word is outside the repository, whatever the tree holds under the same name.
 test_an_absolute_detector_word_is_not_a_file_of_the_tree() {
   mkrepo
@@ -1618,4 +1638,247 @@ test_an_absolute_detector_word_is_not_a_file_of_the_tree() {
   exc_gate
   assert_eq 0 "$STATUS" "status: $OUT"
   assert_not_contains "$OUT" "detector file"
+}
+
+# The detector file of a rule is read the way the shell reads the command: quotes come off a
+# word, a directory is no file, and a symlink is its target's content as well as its text.
+
+# exc_change_tool <file>: change a tool the detector runs, on the branch, and run the gate.
+exc_change_tool() {
+  printf '#!/bin/sh\ntrue\n' > "$1"
+  exc_rebase
+  exc_commit feat
+  exc_gate
+}
+
+test_a_quoted_detector_file_is_found() {
+  exc_script_rule 'bash "tools/find.sh" {files}'
+  exc_change_tool tools/find.sh
+  assert_eq 1 "$STATUS" "double quotes: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
+}
+
+test_a_single_quoted_detector_file_is_found() {
+  exc_script_rule "bash 'tools/find.sh' {files}"
+  exc_change_tool tools/find.sh
+  assert_eq 1 "$STATUS" "single quotes: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
+}
+
+test_a_quoted_detector_file_with_a_space_is_one_word() {
+  exc_script_rule 'bash "my tools/find.sh" {files}'
+  exc_change_tool "my tools/find.sh"
+  assert_eq 1 "$STATUS" "quoted space: $OUT"
+  assert_contains "$OUT" "  todo  detector file my tools/find.sh changed"
+}
+
+test_an_escaped_space_and_joined_quoted_parts_are_one_word() {
+  exc_script_rule 'bash my\ tools/find.sh {files}'
+  exc_change_tool "my tools/find.sh"
+  assert_eq 1 "$STATUS" "escaped space: $OUT"
+  assert_contains "$OUT" "  todo  detector file my tools/find.sh changed"
+}
+
+test_quote_parts_joined_into_one_word_name_the_file() {
+  exc_script_rule 'bash "tools"/'"'"'find'"'"'.sh {files}'
+  exc_change_tool tools/find.sh
+  assert_eq 1 "$STATUS" "joined parts: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
+}
+
+test_an_unchanged_quoted_detector_file_is_not_loosening() {
+  exc_script_rule 'bash "tools/find.sh" {files}'
+  printf 'x\n' > b.txt
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "[loosened]"
+}
+
+# A backslash before a quote inside double quotes keeps the quote in the word: the file is
+# named we"ird.sh.
+test_a_backslash_in_double_quotes_escapes_only_what_the_shell_lets_it() {
+  exc_script_rule 'bash "we\"ird.sh" {files}'
+  printf '#!/bin/sh\nrg --with-filename --line-number --no-heading TODO "$@"\n' > 'we"ird.sh'
+  exc_rebase
+  exc_commit weird
+  must git checkout -q main
+  must git merge -q --ff-only feat
+  must git checkout -q -b feat2
+  exc_change_tool 'we"ird.sh'
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" '  todo  detector file we"ird.sh changed'
+}
+
+# A word that is a directory names no file: a change under it is not a detector file change.
+test_a_directory_word_is_not_a_detector_file() {
+  exc_script_rule 'bash tools/find.sh {files} tools/'
+  printf 'more\n' > tools/other.txt
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "detector file"
+}
+
+test_a_directory_word_without_a_slash_is_not_a_detector_file() {
+  exc_script_rule 'bash tools/find.sh {files} tools'
+  printf 'more\n' > tools/other.txt
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "detector file"
+}
+
+# ... while the file beside it is still judged.
+test_a_directory_word_does_not_hide_the_script_beside_it() {
+  exc_script_rule 'bash tools/find.sh {files} tools/'
+  exc_change_tool tools/find.sh
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
+  assert_not_contains "$OUT" "detector file tools/ changed"
+}
+
+# exc_link_rule [chain]: main holds tools/find.sh as a symlink to real.sh and the rule runs it;
+# with an argument the rule runs tools/entry.sh, a link to that link.
+exc_link_rule() {
+  local det=tools/find.sh
+  mkrepo
+  must mkdir -p tools
+  printf '#!/bin/sh\nrg --with-filename --line-number --no-heading TODO "$@"\n' > tools/real.sh
+  chmod +x tools/real.sh
+  ln -s real.sh tools/find.sh
+  if [ "$#" -gt 0 ]; then
+    ln -s find.sh tools/entry.sh
+    det=tools/entry.sh
+  fi
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script "detector=$det"
+  script_row todo
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+}
+
+test_a_symlink_detector_whose_target_changed_is_loosening() {
+  exc_link_rule
+  exc_change_tool tools/real.sh
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
+}
+
+# Only the link text changed: both targets hold the same bytes.
+test_a_symlink_detector_pointed_elsewhere_is_loosening() {
+  exc_link_rule
+  cp tools/real.sh tools/other.sh
+  must ln -sf other.sh tools/find.sh
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
+}
+
+# A link to a link: the end of the chain is what runs.
+test_a_chain_of_symlinks_is_followed_to_the_file() {
+  exc_link_rule chain
+  exc_change_tool tools/real.sh
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/entry.sh changed"
+}
+
+# A link into another directory, written with ..
+test_a_symlink_into_another_directory_is_followed() {
+  mkrepo
+  must mkdir -p tools lib
+  printf '#!/bin/sh\nrg --with-filename --line-number --no-heading TODO "$@"\n' > lib/real.sh
+  chmod +x lib/real.sh
+  ln -s ../lib/real.sh tools/find.sh
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script detector=tools/find.sh
+  script_row todo
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  exc_change_tool lib/real.sh
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
+}
+
+# Neither the link nor its target moved: an unrelated commit loosens nothing (the old pin,
+# now with the target read as well).
+test_a_symlink_detector_with_an_unchanged_target_is_not_loosening() {
+  exc_link_rule
+  printf 'x\n' > b.txt
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "[loosened]"
+}
+
+# A link that leaves the repository has only its text to compare.
+test_a_symlink_to_an_absolute_path_is_judged_by_its_text() {
+  mkrepo
+  must mkdir -p tools
+  ln -s /bin/true tools/find.sh
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script detector=tools/find.sh
+  script_row todo
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf 'x\n' > b.txt
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "unchanged link: $OUT"
+  must ln -sf /usr/bin/true tools/find.sh
+  exc_rebase
+  exc_commit relink
+  exc_gate
+  assert_eq 1 "$STATUS" "retargeted link: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/find.sh changed"
+}
+
+# A link that loops cannot hang the gate.
+test_a_symlink_loop_does_not_hang_the_gate() {
+  local rc=0
+  mkrepo
+  must mkdir -p tools
+  ln -s b.sh tools/a.sh
+  ln -s a.sh tools/b.sh
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script detector='true tools/a.sh {files}'
+  script_row todo
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf 'x\n' > b.txt
+  exc_rebase
+  exc_commit feat
+  with_timeout 30 "$G" check --ci --base main > "$TMP/loop.out" 2>&1 || rc=$?
+  [ "$rc" -ne 124 ] || fail "the gate hung on a symlink loop"
+  assert_eq 0 "$rc" "status: $(cat "$TMP/loop.out")"
+}
+
+# R32: the file a link leads to, unreadable at either side, is exit 2.
+test_an_unreadable_symlink_target_at_the_base_is_exit_2() {
+  exc_link_rule
+  exc_tool_commit
+  git_fails ls-tree tools/real.sh "$(git rev-parse main)"
+  exc_gate
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "simulated failure"
+}
+
+test_an_unreadable_symlink_target_at_head_is_exit_2() {
+  exc_link_rule
+  exc_tool_commit
+  git_fails ls-tree tools/real.sh HEAD
+  exc_gate
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "simulated failure"
 }

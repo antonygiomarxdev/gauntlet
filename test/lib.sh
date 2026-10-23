@@ -35,8 +35,17 @@ if [ "${GAUNTLET_TEST_BSD_DATE:-}" = 1 ]; then
   export PATH
 fi
 
-# with_timeout <seconds> <cmd...>: run cmd and kill it once <seconds> have passed;
-# returns 124 when it was killed, else cmd's status. A background sleep and kill,
+# kill_tree <pid>: kill <pid> and everything it started, the youngest first. A bash that waits
+# for a command substitution holds a TERM trap until it ends, so killing only the top process
+# leaves a runaway chain of subshells running.
+kill_tree() {
+  local child
+  for child in $(pgrep -P "$1" 2> /dev/null); do kill_tree "$child"; done
+  kill "$1" 2> /dev/null
+}
+
+# with_timeout <seconds> <cmd...>: run cmd and kill it, and what it started, once <seconds>
+# have passed; returns 124 when it was killed, else cmd's status. A background sleep and kill,
 # because macOS has no GNU timeout. stdin is passed through: a background job would
 # otherwise read /dev/null.
 with_timeout() {
@@ -49,7 +58,7 @@ with_timeout() {
     sleep "$secs" &
     sleeper=$!
     trap 'kill "$sleeper" 2>/dev/null; exit 0' TERM
-    if wait "$sleeper"; then echo x > "$flag"; kill "$pid" 2>/dev/null; fi
+    if wait "$sleeper"; then echo x > "$flag"; kill_tree "$pid"; fi
   ) > /dev/null 2>&1 &
   watcher=$!
   wait "$pid" || rc=$?
