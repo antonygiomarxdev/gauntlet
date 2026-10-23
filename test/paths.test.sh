@@ -89,6 +89,29 @@ test_listing_names_a_few_odd_paths_and_counts_the_rest() {
   assert_contains "$OUT" "and 2 more"
 }
 
+# The refusal prints a name somebody else chose: no raw control byte may reach the terminal. Every
+# byte below 0x20 and 0x7f is spelled \xNN (the tab and the newline stay \t and \n), so a file
+# name cannot clear the screen, set the window title or hide text with a carriage return.
+# Bytes the old message used as its own markers are ordinary here, and a name with only such a
+# byte is not odd. Non-ASCII names pass through.
+test_refusal_spells_control_bytes_and_prints_no_raw_one() {
+  mkrepo
+  paths_lib
+  printf 'x\n' > "$(printf 'x\t\033[2J\033]0;pwned\ay\r.ts')"
+  printf 'x\n' > "$(printf 'p\002q\tr.ts')"
+  printf 'x\n' > "$(printf 's\002t.ts')"
+  printf 'x\n' > "$(printf 'añ\tb.ts')"
+  must git add -A
+  run tracked_files
+  assert_eq 2 "$STATUS" "tracked_files: $OUT"
+  assert_contains "$OUT" 'gauntlet: path with a tab or newline: x\t\x1b[2J\x1b]0;pwned\x07y\x0d.ts; rename the file'
+  assert_contains "$OUT" 'gauntlet: path with a tab or newline: p\x02q\tr.ts; rename the file'
+  assert_contains "$OUT" 'gauntlet: path with a tab or newline: añ\tb.ts; rename the file'
+  assert_not_contains "$OUT" 's\x02t.ts'
+  assert_eq 3 "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" "three odd names, one line each: $OUT"
+  assert_eq "" "$(printf '%s' "$OUT" | LC_ALL=C tr -d '\n' | LC_ALL=C tr -d '[:print:]\200-\377')" "control bytes in the message"
+}
+
 # A diff or a tree listing also names what a change removes, so it does not refuse an odd
 # path: the tab and the newline become ?, and one name stays one line (C1).
 test_diff_listing_neutralises_an_odd_path_instead_of_refusing() {

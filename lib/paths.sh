@@ -178,33 +178,52 @@ git_nul_run() {
 
 # odd_paths_refuse <nul-file> <tagged>: return 0 when no name in the NUL-separated listing holds
 # a tab or a newline. Otherwise print, for the first five such names, "gauntlet: path
-# with a tab or newline: <name>; rename the file" with the tab written \t and the
-# newline \n, a line for the rest, and return 2. git -z puts neither byte anywhere but
-# in a name, so counting them in the whole listing is the test; the names are only
-# worked out when there is one. <tagged> is 1 when each name has a two-character tag
-# in front (ls-files -t).
-odd_paths_refuse() {
-  local odd
+# with a tab or newline: <name>; rename the file", a line for the rest, and return 2. git -z
+# puts neither byte anywhere but in a name, so counting them in the whole listing is the
+# test; the names are only worked out when there is one. <tagged> is 1 when each name has a
+# two-character tag in front (ls-files -t). The name is somebody else's text: see
+# path_spell, which keeps control bytes off the terminal.
+odd_paths_refuse() (
+  local odd name n=0
   odd=$(LC_ALL=C tr -cd '\t\n' < "$1" | wc -c) || return 2
   if [ "$((odd + 0))" -eq 0 ]; then return 0; fi
-  # A newline in a name would split it, so it becomes \002 for the awk, which spells it out.
-  LC_ALL=C tr '\n' '\002' < "$1" | LC_ALL=C tr '\0' '\n' | LC_ALL=C awk -v tagged="$2" '
-    BEGIN { mark = sprintf("%c", 2) }
-    index($0, mark) || index($0, "\t") {
-      n++
-      if (n > 5) next
-      out = ""
-      for (i = (tagged == 1 ? 3 : 1); i <= length($0); i++) {
-        c = substr($0, i, 1)
-        if (c == "\t") out = out "\\t"
-        else if (c == mark) out = out "\\n"
-        else out = out c
-      }
-      print "gauntlet: path with a tab or newline: " out "; rename the file"
-    }
-    END { if (n > 5) print "gauntlet: and " n - 5 " more; rename the files" }
-  ' >&2
+  # The C locale: one byte is one character, so no name is invalid in it and none is split.
+  LC_ALL=C
+  while IFS= read -r -d '' name; do
+    case "$name" in
+      *$'\t'*|*$'\n'*) ;;
+      *) continue ;;
+    esac
+    n=$((n + 1))
+    if [ "$n" -le 5 ]; then
+      if [ "$2" = 1 ]; then name=${name#??}; fi
+      printf 'gauntlet: path with a tab or newline: %s; rename the file\n' "$(path_spell "$name")" >&2
+    fi
+  done < "$1"
+  if [ "$n" -gt 5 ]; then printf 'gauntlet: and %s more; rename the files\n' "$((n - 5))" >&2; fi
   return 2
+)
+
+# path_spell <name>: print the name with the tab written \t, the newline \n and every other byte
+# below 0x20, and 0x7f, written \xNN, so printing a file name cannot move the cursor, clear the
+# screen or set the terminal title. Everything else, non-ASCII included, is printed as it is.
+# Run in the C locale (odd_paths_refuse does): a character is a byte there.
+path_spell() {
+  local name=$1 i=0 c hx out=
+  while [ "$i" -lt "${#name}" ]; do
+    c=${name:$i:1}
+    case "$c" in
+      $'\t') out=$out'\t' ;;
+      $'\n') out=$out'\n' ;;
+      [[:cntrl:]])
+        printf -v hx '%02x' "'$c"
+        out=$out'\x'$hx
+        ;;
+      *) out=$out$c ;;
+    esac
+    i=$((i + 1))
+  done
+  printf '%s\n' "$out"
 }
 
 # files_from_listing: read `git ls-files -t` output on stdin. One tag marks each

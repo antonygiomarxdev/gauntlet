@@ -1366,6 +1366,15 @@ test_gates_refuse_a_tab_in_a_path() {
   odd_path_refused 'a\tb.ts'
 }
 
+# The same through a gate: nothing a file name holds reaches the terminal as a control byte.
+test_a_refused_path_with_escape_sequences_prints_none() {
+  odd_path_repo 'x\t\033[2J\033]0;pwned\ay.ts'
+  must git add -A
+  run "$G" baseline
+  odd_path_refused 'x\t\x1b[2J\x1b]0;pwned\x07y.ts'
+  assert_eq "" "$(printf '%s' "$OUT" | LC_ALL=C tr -d '\n' | LC_ALL=C tr -d '[:print:]')" "control bytes in the output"
+}
+
 test_gates_refuse_a_newline_in_a_path() {
   odd_path_repo 'c\nd.ts'
   must git add -A
