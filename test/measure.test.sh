@@ -163,3 +163,16 @@ test_baseline_skips_deleted_tracked_file() {
   assert_eq 0 "$STATUS" "status"
   assert_eq "$(printf 'todo\ta.ts\tTODO here\t1')" "$(cat .gauntlet/baseline.tsv)" "baseline"
 }
+
+test_measure_writes_time_per_rule() {
+  mkrepo
+  measure_lib
+  printf 'TODO here\n' > a.ts
+  rule todo paths='**/*.ts'
+  rule nothing paths='**/*.ts' "detector=rg --with-filename --line-number --no-heading 'NOPE_NEVER' {files}"
+  must measure all "$TMP/m1" todo nothing
+  assert_eq 2 "$(awk 'END { print NR }' "$TMP/m1/time.tsv")" "one row per rule"
+  assert_eq "todo" "$(awk -F '\t' 'NR == 1 { print $1 }' "$TMP/m1/time.tsv")" "first rule"
+  assert_eq "nothing" "$(awk -F '\t' 'NR == 2 { print $1 }' "$TMP/m1/time.tsv")" "second rule"
+  awk -F '\t' '$2 !~ /^[0-9]+$/ { bad = 1 } END { exit bad }' "$TMP/m1/time.tsv" || fail "time is not a whole number of ms"
+}

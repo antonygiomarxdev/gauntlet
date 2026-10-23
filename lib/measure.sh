@@ -22,7 +22,7 @@ measure() {
 # measure_in <mode> <workdir> <root> <scratch> [rule-ids...]: the work of
 # measure, with intermediate files kept in <scratch>.
 measure_in() {
-  local mode=$1 work=$2 root=$3 scratch=$4 id rf paths exclude
+  local mode=$1 work=$2 root=$3 scratch=$4 id rf paths exclude t0 t1
   shift 4
   case "$mode" in
     all) (cd "$root" && all_files) > "$scratch/inputs" || return 2 ;;
@@ -40,17 +40,22 @@ measure_in() {
     rule_ids > "$scratch/ids" || return 2
   fi
 
+  # time.tsv: wall milliseconds per rule, for the check report's [time] section.
   : > "$scratch/raw"
+  : > "$work/time.tsv" || return 2
   while IFS= read -r id; do
     rf="$root/.gauntlet/rules/$id.md"
     if [ ! -f "$rf" ]; then
       printf 'gauntlet: unknown rule %s\n' "$id" >&2
       return 2
     fi
+    t0=$(now_ms)
     paths=$(rule_get "$rf" paths) || return 2
     exclude=$(rule_get "$rf" exclude) || return 2
     select_files "$paths" "$exclude" < "$scratch/kept" > "$scratch/files" || return 2
     run_detector "$rf" "$scratch/files" "$scratch/rule.tsv" || return 2
+    t1=$(now_ms)
+    printf '%s\t%s\n' "$id" "$((t1 - t0))" >> "$work/time.tsv" || return 2
     # R15 again for whole-program detectors, whose rows are not limited to the input list.
     awk -F "$DETECT_TAB" 'index($2, ".gauntlet/") != 1' "$scratch/rule.tsv" >> "$scratch/raw" || return 2
   done < "$scratch/ids"

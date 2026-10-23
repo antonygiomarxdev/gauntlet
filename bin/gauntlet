@@ -16,6 +16,8 @@ set -eu
 . "$(dirname "$0")/../lib/cases.sh"
 # shellcheck source=lib/base.sh
 . "$(dirname "$0")/../lib/base.sh"
+# shellcheck source=lib/check.sh
+. "$(dirname "$0")/../lib/check.sh"
 
 case "${1:-}" in
   --version) printf 'gauntlet %s\n' "$GAUNTLET_VERSION" ;;
@@ -45,6 +47,12 @@ case "${1:-}" in
     root=$(repo_root) || exit 2
     status=0
     run_rule_tests "$root" || status=$?
+    exit "$status"
+    ;;
+  check)
+    shift
+    status=0
+    check_ci "$@" || status=$?
     exit "$status"
     ;;
   *) die "unknown command: ${1:-}" ;;
