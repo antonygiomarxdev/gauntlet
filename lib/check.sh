@@ -244,7 +244,7 @@ check_key_rows() {
       }
       if (key == "base" || key == "touched") next
       if (substr(key, 1, 6) != "check.") {
-        print "#UNKNOWN\t" key "\tconfig key " key " is not known; use base, touched or check.<name>"
+        print "#UNKNOWN\t" key "\tconfig key " key " is not known; use base, touched or check.<name>\t" NR
         next
       }
       val = substr($0, eq + 1)

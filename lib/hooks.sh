@@ -192,7 +192,7 @@ install_hooks() {
   dir=${target#"$kind"}
   dir=${dir# }
   case "$kind" in
-    husky|dir)
+    husky|husky-v9|dir)
       mkdir -p "$dir" || die "cannot create $dir"
       add_hook_pair "$dir"
       ;;
@@ -213,15 +213,19 @@ hook_paths() {
 }
 
 # hook_target: print where install-hooks puts the gate, as one of: "husky <dir>"
-# (husky's directory), "configs" (a lefthook, prek or other config owns the hooks),
+# (husky's directory), "husky-v9 <dir>" (the same, for a v9 layout, whose wrapper runs the
+# hook without the exec bit), "configs" (a lefthook, prek or other config owns the hooks),
 # "dir <dir>" (a hooks directory this project owns) or "print <dir>" (a shared hooks
 # directory outside the repo and its git dir, printed only). Needs hook_paths first.
 # --path expands a leading ~ (so ~/.husky is the home directory's, not ./~/.husky).
 hook_target() {
   local hooks_path husky hooks
   hooks_path=$(git config --path --get core.hooksPath) || hooks_path=
-  if husky=$(husky_dir "$hooks_path"); then
-    printf 'husky %s\n' "$husky"
+  if husky=$(husky_hooks_path "$hooks_path"); then
+    case "$husky" in
+      */_) printf 'husky-v9 %s\n' "${husky%/_}" ;;
+      *) printf 'husky %s\n' "$husky" ;;
+    esac
     return 0
   fi
   if [ -n "$(config_files)" ]; then
@@ -385,21 +389,18 @@ warn_if_not_executable() {
   fi
 }
 
-# husky_dir <hooks-path>: print the husky directory a core.hooksPath names, when the
-# path ends in /.husky or /.husky/_ and lies inside the repo root. The trailing /_ is
-# dropped, so nothing is ever written into a _ directory. Prints nothing and fails
-# otherwise.
-husky_dir() {
+# husky_hooks_path <hooks-path>: print the normalised absolute core.hooksPath when it names
+# a husky layout inside the repo root: .../.husky, or .../.husky/_ (husky v9, whose wrapper
+# sources the .husky files). Prints nothing and fails otherwise. This is the one husky
+# matcher: install-hooks and doctor both decide the layout from it.
+husky_hooks_path() {
   local p=$1
   if [ -z "$p" ]; then
     return 1
   fi
   p=$(abs_path "$p")
   case "$p" in
-    */.husky/_) p=${p%/_} ;;
-  esac
-  case "$p" in
-    */.husky) ;;
+    */.husky|*/.husky/_) ;;
     *) return 1 ;;
   esac
   if inside_root "$p"; then

@@ -358,18 +358,22 @@ doctor_runner() {
   fi
 }
 
-# doctor_formats <root> <scratch>: a rule whose format is built in (no project file under
-# .gauntlet/formats/) needs that format in the vendored runner, or the hooks fail at commit
-# time. Checked only when the vendored lib is another copy than the running runner's, and
-# only when it exists: a missing lib is the runner FAIL.
+# doctor_formats <root> <scratch>: each rule's format must be a built-in that the running
+# runner ships, or a project file under .gauntlet/formats/. A name that is neither is one FAIL
+# on its rule, and the rule is recorded as a cause, so the baseline does not repeat it. A
+# built-in that the vendored copy lacks is one FAIL per format name, listing its rules. The
+# vendored check runs only when .gauntlet/lib exists and is not the running runner's lib; a
+# missing lib is the runner FAIL.
 doctor_formats() {
-  local root=$1 scratch=$2 id engine format name vendored here
-  [ -d "$root/.gauntlet/lib" ] || return 0
-  vendored=$(cd "$root/.gauntlet/lib" && pwd -P) || return 0
-  here=$(cd "$GAUNTLET_LIB" && pwd -P) || return 0
-  if [ "$vendored" = "$here" ]; then
-    return 0
+  local root=$1 scratch=$2 id engine format name vendored="" here check_vendored=1
+  here=$(cd "$GAUNTLET_LIB" && pwd -P) || return 2
+  if [ -d "$root/.gauntlet/lib" ]; then
+    vendored=$(cd "$root/.gauntlet/lib" && pwd -P) || vendored=
   fi
+  if [ -z "$vendored" ] || [ "$vendored" = "$here" ]; then
+    check_vendored=0
+  fi
+  : > "$scratch/missing-formats" || return 2
   while IFS= read -r id; do
     engine=$(rule_get "$root/.gauntlet/rules/$id.md" engine) || engine=
     format=$(rule_get "$root/.gauntlet/rules/$id.md" format) || format=
@@ -377,30 +381,48 @@ doctor_formats() {
     if [ -f "$root/.gauntlet/formats/$name.md" ]; then
       continue
     fi
-    if [ ! -f "$vendored/formats/$name.md" ]; then
-      doctor_fail "built-in format $name for rule $id is missing from .gauntlet/lib: run gauntlet install from a gauntlet checkout (a .gitignore entry such as lib/ also drops .gauntlet/lib)"
+    if [ ! -f "$GAUNTLET_LIB/formats/$name.md" ]; then
+      doctor_fail "rule $id: format $name is unknown: use a built-in format or add .gauntlet/formats/$name.md"
+      printf '%s\n' "$id" >> "$scratch/causes" || return 2
+      continue
+    fi
+    if [ "$check_vendored" -eq 1 ] && [ ! -f "$vendored/formats/$name.md" ]; then
+      printf '%s\t%s\n' "$name" "$id" >> "$scratch/missing-formats" || return 2
     fi
   done < "$scratch/ids"
+  LC_ALL=C sort -u "$scratch/missing-formats" > "$scratch/missing-formats.sorted" || return 2
+  awk -F "$DETECT_TAB" '
+    $1 != cur {
+      if (cur != "") print cur "\t" list
+      cur = $1
+      list = $2
+      next
+    }
+    { list = list ", " $2 }
+    END { if (cur != "") print cur "\t" list }
+  ' "$scratch/missing-formats.sorted" > "$scratch/missing-grouped" || return 2
+  while IFS="$DETECT_TAB" read -r name rules; do
+    doctor_fail "built-in format $name is missing from .gauntlet/lib (rules: $rules): run gauntlet install from a gauntlet checkout (a .gitignore entry such as lib/ also drops .gauntlet/lib)"
+  done < "$scratch/missing-grouped"
   return 0
 }
 
 # doctor_hooks <root> <scratch>: the runner must load, then the gate line must be in each
 # hook install-hooks would use. A lefthook or prek config needs the snippet in it (HOOK-AC7).
 doctor_hooks() {
-  local root=$1 scratch=$2 target kind dir f hooks_path execcheck=1
+  local root=$1 scratch=$2 target kind dir f execcheck=1
   doctor_runner "$root"
   doctor_formats "$root" "$scratch" || return 2
-  # git runs a hook in a plain hooks dir, and husky v8 is the same: a file without the
-  # exec bit is ignored. Husky v9 (core.hooksPath ending in /_) runs the user's file
-  # through its wrapper, so it needs no exec bit.
-  hooks_path=$(git config --path --get core.hooksPath) || hooks_path=
-  case "$hooks_path" in
-    */_) execcheck=0 ;;
-  esac
   target=$(hook_target) || return 2
   kind=${target%% *}
   dir=${target#"$kind"}
   dir=${dir# }
+  # git runs a hook in a plain hooks dir, and husky v8 is the same: a file without the exec
+  # bit is ignored. A husky v9 layout is run through its wrapper, which needs no exec bit on
+  # the user's file. The layout comes from hook_target, the same decision install-hooks makes.
+  if [ "$kind" = husky-v9 ]; then
+    execcheck=0
+  fi
   case "$kind" in
     configs)
       config_files > "$scratch/configs" || return 2
@@ -412,7 +434,7 @@ doctor_hooks() {
         fi
       done < "$scratch/configs"
       ;;
-    husky|dir|print)
+    husky|husky-v9|dir|print)
       doctor_hook_file pre-commit "$dir/pre-commit" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED" "$kind" "$execcheck"
       doctor_hook_file pre-push "$dir/pre-push" "$HOOK_LINE_CI" "$HOOK_GATE_CI" "$kind" "$execcheck"
       ;;
@@ -494,17 +516,40 @@ doctor_baseline() {
   return 0
 }
 
+# doctor_config_copy <config> <copy>: the config as doctor reads it. A byte-order mark on line 1
+# is dropped only when line 1 is then a comment or blank, which check already accepts. A BOM
+# before a key stays, so that key is reported as unknown, and the report says the mark is there.
+doctor_config_copy() {
+  GL_BOM=$(printf '\357\273\277') LC_ALL=C awk '
+    NR == 1 && index($0, ENVIRON["GL_BOM"]) == 1 {
+      rest = substr($0, 4)
+      if (rest ~ /^[ \t\r]*(#.*)?$/) { print rest; next }
+    }
+    { print }
+  ' "$1" > "$2" || return 2
+}
+
 # doctor_config <root> <scratch>: the keys of .gauntlet/config are base, touched and
 # check.*. check_key_rows validates them, the same way check does, so the two cannot
 # drift. touched must be on or off. Each problem is one FAIL line, and its text names the fix.
 doctor_config() {
-  local root=$1 scratch=$2 before=$DOCTOR_FAILS cfg problem
+  local root=$1 scratch=$2 before=$DOCTOR_FAILS cfg problem bom
   cfg="$root/.gauntlet/config"
   if [ -f "$cfg" ]; then
-    check_key_rows "$cfg" > "$scratch/keys" || return 2
-    awk -F "$DETECT_TAB" '
+    doctor_config_copy "$cfg" "$scratch/config.copy" || return 2
+    check_key_rows "$scratch/config.copy" > "$scratch/keys" || return 2
+    bom=$(GL_BOM=$(printf '\357\273\277') LC_ALL=C awk '
+      NR == 1 && index($0, ENVIRON["GL_BOM"]) == 1 { found = 1 }
+      END { print found + 0 }
+    ' "$cfg") || return 2
+    GL_BOM_LINE1=$bom awk -F "$DETECT_TAB" '
       $1 == "BAD" { print "bad check key " $2 ": " $3 }
-      $1 == "#UNKNOWN" || $1 == "#MALFORMED" { print $3 }
+      $1 == "#MALFORMED" { print $3 }
+      $1 == "#UNKNOWN" {
+        msg = $3
+        if (ENVIRON["GL_BOM_LINE1"] == "1" && $4 == 1) msg = msg "; a byte-order mark is present on line 1"
+        print msg
+      }
     ' "$scratch/keys" > "$scratch/key-problems" || return 2
     LC_ALL=C sort "$scratch/key-problems" > "$scratch/key-problems.sorted" || return 2
     while IFS= read -r problem; do

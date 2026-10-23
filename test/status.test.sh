@@ -658,7 +658,67 @@ test_doctor_missing_builtin_format_fails() {
   rule fmt
   doctor_install
   must rm .gauntlet/lib/formats/path-line.md
-  doctor_one_fail "FAIL built-in format path-line for rule fmt is missing from .gauntlet/lib"
+  doctor_one_fail "FAIL built-in format path-line is missing from .gauntlet/lib (rules: fmt)"
+}
+
+test_doctor_unknown_format_is_one_fail() {
+  mkrepo
+  rule r1 'format=nosuch'
+  doctor_install
+  doctor_one_fail "FAIL rule r1: format nosuch is unknown: use a built-in format or add .gauntlet/formats/nosuch.md"
+}
+
+test_doctor_missing_builtin_format_is_reported_once_per_format() {
+  mkrepo
+  rule r1
+  rule r2
+  doctor_install
+  must rm .gauntlet/lib/formats/path-line.md
+  doctor_one_fail "FAIL built-in format path-line is missing from .gauntlet/lib (rules: r1, r2): run gauntlet install from a gauntlet checkout"
+}
+
+test_doctor_format_key_decides_the_builtin() {
+  mkrepo
+  rule r1 'format=github'
+  doctor_install
+  must cp .gauntlet/lib/formats/path-line.md "$TMP/path-line.bak"
+  must rm .gauntlet/lib/formats/path-line.md
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor when only path-line is missing and the rule uses github"
+  must cp "$TMP/path-line.bak" .gauntlet/lib/formats/path-line.md
+  must rm .gauntlet/lib/formats/github.md
+  doctor_one_fail "FAIL built-in format github is missing from .gauntlet/lib (rules: r1)"
+}
+
+test_doctor_ast_grep_rule_defaults_to_github() {
+  mkrepo
+  rule r1 engine=ast-grep paths=nothing/**
+  doctor_install
+  must cp .gauntlet/lib/formats/github.md "$TMP/github.bak"
+  must rm .gauntlet/lib/formats/github.md
+  run "$G" doctor
+  assert_contains "$OUT" "FAIL built-in format github is missing from .gauntlet/lib (rules: r1)"
+  must cp "$TMP/github.bak" .gauntlet/lib/formats/github.md
+  must rm .gauntlet/lib/formats/path-line.md
+  run "$G" doctor
+  assert_not_contains "$OUT" "path-line"
+}
+
+test_doctor_vendored_runner_does_not_demand_its_own_format_copies() {
+  mkrepo
+  rule r1 'format=github'
+  doctor_install
+  must rm .gauntlet/lib/formats/github.md
+  run .gauntlet/bin/gauntlet doctor
+  assert_not_contains "$OUT" "is missing from .gauntlet/lib"
+}
+
+test_doctor_no_vendored_lib_prints_only_the_runner_fail() {
+  mkrepo
+  rule r1
+  doctor_install
+  must rm -rf .gauntlet/lib
+  doctor_one_fail "FAIL .gauntlet/bin or .gauntlet/lib is broken or missing"
 }
 
 test_doctor_project_format_needs_no_vendored_copy() {
@@ -686,6 +746,29 @@ test_doctor_other_rules_error_shows_next_to_a_missing_tool() {
   assert_eq 2 "$(doctor_fails)" "FAIL lines"
   assert_contains "$OUT" "FAIL tool nosuchtool-gauntlet-xyz for rule aghost is missing"
   assert_contains "$OUT" "FAIL baseline cannot be checked: broken detector: bd: exit 3"
+}
+
+test_doctor_partial_baseline_ignores_orphan_rows_until_the_tool_is_fixed() {
+  mkrepo
+  mkdir -p src
+  printf 'TODO fix\n' > src/a.ts
+  rule good
+  rule bad engine=linter "detector=nosuchtool-gauntlet-xyz {files}"
+  must git add -A
+  must git commit -q -m content
+  printf 'good\tsrc/a.ts\tTODO fix\t1\nghost\tx.txt\tfp\t3\n' > .gauntlet/baseline.tsv
+  must git add -A
+  must git commit -q -m baseline
+  doctor_install
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor while the tool is missing"
+  assert_eq 1 "$(doctor_fails)" "FAIL lines while the tool is missing"
+  assert_contains "$OUT" "ok baseline is exact for the rules that can be measured"
+  rule bad "engine=linter" "detector=sh -c 'exit 0' {files}"
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor after the tool is fixed"
+  assert_contains "$OUT" "FAIL baseline differs from the code: run gauntlet baseline and commit it"
+  assert_not_contains "$OUT" "FAIL tool"
 }
 
 test_doctor_tool_shapes_are_not_checked() {
@@ -771,6 +854,80 @@ test_doctor_nonexec_plain_hook_fails() {
   doctor_one_fail "FAIL pre-commit hook .git/hooks/pre-commit is not executable: chmod +x .git/hooks/pre-commit"
 }
 
+# gate_fixture: a repo with one commit-stage rule that forbids TODO, committed, so a new
+# TODO in a later commit is a violation the gate blocks. The baseline stays empty.
+gate_fixture() {
+  mkrepo
+  rule todo
+  must git add -A
+  must git commit -q -m rule
+}
+
+# violation_commit: stage a new TODO and commit it; leaves the commit's status in STATUS.
+violation_commit() {
+  must mkdir -p src
+  printf 'TODO fix\n' > src/a.ts
+  must git add src/a.ts
+  run git commit -q -m violation
+}
+
+# husky_v9_case <hooks-path>: a husky v9 layout. git runs <hooks-path>/pre-commit, which is
+# the husky wrapper; the wrapper sources .husky/pre-commit, so that file needs no exec bit.
+husky_v9_case() {
+  gate_fixture
+  must mkdir -p .husky/_
+  # shellcheck disable=SC2016 # the wrapper is written literally; it expands when git runs it
+  printf '#!/bin/sh\n. "$(dirname "$0")/../pre-commit"\n' > .husky/_/pre-commit
+  must chmod +x .husky/_/pre-commit
+  must git config core.hooksPath "$1"
+  doctor_install
+  must chmod 644 .husky/pre-commit
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor with a non-executable v9 user hook"
+  assert_eq 0 "$(doctor_fails)" "FAIL lines"
+  violation_commit
+  assert_eq 1 "$STATUS" "the wrapper runs the user hook, so the gate blocks the commit"
+}
+
+# dir_hook_case <hooks-path> <hook-dir>: a plain hooks dir that is not husky. git runs the file
+# itself, so a non-executable hook is ignored and the gate does not run.
+dir_hook_case() {
+  gate_fixture
+  must git config core.hooksPath "$1"
+  doctor_install
+  must chmod 644 "$2/pre-commit"
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor with a non-executable hook in $2"
+  assert_contains "$OUT" "FAIL pre-commit hook $2/pre-commit is not executable: chmod +x $2/pre-commit"
+  violation_commit
+  assert_eq 0 "$STATUS" "git ignores the non-executable hook, so the gate does not run"
+  assert_contains "$OUT" "was ignored because it's not set as executable"
+}
+
+test_husky_v9_layout_with_trailing_slash_runs_without_exec_bit() {
+  husky_v9_case ".husky/_/"
+}
+
+test_husky_v9_layout_with_double_slash_runs_without_exec_bit() {
+  husky_v9_case ".husky//_"
+}
+
+test_husky_v9_layout_with_parent_path_runs_without_exec_bit() {
+  husky_v9_case ".husky/../.husky/_"
+}
+
+test_githooks_underscore_nonexec_hook_fails_and_git_ignores_it() {
+  dir_hook_case ".githooks/_" ".githooks/_"
+}
+
+test_my_hooks_nonexec_hook_fails_and_git_ignores_it() {
+  dir_hook_case "my_hooks" "my_hooks"
+}
+
+test_underscore_dir_nonexec_hook_fails_and_git_ignores_it() {
+  dir_hook_case "x_/hooks" "x_/hooks"
+}
+
 test_doctor_nonexec_husky_v8_hook_fails() {
   mkrepo
   must mkdir .husky
@@ -810,6 +967,22 @@ test_husky_v8_nonexec_hook_is_ignored_by_git_and_doctor_fails() {
   run "$G" doctor
   assert_eq 1 "$STATUS" "doctor with the non-executable v8 hook"
   assert_contains "$OUT" "FAIL pre-commit hook .husky/pre-commit is not executable: chmod +x .husky/pre-commit"
+}
+
+test_doctor_hooks_path_with_tilde_resolves_like_install_hooks() {
+  mkrepo
+  must mkdir home
+  export HOME="$TMP/repo/home"
+  # shellcheck disable=SC2088 # git expands the ~ in core.hooksPath itself, as the test needs
+  must git config core.hooksPath '~/.husky'
+  doctor_install
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor with core.hooksPath=~/.husky"
+  assert_contains "$OUT" "ok pre-commit gate in home/.husky/pre-commit"
+  must chmod 644 home/.husky/pre-commit
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor with the v8 hook under HOME not executable"
+  assert_contains "$OUT" "FAIL pre-commit hook home/.husky/pre-commit is not executable: chmod +x home/.husky/pre-commit"
 }
 
 test_doctor_nonexec_pre_push_hook_fails() {
@@ -857,6 +1030,43 @@ test_doctor_base_key_is_accepted() {
   run "$G" doctor
   assert_eq 0 "$STATUS" "doctor with base"
   assert_contains "$OUT" "ok config keys"
+}
+
+test_doctor_bom_before_a_comment_is_ok() {
+  mkrepo
+  doctor_install
+  printf '\357\273\277# gauntlet config\ntouched=off\n' > .gauntlet/config
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor with a BOM before a comment"
+  assert_contains "$OUT" "ok config keys"
+}
+
+test_doctor_bom_before_a_key_fails_with_the_bom_note() {
+  mkrepo
+  doctor_install
+  printf '\357\273\277touched=off\n' > .gauntlet/config
+  doctor_one_fail "FAIL config key "
+  assert_contains "$OUT" "is not known; use base, touched or check.<name>; a byte-order mark is present on line 1"
+}
+
+test_check_ignores_a_bom_before_a_key() {
+  mkrepo
+  printf '\357\273\277check.lint=sh -c "exit 3"\ntouched=off\n' > .gauntlet/config
+  must git add -A
+  must git commit -q -m config
+  run "$G" check --ci
+  assert_eq 0 "$STATUS" "check --ci with a BOM before a declared check"
+  assert_contains "$OUT" "gauntlet: ok"
+}
+
+test_check_accepts_a_bom_before_a_comment() {
+  mkrepo
+  printf '\357\273\277# gauntlet config\ntouched=off\n' > .gauntlet/config
+  must git add -A
+  must git commit -q -m config
+  run "$G" check --ci
+  assert_eq 0 "$STATUS" "check --ci with a BOM before a comment"
+  assert_contains "$OUT" "gauntlet: ok"
 }
 
 test_doctor_empty_key_config_line_fails() {
@@ -1061,6 +1271,24 @@ test_status_in_a_read_only_gauntlet_dir_fails_quietly() {
   assert_contains "$OUT" "cannot write .gauntlet/STATUS.md"
   assert_not_contains "$OUT" "mktemp"
   assert_not_contains "$OUT" "Permission denied"
+}
+
+test_status_refuses_a_planted_temp_symlink() {
+  mkrepo
+  rule a
+  printf 'a\tsrc/x.ts\tf1\t1\n' > .gauntlet/baseline.tsv
+  printf 'victim\n' > "$TMP/victim"
+  cat > "$TMP/planted.sh" <<EOF
+#!/bin/sh
+cd "$TMP/repo" || exit 9
+ln -s "$TMP/victim" ".gauntlet/.STATUS.md.\$\$"
+exec "$G" status
+EOF
+  must chmod +x "$TMP/planted.sh"
+  run env GAUNTLET_TODAY=2026-10-30 "$TMP/planted.sh"
+  assert_eq 2 "$STATUS" "status with a planted temp symlink"
+  assert_contains "$OUT" "cannot write .gauntlet/STATUS.md"
+  assert_eq "victim" "$(cat "$TMP/victim")" "the victim file is untouched"
 }
 
 test_status_replaces_status_md_by_rename() {
