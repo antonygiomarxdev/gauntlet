@@ -261,7 +261,7 @@ check_run() {
   end=$(now_ms)
   ms=$((end - start))
   printf 'gauntlet  ci · %s · %s.%s s\n' "$(plural "$n_rules" rule rules)" "$((ms / 1000))" "$(((ms % 1000) / 100))"
-  cat "$body"
+  path_spell < "$body" || return 2
   if [ "$broken" -eq 1 ]; then
     printf 'gauntlet: rule tests could not run\n' >&2
     return 2
@@ -397,7 +397,7 @@ check_table() {
   # Sorted before the first bad row is taken, so the reported key is the same on every run.
   bad=$(awk -F '\t' '$1 == "#BAD" { print $2 ": " $3; exit }' "$scratch/checks.raw") || return 2
   if [ -n "$bad" ]; then
-    printf 'gauntlet: bad check key %s\n' "$bad" >&2
+    printf 'gauntlet: bad check key %s\n' "$(path_spell "$bad")" >&2
     return 2
   fi
 }
@@ -617,7 +617,7 @@ touched_mode() {
   case "$value" in
     on|off) printf '%s\n' "$value" ;;
     *)
-      printf 'gauntlet: touched must be on or off, got [%s]\n' "$value" >&2
+      printf 'gauntlet: touched must be on or off, got [%s]\n' "$(path_spell "$value")" >&2
       return 2
       ;;
   esac
@@ -967,7 +967,7 @@ tree_entry() {
   err=$(tmp_new) || { rm -f "$out"; return 2; }
   git ls-tree --full-tree -z "$1" -- "$2" > "$out" 2> "$err" || rc=$?
   if [ "$rc" -ne 0 ]; then
-    printf 'gauntlet: cannot read %s at %s: %s\n' "$2" "$1" "$(head -n 1 "$err")" >&2
+    printf 'gauntlet: cannot read %s at %s: %s\n' "$(path_spell "$2")" "$1" "$(path_spell "$(head -n 1 "$err")")" >&2
     rc=2
   else
     LC_ALL=C tr '\0' '\n' < "$out" | head -n 1
@@ -1001,7 +1001,7 @@ path_identity() {
     return 0
   fi
   text=$(git cat-file blob "$oid" 2> /dev/null) || {
-    printf 'gauntlet: cannot read %s at %s\n' "$path" "$rev" >&2
+    printf 'gauntlet: cannot read %s at %s\n' "$(path_spell "$path")" "$rev" >&2
     return 2
   }
   printf 'link %s\n' "$text"
@@ -1326,7 +1326,7 @@ check_staged_run() {
   awk -F '\t' '{ printf "  %s  %s ms\n", $1, $2 }' "$scratch/now/time.tsv" >> "$body" || return 2
 
   printf 'gauntlet  commit · %s · %s.%s s\n' "$(plural "$n_commit" rule rules)" "$((ms / 1000))" "$(((ms % 1000) / 100))"
-  cat "$body"
+  path_spell < "$body" || return 2
   if [ "$problems" -eq 0 ]; then
     printf 'gauntlet: ok\n'
     return 0

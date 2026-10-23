@@ -58,10 +58,11 @@ valid_date() {
   '
 }
 
-# status_cmd: regenerate .gauntlet/STATUS.md and print the same text. The totals are
-# the committed baseline's, summed per rule, so no detector runs. The text has a rule
-# table, the worst files by block total, the shadow rules due for promotion and the
-# commit-stage rules over budget. It has no timestamp: the day is the only clock.
+# status_cmd: regenerate .gauntlet/STATUS.md and print the same text. The totals are the
+# committed baseline's, summed per rule, so no detector runs. The text has a rule table, the
+# worst files by block total, the shadow rules due for promotion and the commit-stage rules over
+# budget. It has no timestamp: the day is the only clock. A path in it is somebody else's text,
+# so the text goes through path_spell once and the file and the terminal get the same bytes.
 status_cmd() {
   local root today budget scratch status=0
   [ "$#" -eq 0 ] || die "usage: gauntlet status"
@@ -74,8 +75,11 @@ status_cmd() {
   scratch=$(tmp_new -d) || return 2
   status_body "$root" "$scratch" "$today" "$budget" || status=$?
   if [ "$status" -eq 0 ]; then
-    if status_write "$root" "$scratch/body"; then
-      cat "$scratch/body" || status=2
+    path_spell < "$scratch/body" > "$scratch/body.safe" || status=2
+  fi
+  if [ "$status" -eq 0 ]; then
+    if status_write "$root" "$scratch/body.safe"; then
+      cat "$scratch/body.safe" || status=2
     else
       status=2
     fi
@@ -129,9 +133,9 @@ status_body() {
   rule_ids > "$scratch/ids" || return 2
   while IFS= read -r id; do
     rf="$root/.gauntlet/rules/$id.md"
-    sev=$(rule_get "$rf" severity) || { printf 'gauntlet: cannot read rule %s; run gauntlet doctor\n' "$id" >&2; return 2; }
-    stage=$(rule_get "$rf" stage) || { printf 'gauntlet: cannot read rule %s; run gauntlet doctor\n' "$id" >&2; return 2; }
-    since=$(rule_get "$rf" since) || { printf 'gauntlet: cannot read rule %s; run gauntlet doctor\n' "$id" >&2; return 2; }
+    sev=$(rule_get "$rf" severity) || { printf 'gauntlet: cannot read rule %s; run gauntlet doctor\n' "$(path_spell "$id")" >&2; return 2; }
+    stage=$(rule_get "$rf" stage) || { printf 'gauntlet: cannot read rule %s; run gauntlet doctor\n' "$(path_spell "$id")" >&2; return 2; }
+    since=$(rule_get "$rf" since) || { printf 'gauntlet: cannot read rule %s; run gauntlet doctor\n' "$(path_spell "$id")" >&2; return 2; }
     [ -n "$stage" ] || stage=commit
     printf '%s\t%s\t%s\t%s\n' "$id" "$sev" "$stage" "$since" >> "$scratch/rules.tsv" || return 2
   done < "$scratch/ids"
@@ -251,21 +255,21 @@ promote_cmd() {
   # Writing over the file keeps its mode; moving the temp file would not.
   if ! cat "$tmp" > "$file"; then
     rm -f "$tmp"
-    printf 'gauntlet: cannot write %s\n' "$file" >&2
+    printf 'gauntlet: cannot write %s\n' "$(path_spell "$file")" >&2
     return 2
   fi
   rm -f "$tmp"
-  printf 'promoted %s: shadow -> block; commit the rule file\n' "$id"
+  printf 'promoted %s: shadow -> block; commit the rule file\n' "$(path_spell "$id")"
 }
 
 # doctor_ok <thing>: print an ok line.
 doctor_ok() {
-  printf 'ok %s\n' "$1"
+  printf 'ok %s\n' "$(path_spell "$1")"
 }
 
 # doctor_fail <thing>: print a FAIL line and count it. The text is "<thing>: <how to fix>".
 doctor_fail() {
-  printf 'FAIL %s\n' "$1"
+  printf 'FAIL %s\n' "$(path_spell "$1")"
   DOCTOR_FAILS=$((DOCTOR_FAILS + 1))
 }
 
@@ -621,7 +625,7 @@ doctor_waivers() {
     ' "$file" > "$scratch/stale" || return 2
   fi
   if [ -s "$scratch/stale" ]; then
-    cat "$scratch/stale" || return 2
+    path_spell < "$scratch/stale" || return 2
   else
     doctor_ok "no stale waivers"
   fi

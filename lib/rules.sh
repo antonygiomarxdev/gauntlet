@@ -122,7 +122,7 @@ validate_rules() {
     if ! rule_validate "$file" > "$scratch/problems"; then
       bad=1
       while IFS= read -r line; do
-        printf 'rule %s: %s; run gauntlet doctor\n' "$id" "${line#"$file: "}" >&2
+        printf 'rule %s: %s; run gauntlet doctor\n' "$(path_spell "$id")" "$(path_spell "${line#"$file: "}")" >&2
       done < "$scratch/problems"
     fi
   done < "$scratch/ids"

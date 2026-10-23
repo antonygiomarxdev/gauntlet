@@ -78,7 +78,7 @@ git_has() {
   err=$(tmp_new) || { rm -f "$out"; return 2; }
   git "$@" > "$out" 2> "$err" || rc=$?
   if [ "$rc" -ne 0 ]; then
-    printf 'gauntlet: cannot read %s: %s\n' "$what" "$(head -n 1 "$err")" >&2
+    printf 'gauntlet: cannot read %s: %s\n' "$(path_spell "$what")" "$(path_spell "$(head -n 1 "$err")")" >&2
     rc=2
   elif [ -s "$out" ]; then
     rc=0
@@ -115,7 +115,7 @@ at_base() {
   case "$rc" in
     0)
       git show "$1:$2" 2>/dev/null || {
-        printf 'gauntlet: cannot read %s at %s\n' "$2" "$1" >&2
+        printf 'gauntlet: cannot read %s at %s\n' "$(path_spell "$2")" "$1" >&2
         return 2
       }
       ;;

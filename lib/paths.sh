@@ -182,7 +182,7 @@ git_nul_run() {
 # puts neither byte anywhere but in a name, so counting them in the whole listing is the
 # test; the names are only worked out when there is one. <tagged> is 1 when each name has a
 # two-character tag in front (ls-files -t). The name is somebody else's text: see
-# path_spell, which keeps control bytes off the terminal.
+# path_spell (lib/core.sh), which keeps control bytes off the terminal.
 odd_paths_refuse() (
   local odd name n=0
   odd=$(LC_ALL=C tr -cd '\t\n' < "$1" | wc -c) || return 2
@@ -207,28 +207,6 @@ odd_paths_refuse() (
   fi
   return 2
 )
-
-# path_spell <name>: print the name with the tab written \t, the newline \n and every other byte
-# below 0x20, and 0x7f, written \xNN, so printing a file name cannot move the cursor, clear the
-# screen or set the terminal title. Everything else, non-ASCII included, is printed as it is.
-# Run in the C locale (odd_paths_refuse does): a character is a byte there.
-path_spell() {
-  local name=$1 i=0 c hx out=
-  while [ "$i" -lt "${#name}" ]; do
-    c=${name:$i:1}
-    case "$c" in
-      $'\t') out=$out'\t' ;;
-      $'\n') out=$out'\n' ;;
-      [[:cntrl:]])
-        printf -v hx '%02x' "'$c"
-        out=$out'\x'$hx
-        ;;
-      *) out=$out$c ;;
-    esac
-    i=$((i + 1))
-  done
-  printf '%s\n' "$out"
-}
 
 # files_from_listing: read `git ls-files -t` output on stdin. One tag marks each
 # line: "R name" marks a tracked file deleted from disk (it also appears as

@@ -54,7 +54,7 @@ measure_in() {
   while IFS= read -r id; do
     rf="$root/.gauntlet/rules/$id.md"
     if [ ! -f "$rf" ]; then
-      printf 'gauntlet: unknown rule %s\n' "$id" >&2
+      printf 'gauntlet: unknown rule %s\n' "$(path_spell "$id")" >&2
       return 2
     fi
     t0=$(now_ms)
@@ -121,7 +121,7 @@ measure_in() {
     }
   ' "$scratch/sorted" > "$scratch/located" || {
     if [ -s "$scratch/unreadable" ]; then
-      printf 'gauntlet: cannot read %s\n' "$(cat "$scratch/unreadable")" >&2
+      printf 'gauntlet: cannot read %s\n' "$(path_spell "$(cat "$scratch/unreadable")")" >&2
     fi
     return 2
   }

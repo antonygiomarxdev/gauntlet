@@ -5,9 +5,63 @@
 # shellcheck disable=SC2034 # read by bin/gauntlet
 GAUNTLET_VERSION=0.1.0-dev
 
-# die <msg> [code=2]: report on stderr and exit.
+# path_spell [<name>]: print text that somebody else wrote so that it cannot move the cursor,
+# clear the screen, hide text with a carriage return or set the terminal title. Every byte below
+# 0x20 and 0x7f is written \xNN, and so is each C1 control (U+0080 to U+009F) in its UTF-8 form,
+# the two bytes C2 80 to C2 9F: xterm reads C2 9B as CSI. Everything else is printed as it is,
+# non-ASCII included, a lone byte 0x80 to 0x9f too (it is the continuation byte of valid text:
+# the euro sign is E2 82 AC). This is the one escape for printed text, applied where the text is
+# printed and never to the rows gauntlet stores.
+#   with an argument: a name. The tab is written \t, the newline \n, and the result is one line.
+#   without one: filter standard input line by line; a line's own newline and its tabs, which
+#   the diff of the baseline and tool messages print, stay.
+# The bytes are read in the C locale, where a character is a byte. The two-byte C1 form is not
+# found by an awk that decodes UTF-8 whatever the locale.
+path_spell() {
+  if [ "$#" -gt 0 ]; then
+    GL_SPELL_NAME=$1 spell_awk name
+  else
+    spell_awk lines
+  fi
+}
+
+# spell_awk <name|lines>: the awk program of path_spell.
+spell_awk() {
+  LC_ALL=C awk -v mode="$1" '
+    function spell(s, name,   i, n, c, k, out) {
+      n = length(s)
+      out = ""
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (c in code) {
+          if (c == "\t" && name) out = out "\\t"
+          else if (c == "\n" && name) out = out "\\n"
+          else if (c == "\t") out = out c
+          else out = out sprintf("\\x%02x", code[c])
+        } else if (c == "\302" && i < n && (k = index(C1, substr(s, i + 1, 1))) > 0) {
+          out = out sprintf("\\xc2\\x%02x", 127 + k)
+          i++
+        } else out = out c
+      }
+      return out
+    }
+    BEGIN {
+      for (i = 1; i < 32; i++) code[sprintf("%c", i)] = i
+      code[sprintf("%c", 127)] = 127
+      C1 = "\200\201\202\203\204\205\206\207\210\211\212\213\214\215\216\217\220\221\222\223\224\225\226\227\230\231\232\233\234\235\236\237"
+      # Tab and newline are no reason to look at a line closely: only the rest are.
+      unsafe = "[\001-\010\013-\037\177]"
+      if (mode == "name") { print spell(ENVIRON["GL_SPELL_NAME"], 1); exit }
+    }
+    $0 !~ unsafe && index($0, "\302") == 0 { print; next }
+    { print spell($0, 0) }
+  '
+}
+
+# die <msg> [code=2]: report on stderr and exit. The message may hold a name or a value somebody
+# else wrote, so it is printed through path_spell.
 die() {
-  printf 'gauntlet: %s\n' "$1" >&2
+  printf 'gauntlet: %s\n' "$(path_spell "$1")" >&2
   exit "${2:-2}"
 }
 

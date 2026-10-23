@@ -34,7 +34,7 @@ format_file() {
       return 0
     fi
   done
-  printf 'gauntlet: unknown format %s\n' "$1" >&2
+  printf 'gauntlet: unknown format %s\n' "$(path_spell "$1")" >&2
   return 2
 }
 
@@ -67,7 +67,7 @@ load_format() {
   case "$FMT_LINE" in ''|*[!0-9]*) valid=0 ;; esac
   case "$FMT_MESSAGE" in *[!0-9]*) valid=0 ;; esac
   if [ "$valid" -ne 1 ]; then
-    printf 'gauntlet: format %s needs match and numeric path and line groups\n' "$1" >&2
+    printf 'gauntlet: format %s needs match and numeric path and line groups\n' "$(path_spell "$1")" >&2
     return 2
   fi
   # parse_output writes the group into a sed replacement, where \10 is \1 and a 0.
@@ -79,7 +79,7 @@ load_format() {
       *) value=$FMT_MESSAGE ;;
     esac
     if [ "${#value}" -gt 1 ]; then
-      printf 'gauntlet: format %s: %s is group %s; use a group from 0 to 9\n' "$1" "$key" "$value" >&2
+      printf 'gauntlet: format %s: %s is group %s; use a group from 0 to 9\n' "$(path_spell "$1")" "$key" "$value" >&2
       return 2
     fi
   done
@@ -96,8 +96,8 @@ quote_word() {
 # detect_fail <msg> <errf>: print "gauntlet: <msg>" and the first 5 lines of
 # the detector's stderr, which the caller keeps in <errf>.
 detect_fail() {
-  printf 'gauntlet: %s\n' "$1" >&2
-  head -n 5 "$2" 2>/dev/null | LC_ALL=C sed 's/^/gauntlet:   | /' >&2
+  printf 'gauntlet: %s\n' "$(path_spell "$1")" >&2
+  head -n 5 "$2" 2>/dev/null | path_spell | LC_ALL=C sed 's/^/gauntlet:   | /' >&2
 }
 
 # missing_tool_hint <tool>: print how to install an engine tool, with a leading ". "
@@ -231,7 +231,8 @@ detect_scan() {
 # with the named format and write "path<TAB>line<TAB>message" rows to out-file.
 # Empty and ignored lines are dropped. Returns 2 with a message on stderr when
 # a line matches neither the format's match nor its ignore, or when the format
-# does not compile. run_detector and test-rules both parse through here.
+# does not compile. run_detector and test-rules both parse through here. The messages carry the
+# tool's own text; both callers keep stderr in a file and print it through path_spell.
 parse_output() {
   local raw=$2 out=$3 s row bad
   load_format "$1" || return 2
@@ -290,7 +291,7 @@ detect_rule() {
       ;;
     rg|linter|script) cmd=$detector ;;
     *)
-      printf 'gauntlet: broken detector: %s: unknown engine %s\n' "$id" "$engine" >&2
+      printf 'gauntlet: broken detector: %s: unknown engine %s\n' "$(path_spell "$id")" "$(path_spell "$engine")" >&2
       return 2
       ;;
   esac
@@ -306,8 +307,8 @@ detect_rule() {
   printf '%s\n' "$DETECT_RAW" > "$scratch/raw" || return 2
 
   if ! parse_output "$format" "$scratch/raw" "$scratch/parsed" 2> "$scratch/perr"; then
-    printf 'gauntlet: broken detector: %s: ' "$id" >&2
-    cat "$scratch/perr" >&2
+    printf 'gauntlet: broken detector: %s: ' "$(path_spell "$id")" >&2
+    path_spell < "$scratch/perr" >&2
     return 2
   fi
 
