@@ -32,6 +32,12 @@ jobs:
         if: runner.os == 'Linux'
         run: bash test/run.sh
 
+      # macOS's date has no %N, so now_ms falls back to whole seconds there. This
+      # runs the suite with test/bsd-date first on PATH, so Ubuntu covers that clock.
+      - name: Test (Ubuntu, BSD date clock)
+        if: runner.os == 'Linux'
+        run: GAUNTLET_TEST_BSD_DATE=1 bash test/run.sh
+
       # Homebrew bash 5 sits first on PATH, and bin/gauntlet and the tests use
       # `env bash`, so the whole suite would run under bash 5. Put a shim that
       # resolves `bash` to the system 3.2 binary ahead of PATH for later steps.

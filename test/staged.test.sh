@@ -398,7 +398,13 @@ test_no_baseline_at_head_skips_checks() {
 }
 
 test_over_budget_warns_not_fails() {
-  staged_setup 'ok'
+  mkrepo
+  printf 'ok\n' > a.ts
+  # The commit must take a second: a seconds clock (BSD date) reads less as 0 ms.
+  rule slow "detector=sh -c 'sleep 1' {files}"
+  must git add -A
+  must git commit -q -m main
+  staged_hook
   printf 'still ok\n' > a.ts
   must git add a.ts
   run env GAUNTLET_COMMIT_BUDGET_MS=1 git commit -q -m "chore: tweak"

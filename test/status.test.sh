@@ -1315,9 +1315,11 @@ test_status_leaves_no_temp_file() {
   assert_eq 0 "$leftover" "no temp file left in .gauntlet"
 }
 
+# Every rule here sleeps 1 s, not 0.2: a seconds clock (BSD date) reads a shorter run
+# as 0 ms, which is under the 1 ms budget these tests set.
 test_check_staged_records_times_for_status() {
   mkrepo
-  rule slowrule "detector=sh -c 'sleep 0.2' {files}" paths=src/**
+  rule slowrule "detector=sh -c 'sleep 1' {files}" paths=src/**
   must git add -A
   must git commit -q -m rule
   mkdir -p src
@@ -1335,8 +1337,8 @@ test_check_staged_records_times_for_status() {
 
 test_check_staged_records_every_rule_time() {
   mkrepo
-  rule slowone "detector=sh -c 'sleep 0.2' {files}" paths=src/**
-  rule slowtwo "detector=sh -c 'sleep 0.2' {files}" paths=src/**
+  rule slowone "detector=sh -c 'sleep 1' {files}" paths=src/**
+  rule slowtwo "detector=sh -c 'sleep 1' {files}" paths=src/**
   must git add -A
   must git commit -q -m rules
   mkdir -p src
@@ -1351,7 +1353,7 @@ test_check_staged_records_every_rule_time() {
 
 test_check_staged_time_file_replaces_the_previous_run() {
   mkrepo
-  rule slowone "detector=sh -c 'sleep 0.2' {files}" paths=src/**
+  rule slowone "detector=sh -c 'sleep 1' {files}" paths=src/**
   must git add -A
   must git commit -q -m rules
   mkdir -p src
@@ -1367,7 +1369,7 @@ test_check_staged_time_file_replaces_the_previous_run() {
 
 test_check_staged_time_file_leaves_no_temp_file() {
   mkrepo
-  rule slowone "detector=sh -c 'sleep 0.2' {files}" paths=src/**
+  rule slowone "detector=sh -c 'sleep 1' {files}" paths=src/**
   must git add -A
   must git commit -q -m rules
   mkdir -p src
@@ -1396,7 +1398,7 @@ test_status_does_not_list_a_rule_without_a_time_row() {
 
 test_status_linked_worktree_reads_its_own_times() {
   mkrepo
-  rule slowrule "detector=sh -c 'sleep 0.2' {files}" paths=src/**
+  rule slowrule "detector=sh -c 'sleep 1' {files}" paths=src/**
   must git add -A
   must git commit -q -m rule
   must git worktree add -q "$TMP/wt" -b feature
@@ -1419,7 +1421,7 @@ test_check_staged_unwritable_git_dir_keeps_exit_code() {
     return 77
   fi
   mkrepo
-  rule slowrule "detector=sh -c 'sleep 0.2' {files}" paths=src/**
+  rule slowrule "detector=sh -c 'sleep 1' {files}" paths=src/**
   must git add -A
   must git commit -q -m rule
   mkdir -p src
