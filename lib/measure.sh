@@ -61,7 +61,13 @@ measure_in() {
     paths=$(rule_get "$rf" paths) || return 2
     exclude=$(rule_get "$rf" exclude) || return 2
     select_files "$paths" "$exclude" < "$scratch/kept" > "$scratch/files" || return 2
-    run_detector "$rf" "$scratch/files" "$scratch/rule.tsv" || return 2
+    # R30: no file in scope, nothing to measure. A detector without {files} would
+    # still walk the whole repo, only for its rows to be filtered away below.
+    if [ -s "$scratch/files" ]; then
+      run_detector "$rf" "$scratch/files" "$scratch/rule.tsv" || return 2
+    else
+      : > "$scratch/rule.tsv" || return 2
+    fi
     t1=$(now_ms)
     printf '%s\t%s\n' "$id" "$((t1 - t0))" >> "$work/time.tsv" || return 2
     cat "$scratch/rule.tsv" >> "$scratch/raw" || return 2

@@ -192,3 +192,66 @@ test_measure_writes_time_per_rule() {
   assert_eq "nothing" "$(awk -F '\t' 'NR == 2 { print $1 }' "$TMP/m1/time.tsv")" "second rule"
   awk -F '\t' '$2 !~ /^[0-9]+$/ { bad = 1 } END { exit bad }' "$TMP/m1/time.tsv" || fail "time is not a whole number of ms"
 }
+
+# R30: a detector with no {files} walks the whole repo, so it is not run when the rule's
+# paths select nothing: the rule would only measure files it does not look at, and an
+# expensive tool would run for nothing. The marker file is what proves it ran.
+scope_rule() {
+  rule prog paths='src/**' "detector=touch $TMP/ran.marker"
+}
+
+test_whole_program_detector_does_not_run_without_files_in_scope() {
+  mkrepo
+  scope_rule
+  printf 'ok\n' > a.ts
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  if [ -e "$TMP/ran.marker" ]; then fail "baseline ran the detector with no file in src/**"; fi
+  assert_eq "" "$(cat .gauntlet/baseline.tsv)" "no rows"
+  # The other side: one file in scope and the detector runs.
+  must mkdir src
+  printf 'ok\n' > src/b.ts
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline with src/b.ts: $OUT"
+  [ -e "$TMP/ran.marker" ] || fail "baseline did not run the detector with a file in src/**"
+}
+
+test_ci_gate_does_not_run_a_whole_program_detector_without_files_in_scope() {
+  mkrepo
+  scope_rule
+  printf 'ok\n' > a.ts
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  must git add -A
+  must git commit -q -m main
+  must git checkout -q -b feat
+  printf 'fine\n' > b.ts
+  must git add -A
+  must git commit -q -m feat
+  run "$G" check --ci --base main
+  assert_eq 0 "$STATUS" "check --ci: $OUT"
+  if [ -e "$TMP/ran.marker" ]; then fail "check --ci ran the detector with no file in src/**"; fi
+}
+
+test_commit_gate_does_not_run_a_whole_program_detector_without_staged_files_in_scope() {
+  mkrepo
+  scope_rule
+  printf 'ok\n' > a.ts
+  must mkdir src
+  printf 'ok\n' > src/b.ts
+  must git add -A
+  must git commit -q -m main
+  printf 'changed\n' > a.ts
+  must git add a.ts
+  run "$G" check --staged
+  assert_eq 0 "$STATUS" "check --staged, a.ts staged: $OUT"
+  if [ -e "$TMP/ran.marker" ]; then fail "check --staged ran the detector with nothing staged in src/**"; fi
+  printf 'changed\n' > src/b.ts
+  must git add src/b.ts
+  run "$G" check --staged
+  assert_eq 0 "$STATUS" "check --staged, src/b.ts staged: $OUT"
+  [ -e "$TMP/ran.marker" ] || fail "check --staged did not run the detector with src/b.ts staged"
+}
