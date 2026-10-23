@@ -571,16 +571,21 @@ test_touched_gate_blocks_at_commit() {
   assert_contains "$OUT" "FAIL (1 problems)"
 }
 
-test_touched_off_runs_no_diff() {
+test_one_name_status_call_per_run() {
   staged_setup 'TODO here'
   run env GIT_TRACE="$TMP/trace.off" "$G" check --ci --base main
-  assert_eq 0 "$STATUS" "touched off status"
-  assert_not_contains "$(cat "$TMP/trace.off")" "name-status"
+  assert_eq 0 "$STATUS" "check --ci status with touched=off"
+  assert_eq 1 "$(grep -c 'name-status' "$TMP/trace.off")" "one diff call with touched=off"
   printf 'touched=on\n' > .gauntlet/config
   must git add .gauntlet/config
   must git commit -q -m "chore: touched on"
   run env GIT_TRACE="$TMP/trace.on" "$G" check --ci --base main
-  assert_contains "$(cat "$TMP/trace.on")" "name-status"
+  assert_eq 1 "$(grep -c 'name-status' "$TMP/trace.on")" "one diff call with touched=on"
+  printf 'ok\n' > a.ts
+  must git add a.ts
+  run env GIT_TRACE="$TMP/trace.staged" "$G" check --staged
+  assert_eq 0 "$STATUS" "check --staged status"
+  assert_eq 1 "$(grep -c 'name-status' "$TMP/trace.staged")" "one diff call at commit"
 }
 
 test_new_rule_exempt_at_commit_rows_added() {
@@ -638,4 +643,82 @@ test_check_staged_rejects_extra_arguments() {
   run "$G" check --staged extra
   assert_eq 2 "$STATUS" "status"
   assert_contains "$OUT" "usage: gauntlet check --staged"
+}
+
+test_pure_rename_of_debt_commits_moved_rows() {
+  staged_setup 'TODO here'
+  must git mv a.ts b.ts
+  run git commit -q -m "refactor: rename a.ts"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_not_contains "$OUT" "[new]"
+  assert_eq $'todo\tb.ts\tTODO here\t1' "$(staged_committed_baseline)" "old rows gone, new path's rows in"
+  staged_assert_exact
+}
+
+test_rename_with_unchanged_debt_line_commits() {
+  staged_setup "$(printf 'alpha\nbeta\ngamma\nTODO here')"
+  must git mv a.ts b.ts
+  printf 'alpha\nbeta\ngamma\nTODO here\nnew line\n' > b.ts
+  must git add -A
+  run git commit -q -m "refactor: rename and edit"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_not_contains "$OUT" "[new]"
+  assert_eq $'todo\tb.ts\tTODO here\t1' "$(staged_committed_baseline)"
+  staged_assert_exact
+}
+
+test_rename_with_changed_debt_line_is_new_at_commit() {
+  staged_setup "$(printf 'alpha\nbeta\ngamma\nTODO here')"
+  must git mv a.ts b.ts
+  printf 'alpha\nbeta\ngamma\nTODO changed\n' > b.ts
+  must git add -A
+  run git commit -q -m "refactor: rename and change the debt"
+  assert_eq 1 "$STATUS" "commit status"
+  assert_contains "$OUT" "  b.ts:4  todo  TODO changed"
+}
+
+test_rename_of_path_with_space_commits() {
+  mkrepo
+  mkdir -p "my dir"
+  printf 'TODO here\n' > "my dir/a b.ts"
+  rule todo paths='**/*.ts'
+  staged_baseline
+  must git add -A
+  must git commit -q -m main
+  staged_hook
+  must git checkout -q -b feat
+  must git mv "my dir/a b.ts" "my dir/c d.ts"
+  run git commit -q -m "refactor: rename spaced path"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_not_contains "$OUT" "[new]"
+  assert_eq $'todo\tmy dir/c d.ts\tTODO here\t1' "$(staged_committed_baseline)"
+  staged_assert_exact
+}
+
+test_copy_of_debt_file_is_new_at_commit() {
+  staged_setup 'TODO here'
+  cp a.ts c.ts
+  must git add c.ts
+  run git commit -q -m "feat: copy a.ts"
+  assert_eq 1 "$STATUS" "commit status"
+  assert_contains "$OUT" "  c.ts:1  todo  TODO here"
+}
+
+test_two_renames_in_one_commit_commit() {
+  mkrepo
+  printf 'TODO one\n' > a.ts
+  printf 'TODO two\n' > c.ts
+  rule todo paths='**/*.ts'
+  staged_baseline
+  must git add -A
+  must git commit -q -m main
+  staged_hook
+  must git checkout -q -b feat
+  must git mv a.ts b.ts
+  must git mv c.ts d.ts
+  run git commit -q -m "refactor: two renames"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_not_contains "$OUT" "[new]"
+  assert_eq "$(printf 'todo\tb.ts\tTODO one\t1\ntodo\td.ts\tTODO two\t1')" "$(staged_committed_baseline)"
+  staged_assert_exact
 }

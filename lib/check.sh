@@ -43,10 +43,10 @@ check_ci() {
 # collected in a body file so the header can carry the whole-run time.
 check_run() {
   local scratch=$1 base_ref=$2 start=$3 root base sha id rf sev fix atb
-  local known=0 n_rules ms end n body new_n=0 global_n=0 touched_n=0 baseline_n=0 mode
+  local known=0 n_rules ms end n body new_n=0 global_n=0 touched_n=0 baseline_n=0
   local loosened_n=0 rt_n=0 rt_rc=0 checks_n=0 broken=0 t0 t1
   root=$(repo_root) || return 2
-  mode=$(touched_mode) || return 2
+  touched_mode > /dev/null || return 2
   base=$(resolve_base "$base_ref") || return 2
   sha=$(merge_base "$base") || return 2
   # Every file the branch changes, deletions included: the scope of declared checks.
@@ -92,7 +92,12 @@ check_run() {
   if [ "$known" -eq 0 ]; then
     printf 'note: no baseline at base; new, global, shadow and track checks skipped\n' >> "$body"
   else
-    new_rows block "$scratch" > "$scratch/new.rows" || return 2
+    # One diff per run (R23). The rename map re-keys the base rows before the
+    # new-violation comparison; the touched gate reads the same diff.
+    git_nul_lines -c core.quotepath=off diff -M -z --name-status "$sha" HEAD > "$scratch/name-status" || return 2
+    rename_pairs "$scratch/name-status" > "$scratch/renames.tsv" || return 2
+    rekey_base "$scratch/renames.tsv" "$scratch/base.tsv" > "$scratch/base.rekeyed.tsv" || return 2
+    new_rows block "$scratch" "$scratch/base.rekeyed.tsv" > "$scratch/new.rows" || return 2
     if [ -s "$scratch/new.rows" ]; then
       printf '[new]\n' >> "$body"
       violation_lines "$scratch/new.rows" >> "$body"
@@ -104,12 +109,7 @@ check_run() {
       awk -F '\t' '{ printf "  %s  %s → %s\n", $1, $2, $3 }' "$scratch/global.rows" >> "$body"
     fi
     global_n=$(count_global_extra "$scratch/new.rows" "$scratch/global.rows") || return 2
-    # The diff is read only when the touched gate is on: touched=off makes no git call.
-    : > "$scratch/touched.diff"
-    if [ "$mode" = on ]; then
-      git_nul_lines -c core.quotepath=off diff -M -z --name-status "$sha" HEAD > "$scratch/touched.diff" || return 2
-    fi
-    cmp_touched "$scratch/touched.diff" "$scratch/base.tsv" "$scratch/now/measure.tsv" "$scratch/rules.tsv" \
+    cmp_touched "$scratch/name-status" "$scratch/base.tsv" "$scratch/now/measure.tsv" "$scratch/rules.tsv" \
       "$scratch/waived" > "$scratch/touched.rows" || return 2
     if [ -s "$scratch/touched.rows" ]; then
       printf '[touched]\n' >> "$body"
@@ -169,7 +169,7 @@ check_run() {
   fi
 
   if [ "$known" -eq 1 ]; then
-    new_rows shadow "$scratch" > "$scratch/shadow.rows" || return 2
+    new_rows shadow "$scratch" "$scratch/base.rekeyed.tsv" > "$scratch/shadow.rows" || return 2
     if [ -s "$scratch/shadow.rows" ]; then
       printf '[shadow] would have failed\n' >> "$body"
       violation_lines "$scratch/shadow.rows" >> "$body"
@@ -319,13 +319,62 @@ check_in_scope() {
   ' "$changed"
 }
 
-# new_rows <severity> <scratch>: print one row per new occurrence of a rule of
-# that severity that exists at base: rule, path, line, fix, message. An
+# diff_entries <name-status-file>: one row per entry of a `git diff -M -z
+# --name-status` output (one token per line, as git_nul_lines writes it): status,
+# old path, new path (the old path again when there is no second path). Entries
+# under .gauntlet/ are dropped (R15). The parser the touched gate and the rename
+# map share, so the -z handling lives in one place.
+diff_entries() {
+  awk '
+    {
+      if (need == 0) { st = $0; need = (st ~ /^[RC]/) ? 2 : 1; k = 0; next }
+      p[++k] = $0
+      need--
+      if (need > 0) next
+      old = p[1]
+      nw = (k == 2) ? p[2] : p[1]
+      if (index(old, ".gauntlet/") == 1 || index(nw, ".gauntlet/") == 1) next
+      printf "%s\t%s\t%s\n", st, old, nw
+    }
+  ' "$1"
+}
+
+# rename_pairs <name-status-file>: print old<TAB>new for each rename (R entry) of a
+# `git diff -M -z --name-status` output, pure renames included. A copy (C) and a
+# delete plus an add are not renames, so they are not listed (R23).
+rename_pairs() {
+  local entries status=0
+  entries=$(mktemp) || return 2
+  diff_entries "$1" > "$entries" || status=2
+  if [ "$status" -eq 0 ]; then
+    awk -F '\t' '$1 ~ /^R/ { printf "%s\t%s\n", $2, $3 }' "$entries" || status=2
+  fi
+  rm -f "$entries"
+  return "$status"
+}
+
+# rekey_base <pairs> <base.tsv>: print the base rows with each renamed file's rows
+# moved to its new path (R23), so the new-violation comparison reads a rename as
+# the same debt. The new path's own base rows are dropped: that file is the
+# renamed one, and its old content is gone. Every other row passes through.
+rekey_base() {
+  GL_PAIRS=$1 awk -F "$DETECT_TAB" '
+    FILENAME == ENVIRON["GL_PAIRS"] { to[$1] = $2; from[$2] = 1; next }
+    ($2 in from) { next }
+    ($2 in to) { printf "%s\t%s\t%s\t%s\n", $1, to[$2], $3, $4; next }
+    { print }
+  ' "$1" "$2"
+}
+
+# new_rows <severity> <scratch> [base.tsv]: print one row per new occurrence of a
+# rule of that severity that exists at base: rule, path, line, fix, message. An
 # occurrence is new when its fingerprint count rose; the last occurrences in
-# line order are the new ones. Waived rows are dropped.
+# line order are the new ones. Waived rows are dropped. The base is
+# <scratch>/base.tsv unless the caller passes the re-keyed one (R23).
 new_rows() {
-  local sev=$1 scratch=$2
-  GL_SEV=$sev GL_RULES="$scratch/rules.tsv" GL_BASE="$scratch/base.tsv" \
+  local sev=$1 scratch=$2 base=${3:-}
+  [ -n "$base" ] || base="$scratch/base.tsv"
+  GL_SEV=$sev GL_RULES="$scratch/rules.tsv" GL_BASE="$base" \
     GL_NOW="$scratch/now/measure.tsv" GL_LOC="$scratch/located.byline" awk -F '\t' '
     FILENAME == ENVIRON["GL_RULES"] { sev[$1] = $2; atb[$1] = $3; fix[$1] = $4; next }
     FILENAME == ENVIRON["GL_BASE"] { bc[$1 SUBSEP $2 SUBSEP $3] = $4; next }
@@ -343,7 +392,7 @@ new_rows() {
         printf "%s\t%s\t%s\t%s\t%s\n", $1, $2, $3, fix[$1], m
       }
     }
-  ' "$scratch/rules.tsv" "$scratch/base.tsv" "$scratch/now/measure.tsv" "$scratch/located.byline" > "$scratch/new.raw" || return 2
+  ' "$scratch/rules.tsv" "$base" "$scratch/now/measure.tsv" "$scratch/located.byline" > "$scratch/new.raw" || return 2
   LC_ALL=C sort -t "$DETECT_TAB" -k1,1 -k2,2 -k3,3n "$scratch/new.raw" > "$scratch/new.sorted" || return 2
   # A waived path drops its rows; one awk pass over the waived set, not a fork per row.
   GL_WAIVED="$scratch/waived" awk -F '\t' '
@@ -440,22 +489,13 @@ cmp_touched() {
 # the work of cmp_touched, with intermediate files kept in <scratch>.
 cmp_touched_in() {
   local diff=$1 base=$2 now=$3 rules=$4 waived=$5 scratch=$6
-  # R15: `.gauntlet/` is never judged. R100 (pure rename) and D are skipped.
-  # Both are early-outs: judged anyway, their verdict would be the same.
-  # -z output is one token per line: a status, then one path (two for R or C).
-  awk '
-    {
-      if (need == 0) { st = $0; need = (st ~ /^[RC]/) ? 2 : 1; k = 0; next }
-      p[++k] = $0
-      need--
-      if (need > 0) next
-      old = p[1]
-      nw = (k == 2) ? p[2] : p[1]
-      if (index(old, ".gauntlet/") == 1 || index(nw, ".gauntlet/") == 1) next
-      if (st == "A" || st == "M") printf "%s\t%s\t%s\n", st, old, old
-      else if (st ~ /^R/ && st != "R100") printf "R\t%s\t%s\n", old, nw
-    }
-  ' "$diff" > "$scratch/changes" || return 2
+  # R100 (pure rename) and D are skipped: judged anyway, their verdict would be the
+  # same. diff_entries drops `.gauntlet/` (R15) and parses the -z tokens.
+  diff_entries "$diff" > "$scratch/entries" || return 2
+  awk -F '\t' '
+    $1 == "A" || $1 == "M" { printf "%s\t%s\t%s\n", $1, $2, $2; next }
+    $1 ~ /^R/ && $1 != "R100" { printf "R\t%s\t%s\n", $2, $3 }
+  ' "$scratch/entries" > "$scratch/changes" || return 2
 
   # sums: fingerprint rows of block rules that exist at base, for the changed
   # paths only. B rows are the base's debt at the old paths, N rows the current
@@ -786,7 +826,9 @@ check_staged_run() {
   if [ "$known" -eq 0 ]; then
     printf 'note: no baseline at HEAD; new, touched, shadow and track checks skipped\n' >> "$body"
   else
-    new_rows block "$scratch" > "$scratch/new.rows" || return 2
+    rename_pairs "$scratch/staged.diff" > "$scratch/renames.tsv" || return 2
+    rekey_base "$scratch/renames.tsv" "$scratch/base.tsv" > "$scratch/base.rekeyed.tsv" || return 2
+    new_rows block "$scratch" "$scratch/base.rekeyed.tsv" > "$scratch/new.rows" || return 2
     new_n=$(awk 'END { print NR }' "$scratch/new.rows") || return 2
     if [ -s "$scratch/new.rows" ]; then
       printf '[new]\n' >> "$body"
@@ -799,7 +841,7 @@ check_staged_run() {
       awk -F '\t' '{ printf "  %s  %s → %s  (%s)\n", $1, $2, $3, $4 }' "$scratch/touched.rows" >> "$body"
     fi
     touched_n=$(touched_uncovered "$scratch/new.rows" "$scratch/touched.rows") || return 2
-    new_rows shadow "$scratch" > "$scratch/shadow.rows" || return 2
+    new_rows shadow "$scratch" "$scratch/base.rekeyed.tsv" > "$scratch/shadow.rows" || return 2
     if [ -s "$scratch/shadow.rows" ]; then
       printf '[shadow] would have failed\n' >> "$body"
       violation_lines "$scratch/shadow.rows" >> "$body"

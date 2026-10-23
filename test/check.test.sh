@@ -800,3 +800,90 @@ test_bad_check_key_first_in_sorted_order() {
   assert_contains "$OUT" "bad check key check.a: empty command"
   assert_not_contains "$OUT" "check.z.paths"
 }
+
+# Renames carry their debt (R23, FRD-03 section 4.6): a renamed file's base rows are
+# read under its new path, so existing debt never fails the gate by itself.
+
+test_pure_rename_of_debt_passes() {
+  gate_setup 'TODO here'
+  must git mv a.ts b.ts
+  rebaseline
+  assert_eq 0 "$STATUS" "feat baseline"
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[new]"
+  assert_eq 'todo	b.ts	TODO here	1' "$(cat .gauntlet/baseline.tsv)" "baseline rows follow the rename"
+}
+
+test_rename_with_unchanged_debt_line_passes() {
+  gate_setup "$(printf 'alpha\nbeta\ngamma\nTODO here')"
+  must git mv a.ts b.ts
+  printf 'alpha\nbeta\ngamma\nTODO here\nnew line\n' > b.ts
+  rebaseline
+  assert_eq 0 "$STATUS" "feat baseline"
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[new]"
+}
+
+test_rename_with_changed_debt_line_is_new_at_new_path() {
+  gate_setup "$(printf 'alpha\nbeta\ngamma\nTODO here')"
+  must git mv a.ts b.ts
+  printf 'alpha\nbeta\ngamma\nTODO changed\n' > b.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  b.ts:4  todo  TODO changed"
+  assert_contains "$OUT" "[new]"
+}
+
+test_rename_of_path_with_space_passes() {
+  mkrepo
+  mkdir -p "my dir"
+  printf 'TODO here\n' > "my dir/a b.ts"
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  rebaseline
+  commit_all main
+  must git checkout -q -b feat
+  must git mv "my dir/a b.ts" "my dir/c d.ts"
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[new]"
+  assert_contains "$(cat .gauntlet/baseline.tsv)" "my dir/c d.ts"
+}
+
+test_copy_of_debt_file_is_new() {
+  gate_setup 'TODO here'
+  cp a.ts c.ts
+  rebaseline
+  assert_eq 0 "$STATUS" "feat baseline"
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "  c.ts:1  todo  TODO here"
+}
+
+test_two_renames_in_one_commit_pass() {
+  mkrepo
+  printf 'TODO one\n' > a.ts
+  printf 'TODO two\n' > c.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  rebaseline
+  commit_all main
+  must git checkout -q -b feat
+  must git mv a.ts b.ts
+  must git mv c.ts d.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status"
+  assert_not_contains "$OUT" "[new]"
+  assert_eq "$(printf 'todo\tb.ts\tTODO one\t1\ntodo\td.ts\tTODO two\t1')" "$(cat .gauntlet/baseline.tsv)" "exact"
+}
