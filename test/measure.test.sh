@@ -317,3 +317,32 @@ test_commit_gate_measures_a_staged_typechange() {
   assert_eq 1 "$STATUS" "check --staged: $OUT"
   assert_contains "$OUT" "link.ts:1  todo  TODO now a file"
 }
+
+# A matched file the fingerprint reader cannot open is an error that names the file, not a
+# row with an empty fingerprint (getline returns -1, which is not "no more lines"). The
+# detector here prints rows without reading the files, so only the reader meets it.
+test_unreadable_matched_file_is_exit_2_naming_the_file() {
+  if [ "$(id -u)" = 0 ]; then skip "root can read a mode 000 file"; return 77; fi
+  mkrepo
+  rule r engine=linter paths='**/*.ts' "detector=printf 'a.ts:1:x\\nb.ts:1:y\\n'"
+  printf 'TODO a\n' > a.ts
+  printf 'TODO b\n' > b.ts
+  must git add -A
+  must chmod 000 a.ts
+  run "$G" baseline
+  must chmod 644 a.ts
+  assert_eq 2 "$STATUS" "baseline: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot read a.ts"
+  assert_eq "" "$(cat .gauntlet/baseline.tsv)" "no baseline is written"
+}
+
+test_readable_matched_files_still_get_their_fingerprints() {
+  mkrepo
+  rule r engine=linter paths='**/*.ts' "detector=printf 'a.ts:1:x\\nb.ts:1:y\\n'"
+  printf 'TODO a\n' > a.ts
+  printf 'TODO b\n' > b.ts
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  assert_eq "$(printf 'r\ta.ts\tTODO a\t1\nr\tb.ts\tTODO b\t1')" "$(cat .gauntlet/baseline.tsv)" "rows"
+}

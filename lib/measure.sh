@@ -85,7 +85,8 @@ measure_in() {
   # Group the rows by path so each file is read once, then take each matched
   # line from the working tree and normalize it into the fingerprint.
   LC_ALL=C sort -t "$DETECT_TAB" -k2,2 "$scratch/raw.kept" > "$scratch/sorted" || return 2
-  GL_ROOT="$root" awk -F "$DETECT_TAB" '
+  : > "$scratch/unreadable" || return 2
+  GL_ROOT="$root" GL_BAD="$scratch/unreadable" awk -F "$DETECT_TAB" '
     function normalize(s) {
       gsub(/\r/, "", s)
       gsub(/[ \t]+/, " ", s)
@@ -96,7 +97,10 @@ measure_in() {
     $2 != cur {
       cur = $2
       n = 0
-      while ((getline l < (ENVIRON["GL_ROOT"] "/" cur)) > 0) lines[++n] = l
+      # getline is -1 for a file it cannot open, which is not "no more lines": name the
+      # file in GL_BAD and stop, so a row is never counted under an empty fingerprint.
+      while ((rc = (getline l < (ENVIRON["GL_ROOT"] "/" cur))) > 0) lines[++n] = l
+      if (rc < 0) { print cur > ENVIRON["GL_BAD"]; exit 2 }
       close(ENVIRON["GL_ROOT"] "/" cur)
     }
     {
@@ -108,7 +112,12 @@ measure_in() {
       fp = (ln >= 1 && ln <= n) ? normalize(lines[ln]) : ""
       print $1 "\t" $2 "\t" $3 "\t" fp "\t" msg
     }
-  ' "$scratch/sorted" > "$scratch/located" || return 2
+  ' "$scratch/sorted" > "$scratch/located" || {
+    if [ -s "$scratch/unreadable" ]; then
+      printf 'gauntlet: cannot read %s\n' "$(cat "$scratch/unreadable")" >&2
+    fi
+    return 2
+  }
   LC_ALL=C sort "$scratch/located" > "$work/located.tsv" || return 2
 
   awk -F "$DETECT_TAB" '
