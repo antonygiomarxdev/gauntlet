@@ -1560,3 +1560,153 @@ test_crlf_config_reads_like_lf() {
   assert_not_contains "$OUT" "touched must be on or off"
   assert_not_contains "$OUT" "bad check key"
 }
+
+# R37: pre-push and CI run the branch's own vendored runner, so a branch that edits it is
+# judged by what it edited. The gate cannot stop that, and says so: one note, same text
+# locally and in CI, never a failure.
+RUNNER_NOTE='note: the vendored runner changed in this branch (.gauntlet/bin or .gauntlet/lib differ from the base); review it'
+
+# runner_setup: main holds a vendored runner (stand-in files: the gate only compares them),
+# then a feat branch.
+runner_setup() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  must mkdir -p .gauntlet/bin .gauntlet/lib
+  printf 'bin v1\n' > .gauntlet/bin/gauntlet
+  printf 'lib v1\n' > .gauntlet/lib/core.sh
+  rebaseline
+  commit_all main
+  must git checkout -q -b feat
+}
+
+test_an_unchanged_runner_prints_no_note() {
+  runner_setup
+  printf 'still ok\n' > a.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "vendored runner"
+}
+
+test_a_changed_lib_prints_the_note_and_passes() {
+  runner_setup
+  printf 'lib v2\n' > .gauntlet/lib/core.sh
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "$RUNNER_NOTE"
+  assert_contains "$OUT" "gauntlet: ok"
+}
+
+test_a_changed_bin_prints_the_note_and_passes() {
+  runner_setup
+  printf 'bin v2\n' > .gauntlet/bin/gauntlet
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "$RUNNER_NOTE"
+}
+
+test_a_new_file_in_the_runner_prints_the_note() {
+  runner_setup
+  printf 'new\n' > .gauntlet/lib/extra.sh
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "$RUNNER_NOTE"
+}
+
+test_a_removed_runner_prints_the_note() {
+  runner_setup
+  must git rm -q -r .gauntlet/bin .gauntlet/lib
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "$RUNNER_NOTE"
+}
+
+# The note is information: a branch that also breaks the gate fails for that, once.
+test_the_note_does_not_change_a_failing_exit_code() {
+  runner_setup
+  printf 'lib v2\n' > .gauntlet/lib/core.sh
+  printf 'TODO fix\n' > a.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "$RUNNER_NOTE"
+  assert_contains "$OUT" "FAIL (1 problem)"
+}
+
+# First install: the base has no runner, so there is nothing it could have changed.
+test_a_first_install_prints_no_note() {
+  gate_setup 'ok'
+  must mkdir -p .gauntlet/bin .gauntlet/lib
+  printf 'bin v1\n' > .gauntlet/bin/gauntlet
+  printf 'lib v1\n' > .gauntlet/lib/core.sh
+  rebaseline
+  commit_all install
+  gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "vendored runner"
+}
+
+test_the_runner_note_is_the_same_in_ci_and_from_a_subdirectory() {
+  runner_setup
+  printf 'lib v2\n' > .gauntlet/lib/core.sh
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  want=$(printf '%s\n' "$OUT" | grep -v ' ms$' | grep -v '^gauntlet  [a-z]* · ')
+  CI=true gate
+  assert_eq 0 "$STATUS" "CI: $OUT"
+  assert_eq "$want" "$(printf '%s\n' "$OUT" | grep -v ' ms$' | grep -v '^gauntlet  [a-z]* · ')" "same report with CI=true"
+  must mkdir -p sub
+  must cd sub
+  gate
+  assert_eq 0 "$STATUS" "subdirectory: $OUT"
+  assert_contains "$OUT" "$RUNNER_NOTE"
+}
+
+# R32: a listing git cannot answer is exit 2 on every side, never "no runner".
+test_an_unreadable_runner_at_the_base_is_exit_2() {
+  runner_setup
+  printf 'lib v2\n' > .gauntlet/lib/core.sh
+  rebaseline
+  commit_all feat
+  git_fails ls-tree .gauntlet/bin "$(git rev-parse main)"
+  gate
+  assert_eq 2 "$STATUS" "bin at the base: $OUT"
+  assert_contains "$OUT" "simulated failure"
+  assert_not_contains "$OUT" "vendored runner"
+}
+
+test_an_unreadable_lib_at_the_base_is_exit_2() {
+  runner_setup
+  printf 'lib v2\n' > .gauntlet/lib/core.sh
+  rebaseline
+  commit_all feat
+  git_fails ls-tree .gauntlet/lib "$(git rev-parse main)"
+  gate
+  assert_eq 2 "$STATUS" "lib at the base: $OUT"
+  assert_contains "$OUT" "simulated failure"
+}
+
+test_an_unreadable_runner_at_head_is_exit_2() {
+  runner_setup
+  printf 'lib v2\n' > .gauntlet/lib/core.sh
+  rebaseline
+  commit_all feat
+  git_fails ls-tree .gauntlet/lib HEAD
+  gate
+  assert_eq 2 "$STATUS" "lib at HEAD: $OUT"
+  assert_contains "$OUT" "simulated failure"
+}

@@ -92,6 +92,15 @@ check_run() {
 
   body="$scratch/body"
   : > "$body"
+  # R37: the runner this gate runs is the branch's own. It cannot judge itself, so a change to
+  # it is named for the reviewer. A note, never a failure: the same text locally and in CI.
+  rc=0
+  runner_changed "$sha" || rc=$?
+  case "$rc" in
+    0) printf 'note: the vendored runner changed in this branch (.gauntlet/bin or .gauntlet/lib differ from the base); review it\n' >> "$body" ;;
+    1) ;;
+    *) return 2 ;;
+  esac
   if [ "$known" -eq 0 ]; then
     printf 'note: no baseline at base; new, global, shadow and track checks skipped\n' >> "$body"
   else
@@ -220,6 +229,38 @@ check_run() {
   fi
   printf 'gauntlet: FAIL (%s)\n' "$(plural "$n" problem problems)"
   return 1
+}
+
+# runner_changed <merge-base>: succeed (0) when .gauntlet/bin or .gauntlet/lib differs between
+# the merge-base and HEAD, return 1 when neither does, and also when the base has no vendored
+# runner at all (the first install has nothing to have changed), and 2 when git cannot tell
+# (R32). The trees are compared by id. HEAD is what check --ci runs, as its tree is clean.
+runner_changed() {
+  local dir rc bid hid had=0 differ=0
+  for dir in bin lib; do
+    bid=$(runner_tree "$1" "$dir") || return 2
+    hid=$(runner_tree HEAD "$dir") || return 2
+    if [ -n "$bid" ]; then had=1; fi
+    if [ "$bid" != "$hid" ]; then differ=1; fi
+  done
+  [ "$had" -eq 1 ] && [ "$differ" -eq 1 ]
+}
+
+# runner_tree <rev> <bin|lib>: print the git id of .gauntlet/<dir> at <rev>; nothing when it is
+# absent there. Returns 2 when git cannot tell.
+runner_tree() {
+  local rc=0
+  base_has "$1" ".gauntlet/$2" || rc=$?
+  case "$rc" in
+    0)
+      git rev-parse "$1:.gauntlet/$2" 2> /dev/null || {
+        printf 'gauntlet: cannot read .gauntlet/%s at %s\n' "$2" "$1" >&2
+        return 2
+      }
+      ;;
+    1) ;;
+    *) return 2 ;;
+  esac
 }
 
 # rule_tests_due <changed>: succeed when a file under .gauntlet/rules/ or
