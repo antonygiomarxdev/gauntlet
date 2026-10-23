@@ -82,3 +82,84 @@ test_baseline_rule_without_matches() {
   assert_eq 0 "$STATUS" "status"
   assert_eq "" "$(cat .gauntlet/baseline.tsv)" "baseline"
 }
+
+test_gauntlet_files_never_measured() {
+  mkrepo
+  measure_lib
+  printf 'TODO here\n' > a.ts
+  rule todo
+  must measure all "$TMP/m1" todo
+  assert_eq "$(printf 'todo\ta.ts\tTODO here\t1')" "$(cat "$TMP/m1/measure.tsv")" "rows"
+}
+
+test_baseline_twice_is_identical() {
+  mkrepo
+  printf 'TODO here\n' > a.ts
+  rule todo
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "first status"
+  cp .gauntlet/baseline.tsv "$TMP/first.tsv"
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "second status"
+  must cmp "$TMP/first.tsv" .gauntlet/baseline.tsv
+  assert_eq "$(printf 'todo\ta.ts\tTODO here\t1')" "$(cat .gauntlet/baseline.tsv)" "rows"
+}
+
+test_whole_program_gauntlet_rows_dropped() {
+  mkrepo
+  measure_lib
+  printf 'TODO here\n' > a.ts
+  rule todo engine=linter paths='**' "detector=printf '.gauntlet/rules/todo.md:1:TODO\na.ts:1:TODO\n'"
+  must measure all "$TMP/m1" todo
+  assert_eq "$(printf 'todo\ta.ts\tTODO here\t1')" "$(cat "$TMP/m1/measure.tsv")" "rows"
+}
+
+test_staged_mode_measures_staged_only() {
+  mkrepo
+  measure_lib
+  printf 'TODO staged\n' > a.ts
+  printf 'TODO unstaged\n' > b.ts
+  must git add a.ts
+  rule todo paths='**/*.ts'
+  must measure staged "$TMP/m1" todo
+  assert_eq "$(printf 'todo\ta.ts\tTODO staged\t1')" "$(cat "$TMP/m1/measure.tsv")" "rows"
+}
+
+test_bad_mode_exits_2() {
+  mkrepo
+  measure_lib
+  rule todo
+  run measure sideways "$TMP/m1" todo
+  assert_eq 2 "$STATUS" "status"
+  assert_contains "$OUT" "measure mode must be all or staged"
+}
+
+test_unknown_rule_exits_2() {
+  mkrepo
+  measure_lib
+  run measure all "$TMP/m1" nosuch
+  assert_eq 2 "$STATUS" "status"
+  assert_contains "$OUT" "unknown rule nosuch"
+}
+
+test_located_columns_message_to_eol() {
+  mkrepo
+  measure_lib
+  printf 'x\nTODO\tx\n' > a.ts
+  rule todo paths='**/*.ts'
+  must measure all "$TMP/m1" todo
+  assert_eq "$(printf 'todo\ta.ts\t2\tTODO x\tTODO\tx')" "$(cat "$TMP/m1/located.tsv")" "located"
+}
+
+test_baseline_skips_deleted_tracked_file() {
+  mkrepo
+  printf 'TODO here\n' > a.ts
+  printf 'TODO gone\n' > b.ts
+  must git add b.ts
+  must git commit -q -m "add b"
+  must rm b.ts
+  rule todo paths='**/*.ts'
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "status"
+  assert_eq "$(printf 'todo\ta.ts\tTODO here\t1')" "$(cat .gauntlet/baseline.tsv)" "baseline"
+}

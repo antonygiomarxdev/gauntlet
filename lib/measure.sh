@@ -32,6 +32,8 @@ measure_in() {
       return 2
       ;;
   esac
+  # R15: files under .gauntlet/ are never measured, whatever the rule's paths.
+  awk 'index($0, ".gauntlet/") != 1' "$scratch/inputs" > "$scratch/kept" || return 2
   if [ "$#" -gt 0 ]; then
     printf '%s\n' "$@" > "$scratch/ids" || return 2
   else
@@ -47,9 +49,10 @@ measure_in() {
     fi
     paths=$(rule_get "$rf" paths) || return 2
     exclude=$(rule_get "$rf" exclude) || return 2
-    select_files "$paths" "$exclude" < "$scratch/inputs" > "$scratch/files" || return 2
+    select_files "$paths" "$exclude" < "$scratch/kept" > "$scratch/files" || return 2
     run_detector "$rf" "$scratch/files" "$scratch/rule.tsv" || return 2
-    cat "$scratch/rule.tsv" >> "$scratch/raw" || return 2
+    # R15 again for whole-program detectors, whose rows are not limited to the input list.
+    awk -F "$DETECT_TAB" 'index($2, ".gauntlet/") != 1' "$scratch/rule.tsv" >> "$scratch/raw" || return 2
   done < "$scratch/ids"
 
   # Group the rows by path so each file is read once, then take each matched
@@ -70,8 +73,9 @@ measure_in() {
       close(ENVIRON["GL_ROOT"] "/" cur)
     }
     {
-      # The message is everything after the third tab: the first three
-      # fields and their separators take len1 + len2 + len3 + 3 characters.
+      # located.tsv: fields 1-4 are rule, path, line and fingerprint. Field 5
+      # runs to the end of the line and is the message, which may contain tabs.
+      # It starts after the first four fields and their separators.
       msg = substr($0, length($1) + length($2) + length($3) + 4)
       ln = $3 + 0
       fp = (ln >= 1 && ln <= n) ? normalize(lines[ln]) : ""
@@ -83,5 +87,6 @@ measure_in() {
   awk -F "$DETECT_TAB" '
     { count[$1 "\t" $2 "\t" $4]++ }
     END { for (k in count) print k "\t" count[k] }
-  ' "$work/located.tsv" | LC_ALL=C sort > "$work/measure.tsv" || return 2
+  ' "$work/located.tsv" > "$scratch/counts" || return 2
+  LC_ALL=C sort "$scratch/counts" > "$work/measure.tsv" || return 2
 }

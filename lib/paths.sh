@@ -43,9 +43,12 @@ select_files() {
   '
 }
 
-# all_files: print every tracked or untracked-but-not-ignored file.
+# all_files: print every tracked or untracked-but-not-ignored file that exists
+# in the working tree. A tracked file deleted from disk is left out. One awk
+# process probes each path with getline, so no file costs a fork.
 all_files() {
-  git -c core.quotepath=off ls-files -co --exclude-standard
+  git -c core.quotepath=off ls-files -co --exclude-standard |
+    awk '{ probe = (getline line < $0); close($0); if (probe >= 0) print }'
 }
 
 # staged_files: print staged paths that are added, copied, modified or renamed.

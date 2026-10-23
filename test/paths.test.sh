@@ -89,3 +89,15 @@ test_all_files_lists_tracked_and_untracked_omits_ignored() {
   assert_contains "$OUT" ".gitignore"
   assert_not_contains "$OUT" "ignored.log"
 }
+
+test_all_files_omits_deleted_tracked_file() {
+  mkrepo
+  paths_lib
+  must sh -c 'echo one > keep.txt && echo two > gone.txt'
+  must git add keep.txt gone.txt
+  must git commit -q -m "add files"
+  must rm gone.txt
+  OUT=$(all_files)
+  assert_contains "$OUT" "keep.txt"
+  assert_not_contains "$OUT" "gone.txt"
+}
