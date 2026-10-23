@@ -1,0 +1,52 @@
+# shellcheck shell=bash
+# Path selection: which files a rule sees. Sourced, never executed.
+# Bash 3.2 compatible; awk, git and coreutils only.
+
+# select_files <paths> <exclude>: read paths on stdin, print those matching any
+# glob in <paths> (space-separated; empty means **) and no glob in <exclude>.
+# Patterns travel in the environment so awk does not expand backslashes.
+select_files() {
+  local paths=$1 exclude=$2
+  [ -n "$paths" ] || paths='**'
+  GL_PATHS=$paths GL_EXCLUDE=$exclude awk '
+    # glob2re: one left-to-right scan, so escaping never touches the
+    # brackets this function produces.
+    function glob2re(g,   out, i, n, c) {
+      out = ""
+      n = length(g)
+      for (i = 1; i <= n; i++) {
+        c = substr(g, i, 1)
+        if (c == "*" && substr(g, i, 3) == "**/") { out = out "(.*/)?"; i += 2 }
+        else if (c == "*" && substr(g, i, 2) == "**") { out = out ".*"; i += 1 }
+        else if (c == "*") out = out "[^/]*"
+        else if (c == "?") out = out "[^/]"
+        else if (index(".+()[]{}^$|\\", c)) out = out "\\" c
+        else out = out c
+      }
+      return "^" out "$"
+    }
+    BEGIN {
+      np = split(ENVIRON["GL_PATHS"], inc, " ")
+      ne = split(ENVIRON["GL_EXCLUDE"], exc, " ")
+      for (i = 1; i <= np; i++) inc_re[i] = glob2re(inc[i])
+      for (j = 1; j <= ne; j++) exc_re[j] = glob2re(exc[j])
+    }
+    {
+      hit = 0
+      for (i = 1; i <= np; i++) if ($0 ~ inc_re[i]) { hit = 1; break }
+      if (!hit) next
+      for (j = 1; j <= ne; j++) if ($0 ~ exc_re[j]) next
+      print
+    }
+  '
+}
+
+# all_files: print every tracked or untracked-but-not-ignored file.
+all_files() {
+  git ls-files -co --exclude-standard
+}
+
+# staged_files: print staged paths that are added, copied, modified or renamed.
+staged_files() {
+  git diff --cached --name-only --diff-filter=ACMR
+}
