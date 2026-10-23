@@ -597,3 +597,58 @@ test_batching_quotes_the_list_in_one_awk_pass() {
   detect_scan "$PWD" "sh -c 'echo run >> \"$TMP/runs\"' ignored {files}" r "$TMP/err" "$TMP/files.txt"
   assert_eq 1 "$(wc -l < "$TMP/awk.count" | tr -d ' ')" "awk processes for 2 paths"
 }
+
+# sed reads \10 as \1 followed by 0, so a capture group above 9 cannot be named. A format
+# that does so would never find a path: it is refused, naming the format and the key.
+# group_format <path> <line> <message>: a format whose match has ten groups; the last
+# three are the file, the line number and the message.
+group_format() {
+  mkdir -p .gauntlet/formats
+  printf -- '---\nmatch: ^(a)(b)(c)(d)(e)(f)(g)([^|]+)\\|([0-9]+)\\|(.*)$\npath: %s\nline: %s\nmessage: %s\n---\n' "$1" "$2" "$3" > .gauntlet/formats/ten.md
+}
+
+test_format_groups_up_to_9_are_read() {
+  mkrepo
+  detect_lib
+  mkdir -p .gauntlet/formats
+  printf -- '---\nmatch: ^(a)(b)(c)(d)(e)(f)(g)([^|]+)\\|([0-9]+)\\|.*$\npath: 8\nline: 9\n---\n' > .gauntlet/formats/nine.md
+  rule r engine=linter format=nine "detector=printf 'abcdefgX.ts|3|bad\\n'"
+  : > "$TMP/files.txt"
+  run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_eq "$(printf 'r\tX.ts\t3\t')" "$(cat "$TMP/out.tsv")" "rows"
+}
+
+test_format_groups_above_9_are_refused_naming_the_key() {
+  mkrepo
+  detect_lib
+  rule r engine=linter format=ten "detector=printf 'abcdefgX.ts|3|bad\\n'"
+  : > "$TMP/files.txt"
+  group_format 10 2 3
+  run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 2 "$STATUS" "path: 10"
+  assert_contains "$OUT" "format ten: path is group 10; use a group from 0 to 9"
+  group_format 8 10 3
+  run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 2 "$STATUS" "line: 10"
+  assert_contains "$OUT" "format ten: line is group 10; use a group from 0 to 9"
+  group_format 8 9 12
+  run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 2 "$STATUS" "message: 12"
+  assert_contains "$OUT" "format ten: message is group 12; use a group from 0 to 9"
+}
+
+test_gates_refuse_a_format_with_a_group_above_9() {
+  mkrepo
+  group_format 10 11 12
+  rule r engine=linter format=ten "detector=printf 'abcdefgX.ts|3|bad\\n'"
+  cases_of r 'x'
+  printf 'x\n' > X.ts
+  must git add -A
+  run "$G" baseline
+  assert_eq 2 "$STATUS" "baseline: $OUT"
+  assert_contains "$OUT" "format ten: path is group 10; use a group from 0 to 9"
+  run "$G" test-rules
+  assert_eq 2 "$STATUS" "test-rules: $OUT"
+  assert_contains "$OUT" "format ten: path is group 10; use a group from 0 to 9"
+}

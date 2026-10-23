@@ -52,7 +52,8 @@ effective_format() {
 }
 
 # load_format <name>: read the format file into FMT_MATCH, FMT_PATH, FMT_LINE,
-# FMT_MESSAGE and FMT_IGNORE. Returns 2 for an unknown or malformed format.
+# FMT_MESSAGE and FMT_IGNORE. Returns 2 for an unknown or malformed format, and for a
+# path, line or message group above 9.
 load_format() {
   local file valid=1
   file=$(format_file "$1") || return 2
@@ -69,6 +70,19 @@ load_format() {
     printf 'gauntlet: format %s needs match and numeric path and line groups\n' "$1" >&2
     return 2
   fi
+  # parse_output writes the group into a sed replacement, where \10 is \1 and a 0.
+  local key value
+  for key in path line message; do
+    case $key in
+      path) value=$FMT_PATH ;;
+      line) value=$FMT_LINE ;;
+      *) value=$FMT_MESSAGE ;;
+    esac
+    if [ "${#value}" -gt 1 ]; then
+      printf 'gauntlet: format %s: %s is group %s; use a group from 0 to 9\n' "$1" "$key" "$value" >&2
+      return 2
+    fi
+  done
 }
 
 # quote_word <text>: set QUOTED to <text> as one single-quoted shell word.
