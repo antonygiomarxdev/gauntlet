@@ -2,26 +2,44 @@
 # gauntlet: a code-quality ratchet. Entry point; libraries live in lib/.
 set -eu
 
+# Follow a symlinked entry point (ln -s checkout/bin/gauntlet ~/bin/gauntlet) to
+# the real file, so lib/ is found beside it. readlink without -f: BSD and GNU.
+gauntlet_entry=$0
+gauntlet_hops=0
+while [ -L "$gauntlet_entry" ]; do
+  gauntlet_hops=$((gauntlet_hops + 1))
+  if [ "$gauntlet_hops" -gt 40 ]; then
+    echo "gauntlet: too many symbolic links: $0" >&2
+    exit 2
+  fi
+  gauntlet_target=$(readlink "$gauntlet_entry")
+  case "$gauntlet_target" in
+    /*) gauntlet_entry=$gauntlet_target ;;
+    *) gauntlet_entry="$(dirname "$gauntlet_entry")/$gauntlet_target" ;;
+  esac
+done
+GAUNTLET_BIN=$(cd "$(dirname "$gauntlet_entry")" && pwd -P) || exit 2
+
 # shellcheck source=lib/core.sh
-. "$(dirname "$0")/../lib/core.sh"
+. "$GAUNTLET_BIN/../lib/core.sh"
 # shellcheck source=lib/rules.sh
-. "$(dirname "$0")/../lib/rules.sh"
+. "$GAUNTLET_BIN/../lib/rules.sh"
 # shellcheck source=lib/paths.sh
-. "$(dirname "$0")/../lib/paths.sh"
+. "$GAUNTLET_BIN/../lib/paths.sh"
 # shellcheck source=lib/detect.sh
-. "$(dirname "$0")/../lib/detect.sh"
+. "$GAUNTLET_BIN/../lib/detect.sh"
 # shellcheck source=lib/measure.sh
-. "$(dirname "$0")/../lib/measure.sh"
+. "$GAUNTLET_BIN/../lib/measure.sh"
 # shellcheck source=lib/cases.sh
-. "$(dirname "$0")/../lib/cases.sh"
+. "$GAUNTLET_BIN/../lib/cases.sh"
 # shellcheck source=lib/base.sh
-. "$(dirname "$0")/../lib/base.sh"
+. "$GAUNTLET_BIN/../lib/base.sh"
 # shellcheck source=lib/exceptions.sh
-. "$(dirname "$0")/../lib/exceptions.sh"
+. "$GAUNTLET_BIN/../lib/exceptions.sh"
 # shellcheck source=lib/check.sh
-. "$(dirname "$0")/../lib/check.sh"
+. "$GAUNTLET_BIN/../lib/check.sh"
 # shellcheck source=lib/hooks.sh
-. "$(dirname "$0")/../lib/hooks.sh"
+. "$GAUNTLET_BIN/../lib/hooks.sh"
 
 case "${1:-}" in
   --version) printf 'gauntlet %s\n' "$GAUNTLET_VERSION" ;;
