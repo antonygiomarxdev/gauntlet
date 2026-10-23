@@ -789,7 +789,13 @@ check_staged_run() {
   body="$scratch/body"
   budget=$(commit_budget) || return 2
   root=$(repo_root) || return 2
-  # The first commit has no HEAD to compare with: it passes with a note.
+  # Validation needs no HEAD, and the first commit is the one that brings .gauntlet/
+  # in: a broken rule stops it like any other commit (R27).
+  validate_rules || return 2
+  # The first commit has no HEAD to compare with: it passes with a note. A ref file that
+  # is corrupt reads as "no HEAD yet" here too, because git has no primitive that
+  # separates an unborn branch from a broken one. Nothing slips through: `git commit`
+  # itself aborts on that ref after this hook, so no commit lands unchecked.
   if ! git rev-parse -q --verify HEAD > /dev/null 2>&1; then
     printf 'note: no HEAD yet; the commit gate has nothing to compare and passes\n'
     return 0
@@ -806,7 +812,6 @@ check_staged_run() {
   # id, severity, 1 when the rule file exists at HEAD, fix.
   : > "$scratch/commit.ids"
   : > "$scratch/rules.tsv"
-  validate_rules || return 2
   rule_ids > "$scratch/ids" || return 2
   while IFS= read -r id; do
     rf="$root/.gauntlet/rules/$id.md"

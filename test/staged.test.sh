@@ -380,6 +380,65 @@ test_first_commit_passes_with_note() {
   must git rev-parse -q --verify HEAD > /dev/null
 }
 
+# unborn_repo: a repo with no commit yet, on main, in $TMP/repo.
+unborn_repo() {
+  must mkdir -p "$TMP/repo"
+  must cd "$TMP/repo"
+  must git init -q .
+  must git symbolic-ref HEAD refs/heads/main
+  must git config user.name "Test User"
+  must git config user.email "test@example.com"
+  must git config commit.gpgsign false
+}
+
+# The first commit is where .gauntlet/ arrives, so its rules are validated like any
+# other commit's: the note about the missing HEAD is not a reason to skip them.
+test_first_commit_with_a_broken_rule_exits_2() {
+  unborn_repo
+  must mkdir -p .gauntlet/rules
+  must touch .gauntlet/config .gauntlet/baseline.tsv .gauntlet/exceptions.tsv
+  printf 'ok\n' > a.ts
+  printf -- '---\nid: bad\nseverity: block\nstage: commit\nengine: rg\ndetecter: rg --with-filename --line-number --no-heading TODO {files}\npaths: **\nexclude:\nfix: remove it\nsource: pending\nsince: 2026-10-22\n---\nBroken.\n' > .gauntlet/rules/bad.md
+  must git add -A
+  run "$G" check --staged
+  assert_eq 2 "$STATUS" "check --staged: $OUT"
+  assert_contains "$OUT" "rule bad: detector must not be empty; run gauntlet doctor"
+  assert_not_contains "$OUT" "no HEAD yet"
+  staged_hook
+  run git commit -q -m "chore: first commit"
+  [ "$STATUS" -ne 0 ] || fail "the commit went through with a broken rule: $OUT"
+  if git rev-parse -q --verify HEAD > /dev/null; then fail "a commit exists"; fi
+}
+
+test_first_commit_with_valid_rules_passes_with_the_note() {
+  unborn_repo
+  must mkdir -p .gauntlet/rules
+  must touch .gauntlet/config .gauntlet/baseline.tsv .gauntlet/exceptions.tsv
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  must git add -A
+  run "$G" check --staged
+  assert_eq 0 "$STATUS" "check --staged: $OUT"
+  assert_contains "$OUT" "note: no HEAD yet"
+}
+
+# Without rules there is nothing to validate: the first commit of a repo that has no
+# .gauntlet/ at all, or one with a config and no rules directory, is a no-op.
+test_first_commit_without_rules_is_a_no_op() {
+  unborn_repo
+  printf 'ok\n' > a.ts
+  must git add -A
+  run "$G" check --staged
+  assert_eq 0 "$STATUS" "no .gauntlet at all: $OUT"
+  assert_contains "$OUT" "note: no HEAD yet"
+  must mkdir -p .gauntlet
+  must touch .gauntlet/config
+  must git add -A
+  run "$G" check --staged
+  assert_eq 0 "$STATUS" "a config and no rules directory: $OUT"
+  assert_contains "$OUT" "note: no HEAD yet"
+}
+
 test_no_baseline_at_head_skips_checks() {
   mkrepo
   rule todo paths='**/*.ts'
