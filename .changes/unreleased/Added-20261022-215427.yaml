@@ -1,0 +1,3 @@
+kind: Added
+body: 'gauntlet check --staged: the commit gate blocks new violations and touched files among the staged paths, and lowers the baseline into the same commit.'
+time: 2026-10-22T21:54:27.057600295-06:00
