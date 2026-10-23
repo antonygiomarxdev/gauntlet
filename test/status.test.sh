@@ -413,7 +413,7 @@ test_doctor_lefthook_needs_snippet() {
   assert_eq 1 "$STATUS" "doctor without the snippet"
   assert_contains "$OUT" "FAIL gate missing from lefthook.yml: run gauntlet install-hooks"
   assert_eq 1 "$(doctor_fails)" "FAIL count without the snippet"
-  printf 'pre-commit:\n  commands:\n    gauntlet:\n      run: .gauntlet/bin/gauntlet check --staged\npre-push:\n  commands:\n    gauntlet:\n      run: .gauntlet/bin/gauntlet check --ci\n' >> lefthook.yml
+  printf 'pre-commit:\n  commands:\n    gauntlet:\n      run: .gauntlet/bin/gauntlet check --staged\npre-push:\n  commands:\n    gauntlet:\n      run: .gauntlet/bin/gauntlet check --ci --pre-push\n      use_stdin: true\n' >> lefthook.yml
   run "$G" doctor
   assert_eq 0 "$STATUS" "doctor with the snippet"
   assert_contains "$OUT" "ok gate in lefthook.yml"
@@ -436,7 +436,7 @@ test_doctor_print_only_hook_names_manual_line() {
   assert_contains "$OUT" "FAIL pre-commit gate missing from $TMP/shared/pre-commit: add this line by hand as the first command, after the shebang line if there is one: .gauntlet/bin/gauntlet check --staged || exit \$?  # gauntlet"
   assert_not_contains "$OUT" "install-hooks"
   printf '%s\n' '.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet' > "$TMP/shared/pre-commit"
-  printf '%s\n' '.gauntlet/bin/gauntlet check --ci || exit $?  # gauntlet' > "$TMP/shared/pre-push"
+  printf '%s\n' '.gauntlet/bin/gauntlet check --ci --pre-push || exit $?  # gauntlet' > "$TMP/shared/pre-push"
   must chmod +x "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
   run "$G" doctor
   assert_eq 0 "$STATUS" "doctor after the lines are added by hand"
@@ -1547,4 +1547,42 @@ test_check_ignores_keys_it_does_not_know() {
   run "$G" check --ci
   assert_eq 0 "$STATUS" "check --ci with an unknown config key"
   assert_contains "$OUT" "gauntlet: ok"
+}
+
+# FRD-03 section 4.11: a pre-push line without --pre-push keeps judging the checked-out branch
+# whatever git pushes, so doctor names it and says how to get the new one.
+test_doctor_flags_an_old_pre_push_line_without_the_flag() {
+  mkrepo
+  doctor_install
+  printf '#!/bin/sh\n%s\n' '.gauntlet/bin/gauntlet check --ci  # gauntlet' > .git/hooks/pre-push
+  doctor_one_fail "FAIL pre-push gate in .git/hooks/pre-push has no --pre-push, so it judges the checked-out branch whatever git pushes: run gauntlet install-hooks"
+  printf '#!/bin/sh\n%s\n' '.gauntlet/bin/gauntlet check --ci || exit $?  # gauntlet' > .git/hooks/pre-push
+  doctor_one_fail "FAIL pre-push gate in .git/hooks/pre-push has no --pre-push"
+  run "$G" install-hooks
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor after install-hooks: $OUT"
+  assert_contains "$OUT" "ok pre-push gate in .git/hooks/pre-push"
+}
+
+test_doctor_names_the_manual_line_for_an_old_pre_push_line() {
+  mkrepo
+  must mkdir "$TMP/shared"
+  must git config core.hooksPath "$TMP/shared"
+  doctor_install
+  printf '%s\n' '.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet' > "$TMP/shared/pre-commit"
+  printf '%s\n' '.gauntlet/bin/gauntlet check --ci || exit $?  # gauntlet' > "$TMP/shared/pre-push"
+  must chmod +x "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "FAIL pre-push gate in $TMP/shared/pre-push has no --pre-push, so it judges the checked-out branch whatever git pushes: replace that line by hand with: .gauntlet/bin/gauntlet check --ci --pre-push || exit \$?  # gauntlet"
+  assert_not_contains "$OUT" "run gauntlet install-hooks"
+}
+
+test_doctor_flags_an_old_pre_push_command_in_a_hook_manager_config() {
+  mkrepo
+  printf 'pre-commit:\n  commands:\n    gauntlet:\n      run: .gauntlet/bin/gauntlet check --staged\npre-push:\n  commands:\n    gauntlet:\n      run: .gauntlet/bin/gauntlet check --ci\n' > lefthook.yml
+  doctor_install
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "FAIL gate missing from lefthook.yml: run gauntlet install-hooks"
 }

@@ -1710,3 +1710,151 @@ test_an_unreadable_runner_at_head_is_exit_2() {
   assert_eq 2 "$STATUS" "lib at HEAD: $OUT"
   assert_contains "$OUT" "simulated failure"
 }
+
+# FRD-03 section 4.11: what is checked is what is pushed. The pre-push hook passes git's
+# stdin, one "<local ref> <local sha> <remote ref> <remote sha>" line per pushed ref, to
+# `check --ci --pre-push`, which refuses a pushed branch tip that is not the checked-out HEAD.
+ZERO=0000000000000000000000000000000000000000
+
+# prepush_setup: main and a checked-out feat one commit ahead; $PP_HEAD is feat's tip and
+# $PP_MAIN is main's.
+prepush_setup() {
+  gate_setup 'ok'
+  printf 'more\n' > b.ts
+  rebaseline
+  commit_all feat
+  PP_HEAD=$(git rev-parse HEAD)
+  PP_MAIN=$(git rev-parse main)
+}
+
+# prepush <input>: run the gate with the given text on stdin.
+prepush() {
+  printf '%s' "$1" > "$TMP/prepush.in"
+  run "$G" check --ci --pre-push --base main < "$TMP/prepush.in"
+}
+
+test_pre_push_judges_the_pushed_branch_when_it_is_head() {
+  prepush_setup
+  prepush "refs/heads/feat $PP_HEAD refs/heads/feat $ZERO"$'\n'
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "gauntlet: ok"
+}
+
+test_pre_push_refuses_a_branch_that_is_not_head() {
+  prepush_setup
+  prepush "refs/heads/main $PP_MAIN refs/heads/main $PP_MAIN"$'\n'
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_eq "gauntlet checks the checked-out branch; check out main and push again" "$OUT" "message, and no report"
+}
+
+# One line per refused ref, all of them, in the order git sent them.
+test_pre_push_names_every_refused_branch() {
+  prepush_setup
+  must git branch other "$PP_MAIN"
+  prepush "refs/heads/other $PP_MAIN refs/heads/other $ZERO"$'\n'"refs/heads/feat $PP_HEAD refs/heads/feat $ZERO"$'\n'"refs/heads/main $PP_MAIN refs/heads/main $PP_MAIN"$'\n'
+  assert_eq 1 "$STATUS" "status: $OUT"
+  want="gauntlet checks the checked-out branch; check out other and push again"$'\n'"gauntlet checks the checked-out branch; check out main and push again"
+  assert_eq "$want" "$OUT" "one line per refused ref"
+}
+
+# The branch to check out is the local one when the push renames it (other:release).
+test_pre_push_names_the_local_branch_of_a_renaming_push() {
+  prepush_setup
+  must git branch other "$PP_MAIN"
+  prepush "refs/heads/other $PP_MAIN refs/heads/release $ZERO"$'\n'
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_eq "gauntlet checks the checked-out branch; check out other and push again" "$OUT" "message"
+}
+
+# HEAD:other pushes HEAD's tip under another name: what is checked is what is pushed.
+test_pre_push_passes_head_pushed_under_another_name() {
+  prepush_setup
+  prepush "HEAD $PP_HEAD refs/heads/other $ZERO"$'\n'
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "gauntlet: ok"
+}
+
+# A delete has the zero sha (and "(delete)" for a local ref); a tag is not a branch.
+test_pre_push_skips_deletes_and_tags() {
+  prepush_setup
+  prepush "(delete) $ZERO refs/heads/old $PP_MAIN"$'\n'"refs/heads/gone $ZERO refs/heads/gone $PP_MAIN"$'\n'"refs/tags/v1 $PP_MAIN refs/tags/v1 $ZERO"$'\n'"refs/notes/c $PP_MAIN refs/notes/c $ZERO"$'\n'
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "gauntlet: ok"
+}
+
+# A 64-hex zero sha (SHA-256 repositories) is a delete too.
+test_pre_push_reads_a_sha256_zero_sha_as_a_delete() {
+  prepush_setup
+  prepush "(delete) 0000000000000000000000000000000000000000000000000000000000000000 refs/heads/old $PP_MAIN"$'\n'
+  assert_eq 0 "$STATUS" "status: $OUT"
+}
+
+test_pre_push_without_ref_lines_judges_head() {
+  prepush_setup
+  prepush ""
+  assert_eq 0 "$STATUS" "empty stdin: $OUT"
+  assert_contains "$OUT" "gauntlet: ok"
+  prepush $'\n\n'
+  assert_eq 0 "$STATUS" "blank lines: $OUT"
+}
+
+test_pre_push_fails_closed_on_a_short_line() {
+  prepush_setup
+  prepush "refs/heads/feat $PP_HEAD refs/heads/feat"$'\n'
+  assert_eq 2 "$STATUS" "three fields: $OUT"
+  assert_eq "gauntlet: unexpected pre-push input" "$OUT" "message"
+  prepush "garbage"$'\n'
+  assert_eq 2 "$STATUS" "one field: $OUT"
+  prepush "refs/heads/feat $PP_HEAD refs/heads/feat $ZERO"$'\n'"refs/heads/main"$'\n'
+  assert_eq 2 "$STATUS" "a short line after a good one: $OUT"
+}
+
+test_pre_push_reads_crlf_input_like_lf() {
+  prepush_setup
+  prepush $'\r\n'"refs/heads/feat $PP_HEAD refs/heads/feat $ZERO"$'\r\n'
+  assert_eq 0 "$STATUS" "head, CRLF: $OUT"
+  prepush "refs/heads/main $PP_MAIN refs/heads/main $PP_MAIN"$'\r\n'
+  assert_eq 1 "$STATUS" "other branch, CRLF: $OUT"
+  assert_eq "gauntlet checks the checked-out branch; check out main and push again" "$OUT" "message"
+}
+
+# Without the flag stdin is never read: CI and a manual run cannot be refused by input.
+test_check_ci_without_the_flag_never_reads_stdin() {
+  prepush_setup
+  printf 'refs/heads/main %s refs/heads/main %s\n' "$PP_MAIN" "$PP_MAIN" > "$TMP/prepush.in"
+  run "$G" check --ci --base main < "$TMP/prepush.in"
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "gauntlet: ok"
+  CI=true run "$G" check --ci --base main < "$TMP/prepush.in"
+  assert_eq 0 "$STATUS" "CI=true: $OUT"
+}
+
+# The refusal comes before the work: a branch that is not checked out is not measured.
+test_pre_push_refusal_precedes_the_dirty_tree_refusal() {
+  prepush_setup
+  printf 'dirty\n' > b.ts
+  prepush "refs/heads/main $PP_MAIN refs/heads/main $PP_MAIN"$'\n'
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "check out main and push again"
+}
+
+# A terminal on stdin means a person ran it, not git: nothing to read, HEAD is judged. The
+# refusing line is typed into the terminal, where a gate that read it would refuse.
+test_pre_push_with_a_terminal_on_stdin_judges_head() {
+  prepush_setup
+  if ! script --version 2>&1 | grep -q util-linux; then
+    skip "script is not util-linux's: no way to give the gate a terminal"
+    return 77
+  fi
+  printf 'refs/heads/main %s refs/heads/main %s\n' "$PP_MAIN" "$PP_MAIN" > "$TMP/prepush.in"
+  run script -qec "'$G' check --ci --pre-push --base main" /dev/null < "$TMP/prepush.in"
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "gauntlet: ok"
+}
+
+test_pre_push_flag_is_not_accepted_by_the_commit_gate() {
+  prepush_setup
+  run "$G" check --staged --pre-push
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "usage: gauntlet check --staged"
+}

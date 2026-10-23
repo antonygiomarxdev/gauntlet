@@ -439,18 +439,20 @@ doctor_hooks() {
       ;;
     husky|husky-v9|dir|print)
       doctor_hook_file pre-commit "$dir/pre-commit" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED" "$kind" "$execcheck"
-      doctor_hook_file pre-push "$dir/pre-push" "$HOOK_LINE_CI" "$HOOK_GATE_CI" "$kind" "$execcheck"
+      doctor_hook_file pre-push "$dir/pre-push" "$HOOK_LINE_CI" "$HOOK_GATE_CI" "$kind" "$execcheck" "$HOOK_OLD_LINE_CI" "$HOOK_OLD_GATE_CI"
       ;;
   esac
   return 0
 }
 
-# doctor_hook_file <stage> <file> <plain> <gate> <kind> <execcheck>: <file> must hold a gate
-# line. When execcheck is 1 the hook must be executable, since git ignores it otherwise. A
-# hook install-hooks cannot edit, and a hooks dir it only prints for (kind print), get the
-# line to add by hand: running install-hooks would print the same thing.
+# doctor_hook_file <stage> <file> <plain> <gate> <kind> <execcheck> [<old-plain> <old-gate>]:
+# <file> must hold a gate line. When execcheck is 1 the hook must be executable, since git
+# ignores it otherwise. A hook install-hooks cannot edit, and a hooks dir it only prints for
+# (kind print), get the line to add by hand: running install-hooks would print the same thing.
+# A line of the old forms (the pre-push line without --pre-push) is named: it keeps judging the
+# checked-out branch whatever git pushes, and nothing else shows it.
 doctor_hook_file() {
-  local stage=$1 file=$2 line=$3 gate=$4 kind=$5 execcheck=$6 shown manual=0
+  local stage=$1 file=$2 line=$3 gate=$4 kind=$5 execcheck=$6 old_line=${7:-} old_gate=${8:-} shown manual=0 old=0
   shown=$(display_path "$file")
   if [ "$execcheck" -eq 1 ] && [ -f "$file" ] && [ ! -x "$file" ]; then
     doctor_fail "$stage hook $shown is not executable: chmod +x $shown"
@@ -459,12 +461,21 @@ doctor_hook_file() {
     doctor_ok "$stage gate in $shown"
     return 0
   fi
+  if [ -n "$old_line" ] && [ -f "$file" ] && hook_has_gate "$file" "$old_line" "$old_gate"; then
+    old=1
+  fi
   if [ "$kind" = print ]; then
     manual=1
   else
     hook_editable "$file" || manual=1
   fi
-  if [ "$manual" -eq 1 ]; then
+  if [ "$old" -eq 1 ]; then
+    if [ "$manual" -eq 1 ]; then
+      doctor_fail "$stage gate in $shown has no --pre-push, so it judges the checked-out branch whatever git pushes: replace that line by hand with: $gate"
+    else
+      doctor_fail "$stage gate in $shown has no --pre-push, so it judges the checked-out branch whatever git pushes: run gauntlet install-hooks"
+    fi
+  elif [ "$manual" -eq 1 ]; then
     doctor_fail "$stage gate missing from $shown: add this line by hand as the first command, after the shebang line if there is one: $gate"
   else
     doctor_fail "$stage gate missing from $shown: run gauntlet install-hooks"

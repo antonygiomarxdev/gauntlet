@@ -10,7 +10,7 @@
 
 E2E_GATE_STAGED='.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet'
 E2E_LINE_STAGED='.gauntlet/bin/gauntlet check --staged  # gauntlet'
-E2E_LINE_CI='.gauntlet/bin/gauntlet check --ci  # gauntlet'
+E2E_LINE_CI='.gauntlet/bin/gauntlet check --ci --pre-push  # gauntlet'
 
 # e2e_repo: a fresh repo at "$TMP/my repo" on main with one commit made before any
 # gauntlet state exists, then cd into it.
@@ -439,4 +439,128 @@ test_old_loosen_row_does_not_cover_a_new_loosening() {
   assert_eq 0 "$STATUS" "commit of the second row: $OUT"
   e2e_gl check --ci --base first
   assert_eq 0 "$STATUS" "check --ci with the second row: $OUT"
+}
+
+# FRD-03 section 4.11 with the real hook and a real `git push`: the gate judges the branches
+# git is about to push, not whatever is checked out. Each test installs the runner, commits
+# the gate on main, adds a bare remote and leaves feat checked out, one commit ahead.
+e2e_push_repo() {
+  e2e_repo
+  e2e_install
+  e2e_todo
+  printf 'ok\n' > a.ts
+  e2e_baseline
+  run git commit -q -m "chore: add the gate"
+  assert_eq 0 "$STATUS" "commit on main: $OUT"
+  must git init -q --bare "$TMP/remote.git"
+  must git remote add origin "$TMP/remote.git"
+  must git checkout -q -b feat
+  printf 'ok too\n' > b.ts
+  must git add b.ts
+  run git commit -q -m "feat: add b"
+  assert_eq 0 "$STATUS" "commit on feat: $OUT"
+  must git branch other main
+}
+
+# e2e_remote_has <ref>: succeed when the bare remote holds the ref.
+e2e_remote_has() {
+  git --git-dir="$TMP/remote.git" rev-parse -q --verify "$1" > /dev/null
+}
+
+test_the_installed_pre_push_hook_passes_git_stdin_to_the_gate() {
+  e2e_repo
+  e2e_install
+  assert_eq 1 "$(e2e_count_line "$E2E_LINE_CI" .git/hooks/pre-push)" "pre-push gate line"
+  assert_contains "$(cat .git/hooks/pre-push)" "check --ci --pre-push"
+}
+
+test_push_of_the_checked_out_branch_passes_the_gate() {
+  e2e_push_repo
+  run git push origin feat
+  assert_eq 0 "$STATUS" "push: $OUT"
+  assert_contains "$OUT" "gauntlet: ok"
+  e2e_remote_has refs/heads/feat || fail "feat did not reach the remote"
+}
+
+# The hook used to judge HEAD whatever it pushed; now a branch that is not checked out is refused
+# and nothing is sent.
+test_push_of_another_branch_is_refused_and_not_sent() {
+  e2e_push_repo
+  run git push origin other
+  assert_eq 1 "$STATUS" "push: $OUT"
+  assert_contains "$OUT" "gauntlet checks the checked-out branch; check out other and push again"
+  if e2e_remote_has refs/heads/other; then fail "other reached the remote"; fi
+}
+
+test_push_of_head_under_another_name_passes() {
+  e2e_push_repo
+  run git push origin HEAD:refs/heads/x
+  assert_eq 0 "$STATUS" "push: $OUT"
+  assert_contains "$OUT" "gauntlet: ok"
+  e2e_remote_has refs/heads/x || fail "x did not reach the remote"
+}
+
+test_a_delete_push_passes_the_gate() {
+  e2e_push_repo
+  run git push origin feat
+  assert_eq 0 "$STATUS" "first push: $OUT"
+  run git push origin :feat
+  assert_eq 0 "$STATUS" "delete push: $OUT"
+  if e2e_remote_has refs/heads/feat; then fail "feat is still on the remote"; fi
+}
+
+test_a_tag_push_passes_the_gate() {
+  e2e_push_repo
+  must git tag v1 main
+  run git push origin v1
+  assert_eq 0 "$STATUS" "tag push: $OUT"
+  e2e_remote_has refs/tags/v1 || fail "v1 did not reach the remote"
+}
+
+test_push_all_with_a_branch_that_is_not_checked_out_is_refused() {
+  e2e_push_repo
+  run git push origin --all
+  assert_eq 1 "$STATUS" "push --all: $OUT"
+  assert_contains "$OUT" "check out main and push again"
+  assert_contains "$OUT" "check out other and push again"
+  if e2e_remote_has refs/heads/feat; then fail "feat reached the remote although the push was refused"; fi
+}
+
+# A failing gate on HEAD still blocks the push of HEAD.
+test_a_failing_gate_still_blocks_the_push_of_head() {
+  e2e_push_repo
+  printf 'TODO fresh\n' > c.ts
+  must git add c.ts
+  run git commit -q --no-verify -m "feat: add c with a todo"
+  assert_eq 0 "$STATUS" "commit: $OUT"
+  run git push origin feat
+  assert_eq 1 "$STATUS" "push: $OUT"
+  assert_contains "$OUT" "  c.ts:1  todo  TODO fresh"
+  if e2e_remote_has refs/heads/feat; then fail "feat reached the remote"; fi
+}
+
+# The gate is the first command of an existing pre-push hook, so git's stdin reaches it whole.
+# A hook that reads stdin before our line would leave the gate nothing to judge.
+test_an_existing_pre_push_hook_still_hands_stdin_to_the_gate() {
+  e2e_repo
+  printf '#!/bin/sh\ncat > /dev/null\n' > .git/hooks/pre-push
+  must chmod +x .git/hooks/pre-push
+  e2e_install
+  assert_eq "#!/bin/sh" "$(sed -n 1p .git/hooks/pre-push)" "shebang first"
+  assert_eq ".gauntlet/bin/gauntlet check --ci --pre-push || exit \$?  # gauntlet" "$(sed -n 2p .git/hooks/pre-push)" "gate second"
+  e2e_todo
+  e2e_baseline
+  run git commit -q -m "chore: add the gate"
+  assert_eq 0 "$STATUS" "commit on main: $OUT"
+  must git init -q --bare "$TMP/remote.git"
+  must git remote add origin "$TMP/remote.git"
+  must git branch other
+  must git checkout -q -b feat
+  printf 'ok too\n' > b.ts
+  must git add b.ts
+  run git commit -q -m "feat: add b"
+  assert_eq 0 "$STATUS" "commit on feat: $OUT"
+  run git push origin other
+  assert_eq 1 "$STATUS" "push: $OUT"
+  assert_contains "$OUT" "check out other and push again"
 }

@@ -5,26 +5,31 @@
 # Needs core.sh, rules.sh, paths.sh, detect.sh, measure.sh, cases.sh, base.sh and
 # exceptions.sh sourced first.
 
-# check_ci [--ci] [--base <ref>]: the CI gate, against the merge-base of HEAD and
-# the base ref. Prints the report and returns 0 (ok), 1 (problems) or 2 (setup
-# broken, or the tracked files differ from HEAD). Every check runs before the
-# exit; there is no fail-fast.
+# check_ci [--ci] [--pre-push] [--base <ref>]: the CI gate, against the merge-base of HEAD
+# and the base ref. Prints the report and returns 0 (ok), 1 (problems) or 2 (setup broken,
+# or the tracked files differ from HEAD). Every check runs before the exit; there is no
+# fail-fast. --pre-push is the hook's flag: it reads the ref lines git sends a pre-push hook
+# on stdin and refuses a pushed branch that is not the checked-out one (pre_push_refs). It
+# is the only way this command reads stdin: a manual run and CI never do.
 check_ci() {
-  local ci=0 base_ref='' dirty scratch status=0 start
+  local ci=0 pre_push=0 base_ref='' dirty scratch status=0 start
   start=$(now_ms)
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --ci) ci=1 ;;
+      --pre-push) pre_push=1 ;;
       --base)
-        [ "$#" -ge 2 ] || die "usage: gauntlet check --ci [--base <ref>]"
+        [ "$#" -ge 2 ] || die "usage: gauntlet check --ci [--pre-push] [--base <ref>]"
         base_ref=$2
         shift
         ;;
-      *) die "usage: gauntlet check --ci [--base <ref>]" ;;
+      *) die "usage: gauntlet check --ci [--pre-push] [--base <ref>]" ;;
     esac
     shift
   done
-  [ "$ci" -eq 1 ] || die "usage: gauntlet check --ci [--base <ref>]"
+  [ "$ci" -eq 1 ] || die "usage: gauntlet check --ci [--pre-push] [--base <ref>]"
+  # What is checked is what is pushed (FRD-03 section 4.11): the refs come before the work.
+  if [ "$pre_push" -eq 1 ]; then pre_push_refs || return $?; fi
 
   # Decision 2: the gate measures the working tree, so it must equal HEAD.
   dirty=$(git diff --name-only HEAD) || return 2
@@ -36,6 +41,44 @@ check_ci() {
   check_run "$scratch" "$base_ref" "$start" || status=$?
   rm -rf "$scratch"
   return "$status"
+}
+
+# pre_push_refs: read the lines git gives a pre-push hook on stdin, "<local ref> <local sha>
+# <remote ref> <remote sha>" for each ref it is about to push, and return 1 when a branch
+# (a remote ref under refs/heads/) would be pushed at a commit other than HEAD, the one
+# commit this gate judges. One line per such branch goes to stderr, naming the local branch
+# to check out (the remote one when the local ref is not a branch). A delete (zero local
+# sha) and a ref that is not a branch (a tag, a note) are skipped. Stdin that is a terminal
+# or empty means nobody pushed anything through git: HEAD is judged as always. A line with
+# fewer than four fields is not git's: exit 2, fail closed. A trailing carriage return is
+# not part of the line.
+pre_push_refs() {
+  local line lref lsha rref rsha head='' refused=0 name
+  if [ -t 0 ]; then return 0; fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}
+    if [ -z "$line" ]; then continue; fi
+    lref='' lsha='' rref='' rsha=''
+    # A fifth field, if one ever comes, is dropped into the last variable's remainder.
+    read -r lref lsha rref rsha _ <<PUSHLINE
+$line
+PUSHLINE
+    if [ -z "$rsha" ]; then
+      printf 'gauntlet: unexpected pre-push input\n' >&2
+      return 2
+    fi
+    case "$rref" in refs/heads/*) ;; *) continue ;; esac
+    case "$lsha" in *[!0]*) ;; *) continue ;; esac
+    if [ -z "$head" ]; then head=$(git rev-parse HEAD) || return 2; fi
+    if [ "$lsha" = "$head" ]; then continue; fi
+    case "$lref" in
+      refs/heads/*) name=${lref#refs/heads/} ;;
+      *) name=${rref#refs/heads/} ;;
+    esac
+    printf 'gauntlet checks the checked-out branch; check out %s and push again\n' "$name" >&2
+    refused=1
+  done
+  [ "$refused" -eq 0 ] || return 1
 }
 
 # check_run <scratch> <base-ref> <start-ms>: the work of check_ci, with every

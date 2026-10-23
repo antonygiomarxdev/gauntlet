@@ -8,9 +8,9 @@
 # Each test runs in a fresh repo under $TMP.
 
 HOOK_TEST_STAGED='.gauntlet/bin/gauntlet check --staged  # gauntlet'
-HOOK_TEST_CI='.gauntlet/bin/gauntlet check --ci  # gauntlet'
+HOOK_TEST_CI='.gauntlet/bin/gauntlet check --ci --pre-push  # gauntlet'
 HOOK_TEST_GATE_STAGED='.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet'
-HOOK_TEST_GATE_CI='.gauntlet/bin/gauntlet check --ci || exit $?  # gauntlet'
+HOOK_TEST_GATE_CI='.gauntlet/bin/gauntlet check --ci --pre-push || exit $?  # gauntlet'
 
 # hooks_repo <dir>: a git repo at <dir> on main with one commit and no gauntlet
 # state, then cd into it. <dir> may contain spaces.
@@ -321,7 +321,8 @@ test_lefthook_prints_snippet_no_edit() {
   assert_eq 0 "$STATUS" "install-hooks"
   assert_contains "$OUT" "ACTION NEEDED: add to lefthook.yml:"
   assert_contains "$OUT" "run: .gauntlet/bin/gauntlet check --staged"
-  assert_contains "$OUT" "run: .gauntlet/bin/gauntlet check --ci"
+  assert_contains "$OUT" "run: .gauntlet/bin/gauntlet check --ci --pre-push"
+  assert_contains "$OUT" "use_stdin: true"
   assert_eq "$config" "$(hooks_sum lefthook.yml)" "lefthook.yml is unchanged"
   assert_eq "$hooks" "$(hooks_sum .git/hooks)" "no hook was written"
 }
@@ -350,7 +351,7 @@ test_prek_prints_snippet_no_edit() {
   assert_eq 0 "$STATUS" "install-hooks"
   assert_contains "$OUT" "ACTION NEEDED: add to .pre-commit-config.yaml:"
   assert_contains "$OUT" "entry: .gauntlet/bin/gauntlet check --staged"
-  assert_contains "$OUT" "entry: .gauntlet/bin/gauntlet check --ci"
+  assert_contains "$OUT" "entry: .gauntlet/bin/gauntlet check --ci --pre-push"
   assert_eq "$config" "$(hooks_sum .pre-commit-config.yaml)" "the config is unchanged"
   assert_eq "$hooks" "$(hooks_sum .git/hooks)" "no hook was written"
 }
@@ -371,7 +372,8 @@ pre-commit:
 pre-push:
   commands:
     gauntlet:
-      run: .gauntlet/bin/gauntlet check --ci
+      run: .gauntlet/bin/gauntlet check --ci --pre-push
+      use_stdin: true
 YAML
   cat > .pre-commit-config.yaml <<'YAML'
 - repo: local
@@ -379,7 +381,7 @@ YAML
     - id: gauntlet
       entry: .gauntlet/bin/gauntlet check --staged
     - id: gauntlet-ci
-      entry: .gauntlet/bin/gauntlet check --ci
+      entry: .gauntlet/bin/gauntlet check --ci --pre-push
 YAML
   local config
   config=$(hooks_sum lefthook.yml .pre-commit-config.yaml)
@@ -405,7 +407,7 @@ test_json_and_toml_configs_get_generic_snippet() {
   assert_contains "$OUT" "ACTION NEEDED: add to lefthook.toml:"
   assert_contains "$OUT" "ACTION NEEDED: add to prek.toml:"
   assert_contains "$OUT" "pre-commit: .gauntlet/bin/gauntlet check --staged"
-  assert_contains "$OUT" "pre-push: .gauntlet/bin/gauntlet check --ci"
+  assert_contains "$OUT" "pre-push: .gauntlet/bin/gauntlet check --ci --pre-push"
   assert_eq "$before" "$(hooks_sum lefthook.json lefthook.toml prek.toml)" "the configs are unchanged"
   if [ -e .git/hooks/pre-commit ]; then fail "hooks were written although a config owns them"; fi
 }
@@ -1312,4 +1314,79 @@ test_failed_copy_after_kill_restores_the_live_lib() {
   bash "$TMP/broken/bin/gauntlet" install > "$TMP/out" 2>&1 || status=$?
   assert_eq 2 "$status" "install fails on an unreadable source file"
   assert_eq "$lib" "$(hooks_sum .gauntlet/lib)" "the live lib is the old one, restored"
+}
+
+# FRD-03 section 4.11: the pre-push line is `check --ci --pre-push`. A hook written by an earlier
+# version has the line without the flag, which silently judges whatever is checked out, so
+# install-hooks puts the new line where the old one was instead of adding a second gate.
+HOOK_TEST_OLD_CI='.gauntlet/bin/gauntlet check --ci  # gauntlet'
+HOOK_TEST_OLD_GATE_CI='.gauntlet/bin/gauntlet check --ci || exit $?  # gauntlet'
+
+test_install_hooks_replaces_the_old_gate_line_in_place() {
+  hooks_repo "$TMP/repo"
+  printf '#!/bin/sh\necho one\n%s\necho two\n' "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-push
+  chmod 755 .git/hooks/pre-push
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "updated gauntlet line in .git/hooks/pre-push"
+  hooks_expect .git/hooks/pre-push $'#!/bin/sh\necho one\n'"$HOOK_TEST_GATE_CI"$'\necho two\n'
+  if [ ! -x .git/hooks/pre-push ]; then fail "the hook lost its exec bit"; fi
+  run "$G" install-hooks
+  assert_contains "$OUT" "already present in .git/hooks/pre-push"
+}
+
+test_install_hooks_replaces_the_old_plain_line_in_place() {
+  hooks_repo "$TMP/repo"
+  printf '#!/usr/bin/env sh\n%s\n' "$HOOK_TEST_OLD_CI" > .git/hooks/pre-push
+  chmod 755 .git/hooks/pre-push
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  hooks_expect .git/hooks/pre-push $'#!/usr/bin/env sh\n'"$HOOK_TEST_CI"$'\n'
+}
+
+# The pre-commit line is not the pre-push line: it keeps its text.
+test_install_hooks_leaves_the_pre_commit_line_alone() {
+  hooks_repo "$TMP/repo"
+  printf '#!/bin/sh\n%s\n' "$HOOK_TEST_GATE_STAGED" > .git/hooks/pre-commit
+  printf '#!/bin/sh\n%s\n' "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-push
+  chmod 755 .git/hooks/pre-commit .git/hooks/pre-push
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  hooks_expect .git/hooks/pre-commit $'#!/bin/sh\n'"$HOOK_TEST_GATE_STAGED"$'\n'
+}
+
+# A hook we may not edit keeps its old line and is told the new one.
+test_an_old_gate_line_in_an_uneditable_hook_is_print_only() {
+  hooks_repo "$TMP/repo"
+  printf '#!/usr/bin/env python3\n# %s\nprint("x")\n' "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-push
+  local before
+  before=$(hooks_sum .git/hooks/pre-push)
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "ACTION NEEDED: add to .git/hooks/pre-push:"
+  assert_contains "$OUT" "$HOOK_TEST_GATE_CI"
+  assert_eq "$before" "$(hooks_sum .git/hooks/pre-push)" "the hook is unchanged"
+}
+
+# The old line later in the hook, after the project's own commands, is replaced where it stands.
+test_a_moved_old_gate_line_is_replaced_where_it_stands() {
+  hooks_repo "$TMP/repo"
+  printf '#!/bin/sh\necho one\n%s\n' "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-push
+  chmod 755 .git/hooks/pre-push
+  run "$G" install-hooks
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_GATE_CI" .git/hooks/pre-push)" "new line"
+  assert_eq 0 "$(hooks_lines "$HOOK_TEST_OLD_GATE_CI" .git/hooks/pre-push)" "old line"
+}
+
+# A missing final newline stays missing, whether the old line is the last one or not.
+test_replacing_the_old_line_keeps_a_missing_final_newline() {
+  hooks_repo "$TMP/repo"
+  printf '#!/bin/sh\n%s\necho two' "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-push
+  chmod 755 .git/hooks/pre-push
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  hooks_expect .git/hooks/pre-push $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\necho two'
+  printf '#!/bin/sh\necho one\n%s' "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-push
+  run "$G" install-hooks
+  hooks_expect .git/hooks/pre-push $'#!/bin/sh\necho one\n'"$HOOK_TEST_GATE_CI"
 }

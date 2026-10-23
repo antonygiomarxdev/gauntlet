@@ -10,12 +10,19 @@
 # that has either form, as a whole line, is already done.
 HOOK_LINE_STAGED='.gauntlet/bin/gauntlet check --staged  # gauntlet'
 HOOK_GATE_STAGED='.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet'
-HOOK_LINE_CI='.gauntlet/bin/gauntlet check --ci  # gauntlet'
-HOOK_GATE_CI='.gauntlet/bin/gauntlet check --ci || exit $?  # gauntlet'
+HOOK_LINE_CI='.gauntlet/bin/gauntlet check --ci --pre-push  # gauntlet'
+HOOK_GATE_CI='.gauntlet/bin/gauntlet check --ci --pre-push || exit $?  # gauntlet'
 
-# The command strings that show a config already runs the gate.
+# The pre-push lines of the versions before --pre-push: they judge the checked-out branch
+# whatever git pushes. install-hooks replaces them in place; doctor names them.
+HOOK_OLD_LINE_CI='.gauntlet/bin/gauntlet check --ci  # gauntlet'
+HOOK_OLD_GATE_CI='.gauntlet/bin/gauntlet check --ci || exit $?  # gauntlet'
+
+# The command strings that show a config already runs the gate. The pre-push one carries
+# --pre-push, which is how the gate learns what git is pushing (a hook manager has to pass
+# git's stdin on: lefthook does with use_stdin).
 GAUNTLET_CMD_STAGED='.gauntlet/bin/gauntlet check --staged'
-GAUNTLET_CMD_CI='.gauntlet/bin/gauntlet check --ci'
+GAUNTLET_CMD_CI='.gauntlet/bin/gauntlet check --ci --pre-push'
 
 # shellcheck disable=SC2016 # the awk program reads its record; it is not shell text to expand
 # The decision for one existing hook, run by awk over the file: exit 0 when the gate
@@ -246,7 +253,7 @@ hook_target() {
 # add_hook_pair <dir>: add the pre-commit and pre-push gate lines to <dir>.
 add_hook_pair() {
   add_hook_line "$1/pre-commit" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED"
-  add_hook_line "$1/pre-push" "$HOOK_LINE_CI" "$HOOK_GATE_CI"
+  add_hook_line "$1/pre-push" "$HOOK_LINE_CI" "$HOOK_GATE_CI" "$HOOK_OLD_LINE_CI" "$HOOK_OLD_GATE_CI"
 }
 
 # print_hook_pair <dir>: print the two gate lines for <dir>, which is not ours to edit.
@@ -255,15 +262,18 @@ print_hook_pair() {
   print_only "$1/pre-push" "$HOOK_GATE_CI"
 }
 
-# add_hook_line <file> <plain> <gate>: the gate runs first in a hook we may edit. The
-# gate form goes on the line right after the shebang (line 1 when there is none), so
-# it runs before anything the project's own hook does, and an early exit, a trailing
-# exit, exec, a line continuation or a failing last command cannot get past it. The
-# project's hook then runs unchanged and keeps its own exit status. A hook we must not
-# edit is printed instead. A missing file, or an empty one, gets the plain pinned form.
-# An existing file keeps its mode and every byte except the inserted line.
+# add_hook_line <file> <plain> <gate> [<old-plain> <old-gate>]: the gate runs first in a hook
+# we may edit. The gate form goes on the line right after the shebang (line 1 when there is
+# none), so it runs before anything the project's own hook does, and an early exit, a trailing
+# exit, exec, a line continuation or a failing last command cannot get past it. First also
+# keeps git's stdin whole: the pre-push gate reads the ref lines git sends there
+# (check --ci --pre-push), and any command before it that reads stdin would take them. The
+# project's hook then runs unchanged and keeps its own exit status. A hook we must not edit is
+# printed instead. A missing file, or an empty one, gets the plain pinned form. An existing
+# file keeps its mode and every byte except the inserted line. A line of the old forms, which
+# older versions wrote, is replaced where it stands (upgrade_gate_line).
 add_hook_line() {
-  local file=$1 line=$2 gate=$3 tmp rc=0
+  local file=$1 line=$2 gate=$3 old_line=${4:-} old_gate=${5:-} tmp rc=0
   if [ -e "$file" ] && hook_has_gate "$file" "$line" "$gate"; then
     printf 'already present in %s\n' "$(display_path "$file")"
     warn_if_not_executable "$file"
@@ -275,6 +285,12 @@ add_hook_line() {
     1) print_only "$file" "$gate"; return 0 ;;
     *) die "cannot read $file" ;;
   esac
+  if [ -n "$old_line" ] && [ -e "$file" ] && hook_has_gate "$file" "$old_line" "$old_gate"; then
+    upgrade_gate_line "$file" "$line" "$gate" "$old_line" "$old_gate"
+    printf 'updated gauntlet line in %s\n' "$(display_path "$file")"
+    warn_if_not_executable "$file"
+    return 0
+  fi
   if [ ! -e "$file" ]; then
     printf '#!/usr/bin/env sh\n%s\n' "$line" > "$file" || die "cannot create $file"
     chmod +x "$file" || die "cannot make $file executable"
@@ -297,6 +313,27 @@ add_hook_line() {
   rm -f "$tmp"
   printf 'added gauntlet line to %s\n' "$(display_path "$file")"
   warn_if_not_executable "$file"
+}
+
+# upgrade_gate_line <file> <plain> <gate> <old-plain> <old-gate>: replace each whole line of
+# <file> that is an old form by the same form of the new line, where it stands. Every other
+# byte stays, a missing final newline included.
+upgrade_gate_line() {
+  local file=$1 tmp size
+  tmp=$(tmp_new) || die "cannot create a temp file"
+  GL_PLAIN=$2 GL_GATE=$3 GL_OLD_PLAIN=$4 GL_OLD_GATE=$5 awk '
+    $0 == ENVIRON["GL_OLD_PLAIN"] { print ENVIRON["GL_PLAIN"]; next }
+    $0 == ENVIRON["GL_OLD_GATE"] { print ENVIRON["GL_GATE"]; next }
+    { print }
+  ' "$file" > "$tmp" || { rm -f "$tmp"; die "cannot read $file"; }
+  if [ -n "$(tail -c 1 "$file")" ]; then
+    # The file had no final newline and awk added one: take it off again.
+    size=$(wc -c < "$tmp")
+    head -c "$((size - 1))" "$tmp" > "$tmp.cut" || { rm -f "$tmp" "$tmp.cut"; die "cannot read $file"; }
+    mv "$tmp.cut" "$tmp" || { rm -f "$tmp" "$tmp.cut"; die "cannot read $file"; }
+  fi
+  cat "$tmp" > "$file" || { rm -f "$tmp"; die "cannot write $file"; }
+  rm -f "$tmp"
 }
 
 # hook_has_gate <file> <plain> <gate>: succeed when <file> holds either gate form as a
@@ -457,7 +494,8 @@ pre-commit:
 pre-push:
   commands:
     gauntlet:
-      run: .gauntlet/bin/gauntlet check --ci
+      run: .gauntlet/bin/gauntlet check --ci --pre-push
+      use_stdin: true
 EOF
 }
 
@@ -474,7 +512,7 @@ prek_snippet() {
       always_run: true
     - id: gauntlet-ci
       name: gauntlet (push)
-      entry: .gauntlet/bin/gauntlet check --ci
+      entry: .gauntlet/bin/gauntlet check --ci --pre-push
       language: system
       pass_filenames: false
       always_run: true
