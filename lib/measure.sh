@@ -87,6 +87,10 @@ measure_in() {
   LC_ALL=C sort -t "$DETECT_TAB" -k2,2 "$scratch/raw.kept" > "$scratch/sorted" || return 2
   : > "$scratch/unreadable" || return 2
   GL_ROOT="$root" GL_BAD="$scratch/unreadable" awk -F "$DETECT_TAB" '
+    # A NUL byte is dropped from the lines read: mawk and gawk keep it inside the string
+    # (and would write it into the baseline), busybox and BWK awk cut the record at it. The
+    # others have no NUL string to drop, and their own cut is all there is to do.
+    BEGIN { nul = sprintf("%c", 0) }
     function normalize(s) {
       gsub(/\r/, "", s)
       gsub(/[ \t]+/, " ", s)
@@ -99,7 +103,10 @@ measure_in() {
       n = 0
       # getline is -1 for a file it cannot open, which is not "no more lines": name the
       # file in GL_BAD and stop, so a row is never counted under an empty fingerprint.
-      while ((rc = (getline l < (ENVIRON["GL_ROOT"] "/" cur))) > 0) lines[++n] = l
+      while ((rc = (getline l < (ENVIRON["GL_ROOT"] "/" cur))) > 0) {
+        if (nul != "") while ((i = index(l, nul)) > 0) l = substr(l, 1, i - 1) substr(l, i + 1)
+        lines[++n] = l
+      }
       if (rc < 0) { print cur > ENVIRON["GL_BAD"]; exit 2 }
       close(ENVIRON["GL_ROOT"] "/" cur)
     }

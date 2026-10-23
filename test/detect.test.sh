@@ -385,6 +385,34 @@ test_dash_names_reach_the_detector_as_files() {
   assert_eq "$(printf 'lint\t-\t1\tTODO z\nlint\t-x.txt\t1\tTODO x\nlint\tok.ts\t1\tTODO y')" "$(LC_ALL=C sort "$TMP/out.tsv")" "linter rows"
 }
 
+# A tool that joins the working directory to the ./-name it was given prints <root>/./-name. The
+# repo root comes off first, then the ./, or the row is not in the file list and is dropped.
+test_root_dot_slash_paths_from_a_tool_are_normalised() {
+  mkrepo
+  detect_lib
+  printf 'TODO x\n' > ./-x.ts
+  printf 'TODO y\n' > y.ts
+  printf -- '-x.ts\ny.ts\n' > "$TMP/files.txt"
+  rule r engine=linter "detector=for f in {files}; do printf '%s/%s:1:x\\n' \"\$PWD\" \"\$f\"; done"
+  run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_eq "$(printf 'r\t-x.ts\t1\tx\nr\ty.ts\t1\tx')" "$(LC_ALL=C sort "$TMP/out.tsv")" "both rows"
+}
+
+# A NUL byte in the detector's output is dropped, on purpose and without bash's warning
+# ("ignored null byte in input"), so the row is the same text on every shell and awk.
+test_a_nul_byte_in_detector_output_is_dropped_quietly() {
+  mkrepo
+  detect_lib
+  printf 'x\n' > a.ts
+  printf 'a.ts\n' > "$TMP/files.txt"
+  rule r engine=linter "detector=printf 'a.ts:1:x\\0y\\n'"
+  run run_detector .gauntlet/rules/r.md "$TMP/files.txt" "$TMP/out.tsv"
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "null byte"
+  assert_eq "$(printf 'r\ta.ts\t1\txy')" "$(cat "$TMP/out.tsv")" "the row without the NUL"
+}
+
 test_dash_names_are_measured_by_the_gates() {
   mkrepo
   printf 'TODO x\n' > ./-x.txt

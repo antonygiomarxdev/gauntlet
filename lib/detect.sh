@@ -146,9 +146,12 @@ exit "${gauntlet_ps[gauntlet_n - 1]}"'
 # --hidden) would change the rows on one machine and not on CI.
 detect_batch() {
   local out status tool=${2%% *} hint=
-  out=$(cd "$1" && unset RIPGREP_CONFIG_PATH && bash -o pipefail -c "$2"$'\n'"$DETECT_PIPE_CHECK" </dev/null 2>>"$4") && status=0 || status=$?
+  # The output goes to a file first: a NUL byte in it would make bash warn and drop it when it
+  # reads a command substitution. It is dropped here, once, on every shell.
+  (cd "$1" && unset RIPGREP_CONFIG_PATH && bash -o pipefail -c "$2"$'\n'"$DETECT_PIPE_CHECK" </dev/null >"$4.out" 2>>"$4") && status=0 || status=$?
   case "$status" in
     0|1)
+      out=$(LC_ALL=C tr -d '\000' < "$4.out") || return 2
       DETECT_RAW="$DETECT_RAW$out
 "
       ;;
@@ -308,13 +311,14 @@ detect_rule() {
     return 2
   fi
 
-  # Strip a leading ./ or the repo root from each path.
+  # Strip the repo root from each path, then a leading ./: a tool that joins the working
+  # directory to the ./-name it was given prints <root>/./-name.
   GL_ROOT="$root/" awk -F "$DETECT_TAB" '
     NF == 0 { next }
     {
       p = $1
-      if (index(p, "./") == 1) p = substr(p, 3)
       if (index(p, ENVIRON["GL_ROOT"]) == 1) p = substr(p, length(ENVIRON["GL_ROOT"]) + 1)
+      if (index(p, "./") == 1) p = substr(p, 3)
       print p "\t" substr($0, length($1) + 2)
     }
   ' "$scratch/parsed" > "$scratch/rows" || return 2

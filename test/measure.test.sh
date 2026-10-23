@@ -336,6 +336,23 @@ test_unreadable_matched_file_is_exit_2_naming_the_file() {
   assert_eq "" "$(cat .gauntlet/baseline.tsv)" "no baseline is written"
 }
 
+# The fingerprint is the matched line, so a NUL byte in it must not change the baseline from one
+# awk to another: mawk keeps it, busybox cuts the line there. It is dropped, so the line has the
+# fingerprint of the same line without it. Needs an awk that holds a NUL in a string (mawk, gawk);
+# the others cut the line at the NUL on their own, and there is nothing left to drop.
+test_a_nul_byte_in_a_matched_line_is_not_part_of_its_fingerprint() {
+  [ "$(awk 'BEGIN { print length(sprintf("%c", 0)) }')" = 1 ] || { skip "this awk cannot hold a NUL in a string"; return 77; }
+  mkrepo
+  rule r engine=linter paths='**/*.dat' "detector=printf 'with.dat:1:x\\nwithout.dat:1:x\\n'"
+  printf 'TODO a\000 b\n' > with.dat
+  printf 'TODO a b\n' > without.dat
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  assert_eq "$(printf 'r\twithout.dat\tTODO a b\t1\nr\twith.dat\tTODO a b\t1' | LC_ALL=C sort)" "$(cat .gauntlet/baseline.tsv)" "rows"
+  assert_eq 0 "$(LC_ALL=C tr -cd '\000' < .gauntlet/baseline.tsv | wc -c | tr -d ' ')" "NUL bytes in the baseline"
+}
+
 test_readable_matched_files_still_get_their_fingerprints() {
   mkrepo
   rule r engine=linter paths='**/*.ts' "detector=printf 'a.ts:1:x\\nb.ts:1:y\\n'"
