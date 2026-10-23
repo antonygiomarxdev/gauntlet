@@ -99,6 +99,13 @@ fail() {
   exit 1
 }
 
+# skip <reason>: report the calling test as skipped, not ok. The test then
+# returns 77 at once (skip "..."; return 77). test/run.sh prints a SKIP line with
+# the reason and does not count it as a failure.
+skip() {
+  printf '%s\n' "$1" >&2
+}
+
 # assert_eq <expected> <actual> [label]
 assert_eq() {
   if [ "$1" != "$2" ]; then

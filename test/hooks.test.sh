@@ -795,7 +795,10 @@ test_runs_through_symlinks() {
 # A failed copy leaves the old runner exactly as it was and no temp copy behind.
 test_failed_copy_keeps_old_runner() {
   hooks_repo "$TMP/repo"
-  if hooks_as_root; then return 0; fi
+  if hooks_as_root; then
+    skip "running as root: unreadable and read-only files are still readable here"
+    return 77
+  fi
   run "$G" install
   assert_eq 0 "$STATUS" "install"
   local runner status=0
@@ -816,7 +819,10 @@ test_failed_copy_keeps_old_runner() {
 # A read-only .gauntlet fails the copy and leaves the old runner intact.
 test_read_only_gauntlet_keeps_old_runner() {
   hooks_repo "$TMP/repo"
-  if hooks_as_root; then return 0; fi
+  if hooks_as_root; then
+    skip "running as root: unreadable and read-only files are still readable here"
+    return 77
+  fi
   run "$G" install
   assert_eq 0 "$STATUS" "install"
   local runner status=0
@@ -834,7 +840,10 @@ test_read_only_gauntlet_keeps_old_runner() {
 # A failed read of a hook leaves no temp file behind, and neither does an edit.
 test_no_temp_file_left_behind() {
   hooks_repo "$TMP/repo"
-  if hooks_as_root; then return 0; fi
+  if hooks_as_root; then
+    skip "running as root: unreadable and read-only files are still readable here"
+    return 77
+  fi
   must mkdir -p "$TMP/tmpdir"
   printf '#!/bin/sh\necho x\n' > .git/hooks/pre-commit
   must chmod 000 .git/hooks/pre-commit
@@ -887,4 +896,366 @@ test_commit_blocked_then_passes_through_vendored_runner() {
   run git commit -q -m "fix the violation"
   assert_eq 0 "$STATUS" "commit after the fix: $OUT"
   assert_eq "" "$(git status --short)" "tree is clean after the fixed commit"
+}
+
+# A trailing exit with an argument is printed in the gate form, to go before it.
+test_exit_with_argument_prints_gate_form() {
+  hooks_repo "$TMP/repo"
+  # shellcheck disable=SC2016 # the hook is shell text; $rc is not ours to expand
+  printf '#!/bin/sh\necho x\nexit "$rc"\n' > .git/hooks/pre-commit
+  chmod 755 .git/hooks/pre-commit
+  local before
+  before=$(hooks_sum .git/hooks/pre-commit)
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks"
+  assert_eq "$before" "$(hooks_sum .git/hooks/pre-commit)" "the hook is left alone"
+  assert_contains "$OUT" "ACTION NEEDED: add to .git/hooks/pre-commit:"
+  assert_contains "$OUT" "$HOOK_TEST_GATE_STAGED"
+  assert_contains "$OUT" "before the final exit"
+}
+
+# The printed line, placed before the final exit as it says, blocks a violation.
+test_gate_placed_before_exit_with_argument_blocks() {
+  hooks_repo "$TMP/my repo"
+  # shellcheck disable=SC2016 # the hook is shell text; $rc is not ours to expand
+  printf '#!/bin/sh\nrc=0\necho start\nexit "$rc"\n' > .git/hooks/pre-commit
+  chmod 755 .git/hooks/pre-commit
+  run "$G" install
+  assert_eq 0 "$STATUS" "install"
+  assert_contains "$OUT" "before the final exit"
+  # shellcheck disable=SC2016 # the hook is shell text; $rc is not ours to expand
+  printf '#!/bin/sh\nrc=0\necho start\n%s\nexit "$rc"\n' "$HOOK_TEST_GATE_STAGED" > .git/hooks/pre-commit
+  rule todo format=path-line
+  must git add -A
+  run git commit -q -m "add the todo rule"
+  assert_eq 0 "$STATUS" "commit of the rule alone: $OUT"
+  printf 'TODO fix me\n' > a.txt
+  must git add a.txt
+  local before
+  before=$(git rev-parse HEAD)
+  run git commit -q -m "add a violation"
+  if [ "$STATUS" -eq 0 ]; then fail "the gate placed before the final exit let a violation through: $OUT"; fi
+  assert_eq "$before" "$(git rev-parse HEAD)" "HEAD is unchanged"
+}
+
+# A hook that exits early is printed, not edited; with the gate placed at the top,
+# as the printed text says, a commit that brings a violation is blocked.
+nested_exit_case() {
+  local rest placed before_commit before
+  rest=${1#*$'\n'}
+  placed=$'#!/bin/sh\n'"$HOOK_TEST_GATE_STAGED"$'\n'"$rest"
+  hooks_repo "$TMP/my repo"
+  printf '%s' "$1" > .git/hooks/pre-commit
+  chmod 755 .git/hooks/pre-commit
+  before=$(hooks_sum .git/hooks/pre-commit)
+  run "$G" install
+  assert_eq 0 "$STATUS" "install"
+  assert_eq "$before" "$(hooks_sum .git/hooks/pre-commit)" "the early-exit hook is left alone"
+  assert_contains "$OUT" "ACTION NEEDED: add to .git/hooks/pre-commit:"
+  printf '%s' "$placed" > .git/hooks/pre-commit
+  rule todo format=path-line
+  must git add -A
+  run git commit -q -m "add the todo rule"
+  assert_eq 0 "$STATUS" "commit of the rule alone: $OUT"
+  printf 'TODO fix me\n' > a.txt
+  must git add a.txt
+  before_commit=$(git rev-parse HEAD)
+  run git commit -q -m "add a violation"
+  if [ "$STATUS" -eq 0 ]; then fail "the gate placed at the top let a violation through: $OUT"; fi
+  assert_eq "$before_commit" "$(git rev-parse HEAD)" "HEAD is unchanged"
+}
+
+test_nested_exit_in_if_is_print_only_and_placed_gate_blocks() {
+  nested_exit_case $'#!/bin/sh\nif true; then exit 0; fi\n'
+}
+
+test_nested_exit_in_case_is_print_only_and_placed_gate_blocks() {
+  nested_exit_case $'#!/bin/sh\ncase x in\n  *) exit 0 ;;\nesac\n'
+}
+
+test_nested_exit_in_function_is_print_only_and_placed_gate_blocks() {
+  nested_exit_case $'#!/bin/sh\nmain() {\n  echo hi\n  exit 0\n}\n'
+}
+
+# A comment that mentions exit 0 is not an exit; non-zero literal exits are not
+# bare, so the hook stays editable.
+test_comment_mentioning_exit_zero_is_not_a_nested_exit() {
+  hooks_repo "$TMP/repo"
+  printf '#!/bin/sh\n# exit 0 would skip the gate, so none is written here\nif false; then\n  exit 1\nfi\n' > .git/hooks/pre-commit
+  chmod 755 .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "the gate line was appended"
+}
+
+test_nonzero_literal_exits_stay_editable() {
+  hooks_repo "$TMP/repo"
+  printf '#!/bin/sh\nif [ -f x ]; then\n  exit 10\nfi\n' > .git/hooks/pre-commit
+  chmod 755 .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "the gate line was appended"
+}
+
+test_nul_byte_hook_is_print_only() {
+  hooks_repo "$TMP/repo"
+  printf '#!/bin/sh\necho \000x\n' > .git/hooks/pre-commit
+  chmod 755 .git/hooks/pre-commit
+  local before
+  before=$(hooks_sum .git/hooks/pre-commit)
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks"
+  assert_eq "$before" "$(hooks_sum .git/hooks/pre-commit)" "the binary hook is not edited"
+  assert_contains "$OUT" "ACTION NEEDED: add to .git/hooks/pre-commit:"
+}
+
+test_symlink_to_file_outside_root_is_print_only() {
+  hooks_repo "$TMP/repo"
+  must mkdir -p "$TMP/outside"
+  printf '#!/bin/sh\necho outside\n' > "$TMP/outside/hook"
+  chmod 755 "$TMP/outside/hook"
+  must ln -s "$TMP/outside/hook" .git/hooks/pre-commit
+  local before
+  before=$(hooks_sum "$TMP/outside/hook")
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks"
+  assert_eq "$before" "$(hooks_sum "$TMP/outside/hook")" "the file outside the repo is not edited"
+  if [ ! -L .git/hooks/pre-commit ]; then fail "the link was replaced"; fi
+  assert_contains "$OUT" "ACTION NEEDED: add to .git/hooks/pre-commit:"
+}
+
+test_symlink_to_file_inside_root_is_edited() {
+  hooks_repo "$TMP/repo"
+  must mkdir -p shared
+  printf '#!/bin/sh\necho shared\n' > shared/hook
+  chmod 755 shared/hook
+  must ln -s ../../shared/hook .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" shared/hook)" "the target inside the repo is edited"
+  if [ ! -L .git/hooks/pre-commit ]; then fail "the link was replaced"; fi
+}
+
+# ~ in core.hooksPath expands to the home directory: never a literal ~ in the repo.
+test_hookspath_tilde_expands_to_home() {
+  hooks_repo "$TMP/repo"
+  mkdir -p "$TMP/home"
+  # shellcheck disable=SC2088 # the literal ~ is the point: git must expand it
+  must git config core.hooksPath '~/shared-hooks'
+  HOME="$TMP/home"
+  export HOME
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks with ~ outside the repo"
+  if [ -e "$TMP/repo/~" ]; then fail "a literal ~ directory was created in the repo"; fi
+  if [ -e "$TMP/home/shared-hooks" ]; then fail "hooks were written to the home directory"; fi
+  assert_contains "$OUT" "ACTION NEEDED: add to $TMP/home/shared-hooks/pre-commit:"
+  hooks_repo "$TMP/home-repo"
+  # shellcheck disable=SC2088 # the literal ~ is the point: git must expand it
+  must git config core.hooksPath '~/.husky'
+  HOME="$TMP/home-repo"
+  export HOME
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks with ~ inside the repo"
+  if [ -e "$TMP/home-repo/~" ]; then fail "a literal ~ directory was created in the repo"; fi
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" "$TMP/home-repo/.husky/pre-commit")" "the expanded ~/.husky is the repo's husky dir"
+}
+
+# fake_mv_setup: put a mv on PATH that fails at the moves numbered FAKE_MV_FAIL_AT
+# and FAKE_MV_FAIL2_AT (counted from zero per run, by FAKE_MV_COUNT) and is the real
+# mv for every other call.
+fake_mv_setup() {
+  must mkdir -p "$TMP/fakebin"
+  cat > "$TMP/fakebin/mv" <<'SH'
+#!/bin/sh
+n=$(cat "$FAKE_MV_COUNT" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$FAKE_MV_COUNT"
+if [ "$n" = "$FAKE_MV_FAIL_AT" ] || [ "$n" = "$FAKE_MV_FAIL2_AT" ]; then
+  echo "mv: injected failure at move $n" >&2
+  exit 1
+fi
+exec "$FAKE_MV_REAL" "$@"
+SH
+  must chmod +x "$TMP/fakebin/mv"
+  FAKE_MV_REAL=$(command -v mv)
+  FAKE_MV_COUNT="$TMP/mv-count"
+  export FAKE_MV_REAL FAKE_MV_COUNT
+}
+
+# A failed rollback keeps the old runner's copy and the complete new copy: nothing
+# is deleted until the old runner is back.
+test_failed_rollback_keeps_both_copies() {
+  hooks_repo "$TMP/repo"
+  run "$G" install
+  assert_eq 0 "$STATUS" "install"
+  fake_mv_setup
+  rm -f "$FAKE_MV_COUNT"
+  local status=0
+  FAKE_MV_FAIL_AT=2 FAKE_MV_FAIL2_AT=3 PATH="$TMP/fakebin:$PATH" "$G" install > "$TMP/out" 2>&1 || status=$?
+  assert_eq 2 "$status" "install with the new runner's move and its rollback failing"
+  assert_contains "$(cat "$TMP/out")" "the rollback failed"
+  if [ ! -d .gauntlet/.bin.old ]; then fail "the old runner is not kept in .gauntlet/.bin.old"; fi
+  if [ ! -d .gauntlet/.bin.new ]; then fail "the complete new copy was deleted"; fi
+  if [ -e .gauntlet/bin ]; then fail "bin is in place though the rollback failed"; fi
+}
+
+# Each move of the vendoring swap fails in turn: the old runner keeps working,
+# nothing is left behind, and a second install without the fault recovers.
+test_swap_failure_keeps_old_runner() {
+  hooks_repo "$TMP/repo"
+  run "$G" install
+  assert_eq 0 "$STATUS" "install"
+  local runner n status
+  runner=$(hooks_sum .gauntlet/bin .gauntlet/lib)
+  fake_mv_setup
+  for n in 1 2 3 4; do
+    rm -f "$FAKE_MV_COUNT"
+    status=0
+    FAKE_MV_FAIL_AT=$n PATH="$TMP/fakebin:$PATH" "$G" install > "$TMP/out" 2>&1 || status=$?
+    assert_eq 2 "$status" "install with move $n failing"
+    assert_eq "$runner" "$(hooks_sum .gauntlet/bin .gauntlet/lib)" "the old runner is intact after move $n fails"
+    run .gauntlet/bin/gauntlet --version
+    assert_eq 0 "$STATUS" "the old runner still runs after move $n fails"
+    if [ -e .gauntlet/.bin.new ] || [ -e .gauntlet/.lib.new ] || [ -e .gauntlet/.bin.old ] || [ -e .gauntlet/.lib.old ]; then
+      fail "move $n left a copy or an old runner behind"
+    fi
+  done
+  run "$G" install
+  assert_eq 0 "$STATUS" "a second install recovers"
+  assert_eq "$runner" "$(hooks_sum .gauntlet/bin .gauntlet/lib)" "the runner is the same after recovery"
+}
+
+# A read-only source tree (as a Nix store gives): install twice, quietly.
+test_read_only_source_installs_twice() {
+  if hooks_as_root; then
+    skip "running as root: a read-only tree is writable here"
+    return 77
+  fi
+  hooks_repo "$TMP/repo"
+  must mkdir -p "$TMP/ro-src"
+  must cp -R "$ROOT/bin" "$ROOT/lib" "$TMP/ro-src/"
+  must chmod -R a-w "$TMP/ro-src"
+  run bash "$TMP/ro-src/bin/gauntlet" install
+  assert_eq 0 "$STATUS" "first install from a read-only source: $OUT"
+  assert_not_contains "$OUT" "Permission denied"
+  run bash "$TMP/ro-src/bin/gauntlet" install
+  assert_eq 0 "$STATUS" "second install from a read-only source: $OUT"
+  assert_not_contains "$OUT" "Permission denied"
+  if [ -e .gauntlet/.bin.new ] || [ -e .gauntlet/.lib.new ] || [ -e .gauntlet/.bin.old ] || [ -e .gauntlet/.lib.old ]; then
+    fail "a copy or an old runner was left behind"
+  fi
+  # The owner can still remove the installed runner: its directories are writable.
+  if [ ! -w .gauntlet/bin ] || [ ! -w .gauntlet/lib ]; then
+    fail "the installed runner's directories are not writable by the owner"
+  fi
+  must chmod -R u+w "$TMP/ro-src"
+  run .gauntlet/bin/gauntlet --version
+  assert_eq 0 "$STATUS" "vendored --version"
+}
+
+# Presence is a whole-line match: an indented marker and a marker inside a comment
+# do not count, so the gate line is added.
+test_presence_is_whole_line_not_indented_or_comment() {
+  hooks_repo "$TMP/repo"
+  printf '#!/bin/sh\n  %s\n# %s\necho x\n' "$HOOK_TEST_STAGED" "$HOOK_TEST_STAGED" > .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks"
+  assert_not_contains "$OUT" "already present in .git/hooks/pre-commit"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "the whole-line gate was added"
+}
+
+# A husky path outside the repo root is not husky's: printed, and nothing created.
+test_husky_outside_root_is_print_only() {
+  hooks_repo "$TMP/repo"
+  must git config core.hooksPath '../.husky/_'
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks"
+  if [ -e "$TMP/.husky" ]; then fail "a husky directory was created outside the repo"; fi
+  assert_contains "$OUT" "ACTION NEEDED: add to $TMP/.husky/_/pre-commit:"
+}
+
+# packages/../.husky/_ normalises to <root>/.husky/_: the edit lands in <root>/.husky.
+test_husky_dotdot_inside_root_normalises() {
+  hooks_repo "$TMP/repo"
+  must git config core.hooksPath 'packages/../.husky/_'
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .husky/pre-commit)" "pre-commit in <root>/.husky"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_CI" .husky/pre-push)" "pre-push in <root>/.husky"
+  if [ -e packages ]; then fail "packages/ was created by an unresolved .."; fi
+}
+
+# exit 0 with a trailing comment is an exit line: the gate goes before it.
+test_exit_zero_with_comment_is_an_exit_line() {
+  hooks_repo "$TMP/repo"
+  printf '#!/bin/sh\necho x\nexit 0 # done\n' > .git/hooks/pre-commit
+  chmod 755 .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks"
+  hooks_expect .git/hooks/pre-commit "#!/bin/sh
+echo x
+$HOOK_TEST_GATE_STAGED
+exit 0 # done
+"
+}
+
+# foo && exit 0 as the last line is a trailing exit: the gate goes before the line,
+# so it runs before the conditional exit and a violation is blocked.
+test_trailing_conditional_exit_gets_gate_before_the_line() {
+  hooks_repo "$TMP/my repo"
+  printf '#!/bin/sh\necho start && exit 0\n' > .git/hooks/pre-commit
+  chmod 755 .git/hooks/pre-commit
+  run "$G" install
+  assert_eq 0 "$STATUS" "install"
+  hooks_expect .git/hooks/pre-commit "#!/bin/sh
+$HOOK_TEST_GATE_STAGED
+echo start && exit 0
+"
+  rule todo format=path-line
+  must git add -A
+  run git commit -q -m "add the todo rule"
+  assert_eq 0 "$STATUS" "commit of the rule alone: $OUT"
+  printf 'TODO fix me\n' > a.txt
+  must git add a.txt
+  local before
+  before=$(git rev-parse HEAD)
+  run git commit -q -m "add a violation"
+  if [ "$STATUS" -eq 0 ]; then fail "a conditional exit on the last line let a violation through: $OUT"; fi
+  assert_eq "$before" "$(git rev-parse HEAD)" "HEAD is unchanged"
+}
+
+# A config with only one of the two gate commands is not already configured.
+test_partial_config_is_not_already_configured() {
+  hooks_repo "$TMP/repo"
+  printf 'pre-commit:\n  commands:\n    gauntlet:\n      run: .gauntlet/bin/gauntlet check --staged\n' > lefthook.yml
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks"
+  assert_not_contains "$OUT" "already configured"
+  assert_contains "$OUT" "ACTION NEEDED: add to lefthook.yml:"
+}
+
+# A symlinked bin directory: the checkout is reached through the link. Its lexical
+# parent has no lib/, so a logical pwd would look in the wrong place.
+test_install_through_symlinked_bin_dir() {
+  must mkdir -p "$TMP/checkout" "$TMP/co"
+  must cp -R "$ROOT/bin" "$ROOT/lib" "$TMP/checkout/"
+  must ln -s "$TMP/checkout/bin" "$TMP/co/bin"
+  hooks_repo "$TMP/repo"
+  run "$TMP/co/bin/gauntlet" install
+  assert_eq 0 "$STATUS" "install through a symlinked bin dir: $OUT"
+  if ! cmp -s "$TMP/checkout/bin/gauntlet" .gauntlet/bin/gauntlet; then
+    fail "the vendored runner is not the checkout's runner"
+  fi
+}
+
+# A print-only hook that is not executable gets the warning too.
+test_print_only_hook_warns_when_not_executable() {
+  hooks_repo "$TMP/repo"
+  printf '#!/bin/sh\r\necho x\r\n' > .git/hooks/pre-commit
+  chmod 644 .git/hooks/pre-commit
+  local before
+  before=$(hooks_sum .git/hooks/pre-commit)
+  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed"
+  assert_eq "$before" "$(hooks_sum .git/hooks/pre-commit)" "the CRLF hook is not edited"
+  assert_contains "$(cat "$TMP/err")" "warning: .git/hooks/pre-commit is not executable; git will ignore it"
 }

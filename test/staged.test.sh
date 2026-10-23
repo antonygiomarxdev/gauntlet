@@ -467,8 +467,8 @@ test_path_with_space_tightens() {
 
 test_mixed_case_paths_sort_in_c_locale() {
   if ! locale -a 2>/dev/null | grep -qiE '^en_US\.utf-?8$'; then
-    printf 'skip: en_US.UTF-8 is not installed; the locale check did not run\n' >&2
-    return 0
+    skip "en_US.UTF-8 is not installed; the locale check did not run"
+    return 77
   fi
   mkrepo
   printf 'TODO a\nTODO a2\n' > a.ts
