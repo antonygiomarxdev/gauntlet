@@ -760,6 +760,59 @@ test_rename_of_path_with_space_commits() {
   staged_assert_exact
 }
 
+# A pure rename of shadow-rule debt is the same debt at the commit gate too: the shadow check
+# reads the re-keyed base, so nothing is reported as would-have-failed at the new path.
+test_pure_rename_of_shadow_debt_prints_no_shadow_line_at_commit() {
+  staged_setup 'TODO here' severity=shadow
+  must git mv a.ts b.ts
+  run git commit -q -m "refactor: rename a.ts"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_not_contains "$OUT" "would have failed"
+}
+
+# The control for the test above: a line added in the renamed file is new shadow debt, and the
+# commit gate names it.
+test_rename_with_a_new_shadow_line_prints_it_at_commit() {
+  staged_setup 'TODO here'
+  rule todo paths='**/*.ts' severity=shadow
+  cases_of todo 'TODO x'
+  staged_baseline
+  must git commit -q -m "chore: shadow the rule"
+  must git mv a.ts b.ts
+  printf 'TODO here\nTODO more\n' > b.ts
+  must git add -A
+  run git commit -q -m "refactor: rename and add debt"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_contains "$OUT" "[shadow] would have failed"
+  assert_contains "$OUT" "b.ts:2  todo  TODO more"
+  assert_not_contains "$OUT" "b.ts:1"
+}
+
+# A baseline row left on a path the base no longer has (a file deleted by a commit that skipped
+# the hook) must not hide a new occurrence in the file a rename creates at that path.
+test_stale_base_row_on_rename_destination_is_dropped_at_commit() {
+  mkrepo
+  printf 'alpha\nbeta\ngamma\nTODO x\n' > a.ts
+  # Two copies, so the stale row is the larger count: the base holds one count per key.
+  printf 'TODO x\nTODO x\n' > b.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  staged_baseline
+  must git add -A
+  must git commit -q -m main
+  staged_hook
+  must git checkout -q -b feat
+  must git rm -q b.ts
+  run git commit -q --no-verify -m "chore: drop b.ts without a new baseline"
+  assert_eq 0 "$STATUS" "drop commit status"
+  must git mv a.ts b.ts
+  printf 'alpha\nbeta\ngamma\nTODO x\nTODO x\n' > b.ts
+  must git add -A
+  run git commit -q -m "refactor: rename onto b.ts and add a copy"
+  assert_eq 1 "$STATUS" "commit status"
+  assert_contains "$OUT" "  b.ts:5  todo  TODO x"
+}
+
 test_copy_of_debt_file_is_new_at_commit() {
   staged_setup 'TODO here'
   cp a.ts c.ts
