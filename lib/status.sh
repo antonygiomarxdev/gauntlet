@@ -429,7 +429,7 @@ doctor_hooks() {
   # git runs a hook in a plain hooks dir, and husky v8 is the same: a file without the exec
   # bit is ignored. A husky v9 layout is run through its wrapper, which needs no exec bit on
   # the user's file. The layout comes from hook_target, the same decision install-hooks makes.
-  if [ "$kind" = husky-v9 ]; then
+  if ! hook_needs_exec "$kind"; then
     execcheck=0
   fi
   case "$kind" in

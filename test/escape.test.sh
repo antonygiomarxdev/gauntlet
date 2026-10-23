@@ -646,3 +646,46 @@ test_the_shared_hooks_dir_advice_prints_the_paths_escaped() {
   assert_contains "$OUT" 'sh\x1bd/pre-commit:'
   assert_clean "$OUT" "the shared hooks directory advice"
 }
+
+test_the_cannot_write_message_prints_the_path_and_the_reason_escaped() {
+  if [ "$(id -u)" -eq 0 ]; then
+    skip "running as root: a read-only file is still writable here"
+    return 77
+  fi
+  esc_hooks_dir
+  printf '#!/bin/sh\necho mine\n' > "$ESC_DIR/pre-commit"
+  chmod 444 "$ESC_DIR/pre-commit"
+  run "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" 'gauntlet: cannot write hk\x1bd/pre-commit: Permission denied; fix the permissions or add the line by hand'
+  assert_clean "$OUT" "the cannot-write message"
+  chmod 644 "$ESC_DIR/pre-commit"
+  rm -f "$ESC_DIR/pre-commit"
+  chmod 555 "$ESC_DIR"
+  run "$G" install-hooks
+  chmod 755 "$ESC_DIR"
+  assert_contains "$OUT" 'gauntlet: cannot write hk\x1bd/pre-commit: '
+  assert_clean "$OUT" "the cannot-write message for a read-only directory"
+}
+
+test_the_core_hooks_path_message_prints_git_text_escaped() {
+  local real
+  esc_hooks_repo
+  real=$(command -v git)
+  must mkdir -p "$TMP/shim"
+  cat > "$TMP/shim/git" <<SHIM
+#!/bin/sh
+case " \$* " in
+  *" config "*" --get core.hooksPath"*)
+    printf 'fatal: bad value x\033[2Jy\n' >&2
+    exit 128
+    ;;
+esac
+exec "$real" "\$@"
+SHIM
+  must chmod +x "$TMP/shim/git"
+  run env PATH="$TMP/shim:$PATH" "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" 'gauntlet: cannot read core.hooksPath: fatal: bad value x\x1b[2Jy'
+  assert_clean "$OUT" "the hooksPath message"
+}

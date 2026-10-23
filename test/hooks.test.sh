@@ -1884,3 +1884,169 @@ test_a_shared_script_missing_one_guard_still_gets_the_advice() {
   run "$G" install-hooks
   assert_contains "$OUT" "ACTION NEEDED"
 }
+
+# --- item 5: a hook that cannot be written, one exec-bit rule, a hooksPath git cannot read ---
+
+# A read-only hook file (or hooks directory) used to end install-hooks in a raw bash redirect error.
+# It says which path, why, what to do, and prints the line to add by hand; exit 2, nothing else written.
+test_a_read_only_hook_file_says_why_and_prints_the_line() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  if hooks_as_root; then
+    skip "running as root: a read-only file is still writable here"
+    return 77
+  fi
+  printf '#!/bin/sh\necho mine\n' > .git/hooks/pre-commit
+  chmod 444 .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot write .git/hooks/pre-commit: Permission denied; fix the permissions or add the line by hand"
+  assert_contains "$OUT" "$HOOK_TEST_GATE_STAGED"
+  assert_eq 1 "$(printf '%s\n' "$OUT" | grep -c 'Permission denied')" "one mention of the cause, no raw redirect error: $OUT"
+  assert_not_contains "$OUT" ": line "
+  hooks_expect .git/hooks/pre-commit $'#!/bin/sh\necho mine\n'
+  [ ! -e .git/hooks/pre-push ] || fail "the second hook was written after the first failed"
+}
+
+test_a_read_only_hooks_directory_says_why_and_prints_the_plain_line() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  if hooks_as_root; then
+    skip "running as root: a read-only directory is still writable here"
+    return 77
+  fi
+  must chmod 555 .git/hooks
+  run "$G" install-hooks
+  chmod 755 .git/hooks
+  assert_eq 2 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot write .git/hooks/pre-commit: Permission denied; fix the permissions or add the line by hand"
+  assert_contains "$OUT" "$HOOK_TEST_STAGED"
+  assert_not_contains "$OUT" ": line "
+}
+
+# The hooks directory itself cannot be made (a husky directory under a read-only root).
+test_a_hooks_directory_that_cannot_be_made_names_both_lines() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  if hooks_as_root; then
+    skip "running as root: a read-only directory is still writable here"
+    return 77
+  fi
+  must git config core.hooksPath .husky
+  must chmod 555 .
+  run "$G" install-hooks
+  chmod 755 .
+  assert_eq 2 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot write .husky: Permission denied; fix the permissions or add the line by hand"
+  assert_contains "$OUT" "$HOOK_TEST_STAGED"
+  assert_contains "$OUT" "$HOOK_TEST_CI"
+}
+
+# The same message for the other two ways a hook is written: an empty file, and the upgrade of an
+# old gate line in place.
+test_an_empty_or_old_read_only_hook_says_why_too() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  if hooks_as_root; then
+    skip "running as root: a read-only file is still writable here"
+    return 77
+  fi
+  : > .git/hooks/pre-commit
+  chmod 444 .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_eq 2 "$STATUS" "an empty read-only hook: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot write .git/hooks/pre-commit: Permission denied"
+  assert_contains "$OUT" "$HOOK_TEST_STAGED"
+  chmod 644 .git/hooks/pre-commit
+  printf '#!/bin/sh\n%s\n' "$HOOK_TEST_STAGED" > .git/hooks/pre-commit
+  printf '#!/bin/sh\n%s\n' "$HOOK_TEST_OLD_CI" > .git/hooks/pre-push
+  chmod 755 .git/hooks/pre-commit
+  chmod 444 .git/hooks/pre-push
+  run "$G" install-hooks
+  assert_eq 2 "$STATUS" "an old gate line in a read-only hook: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot write .git/hooks/pre-push: Permission denied"
+  assert_contains "$OUT" "$HOOK_TEST_GATE_CI"
+  hooks_expect .git/hooks/pre-push $'#!/bin/sh\n'"$HOOK_TEST_OLD_CI"$'\n'
+}
+
+# One rule for the exec bit: git ignores a hook without it, except in a husky v9 layout, whose wrapper
+# runs the user's file through sh. install-hooks warns and doctor fails by the same predicate.
+test_husky_v9_hook_without_the_exec_bit_gets_no_warning() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must git config core.hooksPath .husky/_
+  must mkdir -p .husky
+  printf '#!/bin/sh\necho mine\n' > .husky/pre-commit
+  chmod 644 .husky/pre-commit
+  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed: $(cat "$TMP/out" "$TMP/err")"
+  assert_eq "" "$(cat "$TMP/err")" "no warning for a husky v9 hook"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_GATE_STAGED" .husky/pre-commit)" "the hook was edited"
+  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "second install-hooks failed"
+  assert_eq "" "$(cat "$TMP/err")" "no warning on the second run either"
+}
+
+test_husky_v8_hook_without_the_exec_bit_still_gets_the_warning() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must git config core.hooksPath .husky
+  must mkdir -p .husky
+  printf '#!/bin/sh\necho mine\n' > .husky/pre-commit
+  chmod 644 .husky/pre-commit
+  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed"
+  assert_contains "$(cat "$TMP/err")" "warning: .husky/pre-commit is not executable; git will ignore it"
+}
+
+# A print-only hook in a husky v9 directory is held to the same rule.
+test_husky_v9_print_only_hook_gets_no_exec_warning() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must git config core.hooksPath .husky/_
+  must mkdir -p .husky
+  printf '#!/usr/bin/env python3\nprint(1)\n' > .husky/pre-commit
+  chmod 644 .husky/pre-commit
+  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed"
+  assert_contains "$(cat "$TMP/out")" "ACTION NEEDED: add to .husky/pre-commit:"
+  assert_eq "" "$(cat "$TMP/err")" "no warning for a husky v9 hook that is only printed"
+}
+
+# hooks_path_fails: a git first on PATH whose `config --get core.hooksPath` fails with 128, as it does
+# when it cannot read or expand the value; every other call goes to the real git. (With an unknown ~user
+# in the value every git command fails, so the failure has to be simulated to reach this read.)
+hooks_path_fails() {
+  local real
+  real=$(command -v git) || fail "hooks_path_fails: no git on PATH"
+  must mkdir -p "$TMP/shim"
+  cat > "$TMP/shim/git" <<SHIM
+#!/bin/sh
+case " \$* " in
+  *" config "*" --get core.hooksPath"*)
+    echo "fatal: simulated failure reading core.hooksPath" >&2
+    exit 128
+    ;;
+esac
+exec "$real" "\$@"
+SHIM
+  must chmod +x "$TMP/shim/git"
+  PATH="$TMP/shim:$PATH"
+  export PATH
+}
+
+# core.hooksPath that git cannot read is not "unset": exit code 1 means unset, anything else is an error.
+test_a_hooks_path_git_cannot_read_stops_install_hooks() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  hooks_path_fails
+  run "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot read core.hooksPath: fatal: simulated failure reading core.hooksPath"
+  if [ -e .git/hooks/pre-commit ]; then fail "a hook was written to the default directory"; fi
+}
+
+# An unset hooksPath (git config exits 1) and an empty one still mean the default directory.
+test_an_unset_hooks_path_still_means_the_default_hooks_dir() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "the hook went to the default directory"
+}

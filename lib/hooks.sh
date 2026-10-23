@@ -262,15 +262,16 @@ create_missing() {
 # the git common dir; a shared one outside them is printed only. An empty
 # core.hooksPath means unset: the default hooks directory is <common git dir>/hooks.
 install_hooks() {
-  local root target kind dir
+  local root target kind dir err
   root=$(repo_root)
   cd "$root" || die "cannot enter $root"
   hook_paths || die "cannot find the git directory"
   install_lock
-  target=$(hook_target)
+  target=$(hook_target) || exit 2
   kind=${target%% *}
   dir=${target#"$kind"}
   dir=${dir# }
+  HOOKS_KIND=$kind
   # The hooks call .gauntlet/bin/gauntlet from the repo root. A hook written where that is not an
   # executable fails every commit and push, so none is written: the message says what to do.
   # What is only printed is not written, so it is warned about.
@@ -282,7 +283,7 @@ install_hooks() {
   fi
   case "$kind" in
     husky|husky-v9|dir)
-      mkdir -p "$dir" || die "cannot create $dir"
+      err=$(mkdir -p "$dir" 2>&1) || hook_cannot_write "$dir" "$(hook_reason "$err")" "$HOOK_LINE_STAGED" "$HOOK_LINE_CI"
       add_hook_pair "$dir"
       ;;
     print) print_hook_pair "$dir" ;;
@@ -308,8 +309,21 @@ hook_paths() {
 # directory outside the repo and its git dir, printed only). Needs hook_paths first.
 # --path expands a leading ~ (so ~/.husky is the home directory's, not ./~/.husky).
 hook_target() {
-  local hooks_path husky hooks
-  hooks_path=$(git config --path --get core.hooksPath) || hooks_path=
+  local hooks_path husky hooks err reason rc=0
+  err=$(tmp_new) || die "cannot create a temp file"
+  hooks_path=$(git config --path --get core.hooksPath 2> "$err") || rc=$?
+  # git config --get exits 1 for a key that is not set. Any other status is git failing to read
+  # or expand the value, which is not "unset": the hooks would go to the wrong directory.
+  case "$rc" in
+    0) ;;
+    1) hooks_path= ;;
+    *)
+      reason=$(head -n 1 "$err")
+      rm -f "$err"
+      die "cannot read core.hooksPath: ${reason:-git exited with status $rc}"
+      ;;
+  esac
+  rm -f "$err"
   if husky=$(husky_hooks_path "$hooks_path"); then
     case "$husky" in
       */_) printf 'husky-v9 %s\n' "${husky%/_}" ;;
@@ -390,6 +404,32 @@ print_hook_pair() {
   print_only "$1/pre-push" "$HOOK_SHARED_CI"
 }
 
+# hook_reason <text>: the cause in the last line of a tool's or the shell's error, which reads
+# "<program>: <path>: <cause>": what follows the last ": ".
+hook_reason() {
+  local text=${1##*$'\n'}
+  printf '%s\n' "${text##*: }"
+}
+
+# hook_cannot_write <path> <reason> <line>...: a hook, or the directory for it, cannot be written.
+# Say which path and why, what to do, and give the exact line to add by hand; exit 2. Nothing
+# else is written: the first failure ends the command, like every other refusal.
+hook_cannot_write() {
+  local path=$1 reason=$2
+  shift 2
+  printf 'gauntlet: cannot write %s: %s; fix the permissions or add the line by hand\n' "$(path_spell "$(display_path "$path")")" "$(path_spell "$reason")" >&2
+  printf '%s\n' "$@" >&2
+  exit 2
+}
+
+# hook_overwrite <new-content-file> <hook> <line>: write the content over <hook> (which keeps its
+# mode when it exists; a move of the temp file would not). The shell's own redirect error is
+# captured, not printed raw: hook_cannot_write names the cause and the line to add by hand.
+hook_overwrite() {
+  local err
+  err=$({ cat "$1" > "$2"; } 2>&1) || hook_cannot_write "$2" "$(hook_reason "$err")" "$3"
+}
+
 # add_hook_line <file> <plain> <gate> [<old-plain> <old-gate>]: the gate runs first in a hook
 # we may edit. The gate form goes on the line right after the shebang (line 1 when there is
 # none), so it runs before anything the project's own hook does, and an early exit, a trailing
@@ -420,13 +460,19 @@ add_hook_line() {
     return 0
   fi
   if [ ! -e "$file" ]; then
-    printf '#!/usr/bin/env sh\n%s\n' "$line" > "$file" || die "cannot create $file"
+    tmp=$(tmp_new) || die "cannot create a temp file"
+    printf '#!/usr/bin/env sh\n%s\n' "$line" > "$tmp" || die "cannot create a temp file"
+    hook_overwrite "$tmp" "$file" "$line"
+    rm -f "$tmp"
     chmod +x "$file" || die "cannot make $file executable"
     printf 'created %s\n' "$(display_path "$file")"
     return 0
   fi
   if [ ! -s "$file" ]; then
-    printf '#!/usr/bin/env sh\n%s\n' "$line" > "$file" || die "cannot write $file"
+    tmp=$(tmp_new) || die "cannot create a temp file"
+    printf '#!/usr/bin/env sh\n%s\n' "$line" > "$tmp" || die "cannot create a temp file"
+    hook_overwrite "$tmp" "$file" "$line"
+    rm -f "$tmp"
     printf 'added gauntlet line to %s\n' "$(display_path "$file")"
     warn_if_not_executable "$file"
     return 0
@@ -436,8 +482,7 @@ add_hook_line() {
     rm -f "$tmp"
     die "cannot read $file"
   fi
-  # Writing over the file keeps its mode; moving the temp file would not.
-  cat "$tmp" > "$file" || { rm -f "$tmp"; die "cannot write $file"; }
+  hook_overwrite "$tmp" "$file" "$gate"
   rm -f "$tmp"
   printf 'added gauntlet line to %s\n' "$(display_path "$file")"
   warn_if_not_executable "$file"
@@ -460,7 +505,7 @@ upgrade_gate_line() {
     head -c "$((size - 1))" "$tmp" > "$tmp.cut" || { rm -f "$tmp" "$tmp.cut"; die "cannot read $file"; }
     mv "$tmp.cut" "$tmp" || { rm -f "$tmp" "$tmp.cut"; die "cannot read $file"; }
   fi
-  cat "$tmp" > "$file" || { rm -f "$tmp"; die "cannot write $file"; }
+  hook_overwrite "$tmp" "$file" "$3"
   rm -f "$tmp"
 }
 
@@ -550,11 +595,19 @@ print_only() {
   fi
 }
 
-# warn_if_not_executable <file>: git ignores a hook without the exec bit. Never
-# changes the mode of a file that already exists.
+# hook_needs_exec <kind>: whether a hook of this hook_target kind must have the exec bit. git
+# ignores a hook file without it, except in a husky v9 layout, whose wrapper runs the user's file
+# through sh. install-hooks warns (warn_if_not_executable) and doctor fails by this one predicate.
+hook_needs_exec() {
+  [ "$1" != husky-v9 ]
+}
+
+# warn_if_not_executable <file>: git ignores a hook without the exec bit, where hook_needs_exec
+# says it matters (HOOKS_KIND is the kind install_hooks found). Never changes the mode of a file
+# that already exists.
 warn_if_not_executable() {
-  if [ ! -x "$1" ]; then
-    printf 'warning: %s is not executable; git will ignore it\n' "$(display_path "$1")" >&2
+  if hook_needs_exec "${HOOKS_KIND:-}" && [ ! -x "$1" ]; then
+    printf 'warning: %s is not executable; git will ignore it\n' "$(path_spell "$(display_path "$1")")" >&2
   fi
 }
 

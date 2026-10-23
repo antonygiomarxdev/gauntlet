@@ -1757,3 +1757,26 @@ test_doctor_fails_a_shared_script_that_is_not_executable() {
   run "$G" doctor
   assert_contains "$OUT" "FAIL hook .git/hooks/pre-commit is not executable: chmod +x .git/hooks/pre-commit"
 }
+
+# core.hooksPath that git cannot read: doctor stops with git's message instead of judging the default directory.
+test_doctor_stops_on_a_hooks_path_git_cannot_read() {
+  local real
+  mkrepo
+  doctor_install
+  real=$(command -v git)
+  must mkdir -p "$TMP/shim"
+  cat > "$TMP/shim/git" <<SHIM
+#!/bin/sh
+case " \$* " in
+  *" config "*" --get core.hooksPath"*)
+    echo "fatal: simulated failure reading core.hooksPath" >&2
+    exit 128
+    ;;
+esac
+exec "$real" "\$@"
+SHIM
+  must chmod +x "$TMP/shim/git"
+  run env PATH="$TMP/shim:$PATH" "$G" doctor
+  assert_eq 2 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot read core.hooksPath: fatal: simulated failure reading core.hooksPath"
+}
