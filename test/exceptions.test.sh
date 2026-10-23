@@ -55,6 +55,34 @@ test_waive_exempts_new_on_branch() {
   assert_contains "$OUT" "FAIL (1 problems)"
 }
 
+# R29: waive, loosen and remove run from the repo root whatever the working directory.
+# The row for a path is root-relative, so waive finds pkg/sub/f.ts from pkg/sub too.
+test_waive_from_a_subdirectory_writes_the_root_row() {
+  exc_setup 'ok'
+  must mkdir -p pkg/sub
+  printf 'x\n' > pkg/sub/f.ts
+  must cd pkg/sub
+  run "$G" waive pkg/sub/f.ts "from below"
+  assert_eq 0 "$STATUS" "waive from pkg/sub: $OUT"
+  must cd ../..
+  assert_contains "$(cat .gauntlet/exceptions.tsv)" "waive	pkg/sub/f.ts	from below	"
+  if [ -e pkg/sub/.gauntlet ]; then fail "a .gauntlet directory appeared in pkg/sub"; fi
+}
+
+test_loosen_and_remove_from_a_subdirectory_write_the_root_rows() {
+  exc_setup 'ok'
+  must mkdir -p pkg/sub
+  must cd pkg/sub
+  run "$G" loosen todo "severity block -> track" "from below"
+  assert_eq 0 "$STATUS" "loosen from pkg/sub: $OUT"
+  run "$G" remove todo "from below"
+  assert_eq 0 "$STATUS" "remove from pkg/sub: $OUT"
+  must cd ../..
+  assert_contains "$(cat .gauntlet/exceptions.tsv)" "loosen	todo: severity block -> track	from below	"
+  assert_contains "$(cat .gauntlet/exceptions.tsv)" "remove	todo	from below	"
+  if [ -e pkg/sub/.gauntlet ]; then fail "a .gauntlet directory appeared in pkg/sub"; fi
+}
+
 test_waived_global_rise_counts_once() {
   exc_setup 'ok'
   printf 'TODO 1\nTODO 2\n' > a.ts

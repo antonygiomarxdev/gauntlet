@@ -85,6 +85,30 @@ test_validate_script_needs_exception() {
   assert_eq 0 "$STATUS" "status with row"
 }
 
+# exc_has_script asks only whether this rule has a script row: no file is no row, and a
+# row for another rule is not this rule's.
+test_exc_has_script_is_false_without_the_file() {
+  mkrepo
+  rules_lib
+  must rm .gauntlet/exceptions.tsv
+  run exc_has_script x
+  assert_eq 1 "$STATUS" "no exceptions.tsv: $OUT"
+}
+
+test_exc_has_script_is_false_for_another_rules_row() {
+  mkrepo
+  rules_lib
+  script_row y
+  run exc_has_script x
+  assert_eq 1 "$STATUS" "a row for y is not x's: $OUT"
+  run exc_has_script y
+  assert_eq 0 "$STATUS" "y has its row: $OUT"
+  rule x engine=script
+  run rule_validate .gauntlet/rules/x.md
+  assert_eq 1 "$STATUS" "x still needs a row: $OUT"
+  assert_contains "$OUT" "exceptions.tsv"
+}
+
 test_stage_defaults_to_commit() {
   mkrepo
   rules_lib

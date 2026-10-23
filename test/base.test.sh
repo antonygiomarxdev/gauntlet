@@ -114,6 +114,17 @@ test_at_base_absent_path_prints_nothing() {
   assert_eq "" "$(at_base "$sha" missing.txt)" "absent"
 }
 
+# Absent is not an error: the gate reads files the base never had (a rules directory
+# with no exceptions.tsv) and takes the empty answer.
+test_at_base_of_an_absent_path_returns_0_and_prints_nothing() {
+  mkrepo
+  base_lib
+  sha=$(git rev-parse HEAD)
+  run at_base "$sha" missing.txt
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_eq "" "$OUT" "output"
+}
+
 test_base_outside_repo_exits_2() {
   cd "$TMP" || fail "cd failed"
   run "$G" base
