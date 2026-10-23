@@ -1,9 +1,10 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2153 # ROOT, G and STATUS are set by test/lib.sh
 # Tests for check --staged, the commit gate run from pre-commit: new violations
-# block, a commit that lowers debt carries the lowered baseline, partial staging
-# skips auto-tighten, push-stage rules do not run, and the budget only warns. Each
-# commit test installs the pre-commit hook by hand and runs a real git commit.
+# block, a commit carries the baseline it measures, partial staging and unstaged
+# baseline edits skip auto-tighten, push-stage rules do not run, and the budget
+# only warns. Each commit test installs the pre-commit hook by hand and runs a
+# real git commit.
 
 # staged_setup <content> [rule options...]: a main branch with one todo rule over
 # **/*.ts, a baseline committed on it, the pre-commit hook installed, then branch
@@ -14,6 +15,7 @@ staged_setup() {
   mkrepo
   printf '%s\n' "$content" > a.ts
   rule todo paths='**/*.ts' "$@"
+  cases_of todo 'TODO x'
   staged_baseline
   must git add -A
   must git commit -q -m main
@@ -41,6 +43,24 @@ staged_committed_baseline() {
   git show "HEAD:.gauntlet/baseline.tsv"
 }
 
+# staged_assert_exact [rule-regex]: on a clean tree, a fresh measure matches the
+# committed baseline, whole file or only the rules the regex names. The commit gate
+# never measures push-stage rules, so fixtures that have one compare commit rows only.
+staged_assert_exact() {
+  assert_eq "" "$(git status --short)" "clean tree"
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "fresh baseline"
+  if [ "$#" -eq 0 ]; then
+    run git diff --exit-code -- .gauntlet/baseline.tsv
+    assert_eq 0 "$STATUS" "committed baseline equals a fresh measure"
+    return 0
+  fi
+  local want got
+  want=$(grep -E "^($1)"$'\t' .gauntlet/baseline.tsv || true)
+  got=$(staged_committed_baseline | grep -E "^($1)"$'\t' || true)
+  assert_eq "$want" "$got" "commit-stage rows equal a fresh measure"
+}
+
 test_staged_new_violation_blocks() {
   staged_setup 'ok'
   printf 'TODO fix\n' > a.ts
@@ -66,7 +86,7 @@ test_blocked_commit_keeps_head_and_message() {
   assert_eq 1 "$STATUS" "commit status"
   assert_eq "$before" "$(git rev-parse HEAD)" "HEAD"
   assert_eq "$subject" "$(git log -1 --format=%s)" "subject"
-  assert_eq "a.ts" "$(git diff --cached --name-only)" "still staged, baseline not staged"
+  assert_eq "M  a.ts" "$(git status --short)" "only the change is staged; the baseline is untouched"
 }
 
 test_fix_lands_with_lower_baseline_same_commit() {
@@ -77,7 +97,7 @@ test_fix_lands_with_lower_baseline_same_commit() {
   assert_eq 0 "$STATUS" "commit status"
   assert_contains "$(git show --stat --format= HEAD)" ".gauntlet/baseline.tsv"
   assert_not_contains "$(staged_committed_baseline)" "a.ts"
-  assert_eq "" "$(git status --short)" "clean tree"
+  staged_assert_exact
 }
 
 test_commit_a_flag_also_tightens() {
@@ -87,7 +107,7 @@ test_commit_a_flag_also_tightens() {
   assert_eq 0 "$STATUS" "commit status"
   assert_contains "$(git show --stat --format= HEAD)" ".gauntlet/baseline.tsv"
   assert_not_contains "$(staged_committed_baseline)" "a.ts"
-  assert_eq "" "$(git status --short)" "clean tree"
+  staged_assert_exact
 }
 
 test_partial_stage_skips_tighten() {
@@ -101,6 +121,17 @@ test_partial_stage_skips_tighten() {
   assert_not_contains "$(git show --stat --format= HEAD)" ".gauntlet/baseline.tsv"
   assert_contains "$(staged_committed_baseline)" "TODO two"
   assert_eq " M a.ts" "$(git status --short)" "the unstaged change stays"
+}
+
+test_partial_notice_printed_on_failure() {
+  staged_setup 'TODO here'
+  printf 'TODO here\nok\n' > a.ts
+  must git add a.ts
+  printf 'TODO here\nTODO fix\n' > a.ts
+  run git commit -q -m "feat: blocked partial"
+  assert_eq 1 "$STATUS" "commit status"
+  assert_contains "$OUT" "[new]"
+  assert_contains "$OUT" "partially staged; run gauntlet baseline before pushing"
 }
 
 test_deleted_file_rows_removed() {
@@ -117,7 +148,40 @@ test_deleted_file_rows_removed() {
   run git commit -q -m "chore: remove a.ts"
   assert_eq 0 "$STATUS" "commit status"
   assert_not_contains "$(staged_committed_baseline)" "a.ts"
-  assert_eq "" "$(git status --short)" "clean tree"
+  staged_assert_exact
+}
+
+test_commit_a_removes_deleted_file_and_tightens() {
+  staged_setup 'TODO here'
+  rm -f a.ts
+  run git commit -q -a -m "chore: delete a.ts"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_not_contains "$OUT" "partially staged"
+  assert_not_contains "$OUT" "broken detector"
+  assert_not_contains "$(staged_committed_baseline)" "a.ts"
+  staged_assert_exact
+}
+
+test_staged_then_deleted_file_does_not_fail() {
+  staged_setup 'ok'
+  printf 'ok\n' > n.ts
+  must git add n.ts
+  rm -f n.ts
+  run git commit -q -m "chore: staged then deleted"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_not_contains "$OUT" "broken detector"
+  assert_contains "$OUT" "partially staged"
+}
+
+test_modified_then_deleted_file_does_not_fail() {
+  staged_setup 'TODO here'
+  printf 'TODO here\nok\n' > a.ts
+  must git add a.ts
+  rm -f a.ts
+  run git commit -q -m "chore: modified then deleted"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_not_contains "$OUT" "broken detector"
+  assert_contains "$OUT" "partially staged"
 }
 
 test_unstaged_path_rows_kept() {
@@ -136,6 +200,54 @@ test_unstaged_path_rows_kept() {
   assert_eq 0 "$STATUS" "commit status"
   assert_not_contains "$(staged_committed_baseline)" "a.ts"
   assert_contains "$(staged_committed_baseline)" "b.ts"
+  staged_assert_exact
+}
+
+test_measure_sees_only_staged_paths() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  printf 'ok\n' > b.ts
+  cat > seen.sh <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" >> .git/seen.log
+exec rg --with-filename --line-number --no-heading TODO "$@"
+EOF
+  rule seen paths='**/*.ts' severity=shadow detector='sh ./seen.sh {files}'
+  staged_baseline
+  must git add -A
+  must git commit -q -m main
+  staged_hook
+  must git checkout -q -b feat
+  rm -f .git/seen.log
+  printf 'TODO a\n' > a.ts
+  must git add a.ts
+  printf 'TODO b\n' > b.ts
+  run git commit -q -m "feat: a only"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_contains "$(cat .git/seen.log)" "a.ts"
+  assert_not_contains "$(cat .git/seen.log)" "b.ts"
+}
+
+test_whole_program_rows_not_appended() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  printf 'ok\n' > b.ts
+  rule whole paths='**/*.ts' severity=shadow detector="rg --with-filename --line-number --no-heading 'TODO' ."
+  staged_baseline
+  must git add -A
+  must git commit -q -m main
+  staged_hook
+  must git checkout -q -b feat
+  printf 'TODO a\n' > a.ts
+  must git add a.ts
+  printf 'TODO b\n' > b.ts
+  run git commit -q -m "feat: first"
+  assert_eq 0 "$STATUS" "first commit status"
+  printf 'TODO a2\n' > a.ts
+  must git add a.ts
+  run git commit -q -m "feat: second"
+  assert_eq 0 "$STATUS" "second commit status"
+  assert_eq $'whole\ta.ts\tTODO a2\t1' "$(staged_committed_baseline)"
 }
 
 test_push_stage_rules_not_run_at_commit() {
@@ -153,6 +265,99 @@ test_push_stage_rules_not_run_at_commit() {
   run git commit -q -m "chore: push-only finding"
   assert_eq 0 "$STATUS" "commit status"
   assert_not_contains "$OUT" "pushy"
+  staged_assert_exact todo
+}
+
+test_new_rule_baseline_survives_hook() {
+  staged_setup 'ok'
+  rule fixme paths='**/*.ts' detector="rg --with-filename --line-number --no-heading 'FIXME' {files}"
+  cases_of fixme 'FIXME x'
+  printf 'FIXME x\n' > a.ts
+  must git add .gauntlet/rules/fixme.md .gauntlet/rules/fixme.bad.txt .gauntlet/rules/fixme.good.txt a.ts
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "regenerate"
+  run git commit -q -m "feat: add fixme rule"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_contains "$OUT" "baseline.tsv has unstaged changes"
+  assert_contains "$(cat .gauntlet/baseline.tsv)" "fixme"
+  must git add .gauntlet/baseline.tsv
+  run git commit -q -m "chore: regenerate baseline"
+  assert_eq 0 "$STATUS" "advised commit status"
+  assert_contains "$(staged_committed_baseline)" $'fixme\ta.ts\tFIXME x\t1'
+  run "$G" check --ci --base main
+  assert_eq 0 "$STATUS" "check --ci"
+  assert_contains "$OUT" "gauntlet: ok"
+}
+
+test_regenerated_baseline_staged_with_commit_is_kept() {
+  staged_setup 'ok'
+  rule fixme paths='**/*.ts' detector="rg --with-filename --line-number --no-heading 'FIXME' {files}"
+  cases_of fixme 'FIXME x'
+  printf 'FIXME x\n' > a.ts
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "regenerate"
+  must git add -A
+  run git commit -q -m "feat: add fixme rule"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_contains "$(staged_committed_baseline)" $'fixme\ta.ts\tFIXME x\t1'
+  staged_assert_exact
+}
+
+test_push_rule_baseline_survives_hook() {
+  staged_setup 'ok'
+  rule pushy paths='**/*.ts' stage=push detector="rg --with-filename --line-number --no-heading 'FIXME' {files}"
+  cases_of pushy 'FIXME x'
+  printf 'FIXME x\n' > a.ts
+  must git add .gauntlet/rules/pushy.md .gauntlet/rules/pushy.bad.txt .gauntlet/rules/pushy.good.txt a.ts
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "regenerate"
+  run git commit -q -m "feat: push-only rule"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_contains "$OUT" "baseline.tsv has unstaged changes"
+  assert_contains "$(cat .gauntlet/baseline.tsv)" "pushy"
+  must git add .gauntlet/baseline.tsv
+  run git commit -q -m "chore: regenerate baseline"
+  assert_eq 0 "$STATUS" "advised commit status"
+  assert_contains "$(staged_committed_baseline)" $'pushy\ta.ts\tFIXME x\t1'
+  run "$G" check --ci --base main
+  assert_eq 0 "$STATUS" "check --ci"
+  assert_contains "$OUT" "gauntlet: ok"
+}
+
+test_empty_commit_leaves_unstaged_baseline() {
+  staged_setup 'TODO here'
+  printf 'TODO here\nTODO two\n' > a.ts
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "regenerate"
+  must cp .gauntlet/baseline.tsv "$TMP/regen.tsv"
+  local head_before
+  head_before=$(git show HEAD:.gauntlet/baseline.tsv)
+  run git commit -q --allow-empty -m "chore: empty commit"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_contains "$OUT" "baseline.tsv has unstaged changes"
+  assert_not_contains "$OUT" "baseline updated"
+  must cmp -s .gauntlet/baseline.tsv "$TMP/regen.tsv"
+  assert_eq "$head_before" "$(git show HEAD:.gauntlet/baseline.tsv)" "HEAD baseline unchanged"
+}
+
+test_partial_commit_by_path_skips_tighten() {
+  mkrepo
+  printf 'TODO here\n' > a.ts
+  printf 'ok\n' > c.ts
+  rule todo paths='**/*.ts'
+  staged_baseline
+  must git add -A
+  must git commit -q -m main
+  staged_hook
+  must git checkout -q -b feat
+  printf 'ok\n' > a.ts
+  printf 'ok two\n' > c.ts
+  run git commit -q -m "fix: c only" c.ts
+  assert_eq 0 "$STATUS" "commit status"
+  assert_contains "$OUT" "partial commit by path; run gauntlet baseline before pushing"
+  assert_contains "$(staged_committed_baseline)" "a.ts"
+  assert_eq " M a.ts" "$(git status --short)" "no baseline change is left behind"
 }
 
 test_first_commit_passes_with_note() {
@@ -175,6 +380,23 @@ test_first_commit_passes_with_note() {
   must git rev-parse -q --verify HEAD > /dev/null
 }
 
+test_no_baseline_at_head_skips_checks() {
+  mkrepo
+  rule todo paths='**/*.ts'
+  must git add -A
+  must git commit -q -m "rules"
+  must git rm -q .gauntlet/baseline.tsv
+  must git commit -q -m "drop baseline"
+  staged_hook
+  must git checkout -q -b feat
+  printf 'TODO fix\n' > a.ts
+  must git add a.ts
+  run git commit -q -m "feat: change without a baseline at HEAD"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_contains "$OUT" "no baseline at HEAD"
+  assert_not_contains "$(git show --stat --format= HEAD)" "baseline.tsv"
+}
+
 test_over_budget_warns_not_fails() {
   staged_setup 'ok'
   printf 'still ok\n' > a.ts
@@ -182,6 +404,25 @@ test_over_budget_warns_not_fails() {
   run env GAUNTLET_COMMIT_BUDGET_MS=1 git commit -q -m "chore: tweak"
   assert_eq 0 "$STATUS" "commit status"
   assert_contains "$OUT" "[slow] over the 5 s commit budget"
+}
+
+test_normal_run_is_not_slow() {
+  staged_setup 'ok'
+  printf 'ok two\n' > a.ts
+  must git add a.ts
+  run git commit -q -m "chore: normal"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_not_contains "$OUT" "[slow]"
+}
+
+test_huge_budget_is_quiet() {
+  staged_setup 'ok'
+  printf 'ok two\n' > a.ts
+  must git add a.ts
+  run env GAUNTLET_COMMIT_BUDGET_MS=99999999999999999999 git commit -q -m "chore: huge budget"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_not_contains "$OUT" "integer expression"
+  assert_not_contains "$OUT" "[slow]"
 }
 
 test_rename_drops_old_rows_adds_new() {
@@ -192,6 +433,7 @@ test_rename_drops_old_rows_adds_new() {
   assert_eq 0 "$STATUS" "commit status"
   assert_not_contains "$(staged_committed_baseline)" "a.ts"
   assert_contains "$(staged_committed_baseline)" "b.ts"
+  staged_assert_exact
 }
 
 test_rename_with_fix_drops_old_rows() {
@@ -202,7 +444,7 @@ test_rename_with_fix_drops_old_rows() {
   run git commit -q -m "refactor: rename and fix"
   assert_eq 0 "$STATUS" "commit status"
   assert_not_contains "$(staged_committed_baseline)" "a.ts"
-  assert_eq "" "$(git status --short)" "clean tree"
+  staged_assert_exact
 }
 
 test_path_with_space_tightens() {
@@ -220,7 +462,50 @@ test_path_with_space_tightens() {
   run git commit -q -m "fix: spaced path"
   assert_eq 0 "$STATUS" "commit status"
   assert_not_contains "$(staged_committed_baseline)" "my dir"
-  assert_eq "" "$(git status --short)" "clean tree"
+  staged_assert_exact
+}
+
+test_mixed_case_paths_sort_in_c_locale() {
+  if ! locale -a 2>/dev/null | grep -qiE '^en_US\.utf-?8$'; then
+    printf 'skip: en_US.UTF-8 is not installed; the locale check did not run\n' >&2
+    return 0
+  fi
+  mkrepo
+  printf 'TODO a\nTODO a2\n' > a.ts
+  printf 'TODO B\n' > B.ts
+  rule todo paths='**/*.ts'
+  staged_baseline
+  must git add -A
+  must git commit -q -m main
+  staged_hook
+  must git checkout -q -b feat
+  printf 'TODO a\nok\n' > a.ts
+  must git add a.ts
+  run env LC_ALL=en_US.UTF-8 git commit -q -m "feat: drop a2"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_eq "$(printf 'todo\tB.ts\tTODO B\t1\ntodo\ta.ts\tTODO a\t1')" "$(staged_committed_baseline)" \
+    "rows in C order, as baseline writes them"
+  staged_assert_exact
+}
+
+test_track_partial_totals_at_commit() {
+  mkrepo
+  printf 'XXX a\n' > a.ts
+  printf 'XXX b\n' > b.ts
+  rule xxx paths='**/*.ts' severity=track detector="rg --with-filename --line-number --no-heading 'XXX' {files}"
+  staged_baseline
+  must git add -A
+  must git commit -q -m main
+  staged_hook
+  must git checkout -q -b feat
+  printf 'XXX a\nXXX a2\n' > a.ts
+  must git add a.ts
+  printf 'XXX b\nXXX b2\n' > b.ts
+  run git commit -q -m "feat: a2"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_contains "$OUT" "  xxx  2 → 3 (+1); consider promoting"
+  assert_eq "$(printf 'xxx\ta.ts\tXXX a\t1\nxxx\ta.ts\tXXX a2\t1\nxxx\tb.ts\tXXX b\t1')" \
+    "$(staged_committed_baseline)" "committed rows: staged a.ts, index b.ts"
 }
 
 test_shadow_rise_is_tightened() {
@@ -231,7 +516,17 @@ test_shadow_rise_is_tightened() {
   assert_eq 0 "$STATUS" "commit status"
   assert_contains "$OUT" "[shadow] would have failed"
   assert_contains "$(staged_committed_baseline)" "TODO fix"
-  assert_eq "" "$(git status --short)" "clean tree"
+  staged_assert_exact
+}
+
+test_unchanged_baseline_prints_no_update() {
+  staged_setup 'TODO here'
+  printf 'TODO here\nok\n' > a.ts
+  must git add a.ts
+  run git commit -q -m "chore: same debt"
+  assert_eq 0 "$STATUS" "commit status"
+  assert_not_contains "$OUT" "baseline updated"
+  staged_assert_exact
 }
 
 test_track_rise_reported_at_commit() {
@@ -250,6 +545,7 @@ test_track_rise_reported_at_commit() {
   assert_eq 0 "$STATUS" "commit status"
   assert_contains "$OUT" "consider promoting"
   assert_contains "$(staged_committed_baseline)" "XXX y"
+  staged_assert_exact
 }
 
 test_waived_new_violation_passes() {
@@ -275,6 +571,18 @@ test_touched_gate_blocks_at_commit() {
   assert_contains "$OUT" "FAIL (1 problems)"
 }
 
+test_touched_off_runs_no_diff() {
+  staged_setup 'TODO here'
+  run env GIT_TRACE="$TMP/trace.off" "$G" check --ci --base main
+  assert_eq 0 "$STATUS" "touched off status"
+  assert_not_contains "$(cat "$TMP/trace.off")" "name-status"
+  printf 'touched=on\n' > .gauntlet/config
+  must git add .gauntlet/config
+  must git commit -q -m "chore: touched on"
+  run env GIT_TRACE="$TMP/trace.on" "$G" check --ci --base main
+  assert_contains "$(cat "$TMP/trace.on")" "name-status"
+}
+
 test_new_rule_exempt_at_commit_rows_added() {
   staged_setup 'ok'
   rule fixme paths='**/*.ts' detector="rg --with-filename --line-number --no-heading 'FIXME' {files}"
@@ -283,10 +591,13 @@ test_new_rule_exempt_at_commit_rows_added() {
   run git commit -q -m "feat: new rule"
   assert_eq 0 "$STATUS" "commit status"
   assert_contains "$(staged_committed_baseline)" "fixme"
+  staged_assert_exact
 }
 
 test_detached_head_checks_without_waivers() {
   staged_setup 'ok'
+  printf 'waive\ta.ts\taccepted\t2026-10-22\tHEAD\n' >> .gauntlet/exceptions.tsv
+  must git add .gauntlet/exceptions.tsv
   must git checkout -q --detach
   printf 'TODO fix\n' > a.ts
   must git add a.ts

@@ -104,7 +104,11 @@ check_run() {
       awk -F '\t' '{ printf "  %s  %s → %s\n", $1, $2, $3 }' "$scratch/global.rows" >> "$body"
     fi
     global_n=$(count_global_extra "$scratch/new.rows" "$scratch/global.rows") || return 2
-    git_nul_lines -c core.quotepath=off diff -M -z --name-status "$sha" HEAD > "$scratch/touched.diff" || return 2
+    # The diff is read only when the touched gate is on: touched=off makes no git call.
+    : > "$scratch/touched.diff"
+    if [ "$mode" = on ]; then
+      git_nul_lines -c core.quotepath=off diff -M -z --name-status "$sha" HEAD > "$scratch/touched.diff" || return 2
+    fi
     cmp_touched "$scratch/touched.diff" "$scratch/base.tsv" "$scratch/now/measure.tsv" "$scratch/rules.tsv" \
       "$scratch/waived" > "$scratch/touched.rows" || return 2
     if [ -s "$scratch/touched.rows" ]; then
@@ -629,8 +633,9 @@ list_missing() {
 # judges the working-tree content of the staged files against HEAD's baseline:
 # new block violations and touched files block; shadow and track are reported.
 # Only stage=commit rules run here; push owns the rest. On a pass it rewrites
-# .gauntlet/baseline.tsv and stages it into this commit. Prints the report and
-# returns 0 (ok), 1 (problems) or 2 (setup broken).
+# the index's .gauntlet/baseline.tsv and stages it into this commit, so the
+# commit carries the baseline it measures. Prints the report and returns 0 (ok),
+# 1 (problems) or 2 (setup broken).
 check_staged() {
   local start status=0 scratch
   start=$(now_ms)
@@ -642,12 +647,13 @@ check_staged() {
 }
 
 # check_staged_run <scratch> <start-ms>: the work of check_staged, with every
-# intermediate file kept in <scratch>. HEAD plays the part of the base: its
-# baseline and its rules are the ones the commit is judged against.
+# intermediate file kept in <scratch>. The checks compare with HEAD's baseline.
+# Auto-tighten starts from the baseline as the index holds it (the one this
+# commit would carry), so a regenerated baseline is never reverted by the hook.
 check_staged_run() {
-  local scratch=$1 start=$2 root branch id stage sev fix atb rf budget
-  local known=0 partial=0 new_n=0 touched_n=0 problems=0 n_commit ms end
-  local body
+  local scratch=$1 start=$2 root branch id stage sev fix atb rf budget base_name
+  local known=0 partial=0 by_path=0 has_index=0 unstaged_base=0
+  local new_n=0 touched_n=0 problems=0 n_commit ms end body
   local -a ids
   body="$scratch/body"
   budget=${GAUNTLET_COMMIT_BUDGET_MS:-5000}
@@ -724,32 +730,55 @@ check_staged_run() {
     { print; need-- }
   ' "$scratch/staged.diff" > "$scratch/staged.paths" || return 2
 
+  # A whole-program detector reports every file: only the staged paths' rows are
+  # kept, before any check or tighten reads them.
+  filter_to_staged "$scratch" "$scratch/now/measure.tsv" || return 2
+  filter_to_staged "$scratch" "$scratch/now/located.tsv" || return 2
+
   # Partial staging (decision 4): a staged path that also has unstaged changes.
-  # Auto-tighten is skipped for it; the check still runs and still blocks.
+  # The baseline is left out: this hook is the one that writes it.
   git_nul_lines -c core.quotepath=off diff --name-only --no-renames -z > "$scratch/unstaged" || return 2
-  partial=$(GL_STAGED="$scratch/staged.paths" awk '
-    FILENAME == ENVIRON["GL_STAGED"] { staged[$0] = 1; next }
+  partial=$(GL_STAGED="$scratch/staged.paths" GL_BASELINE=.gauntlet/baseline.tsv awk '
+    FILENAME == ENVIRON["GL_STAGED"] { if ($0 != ENVIRON["GL_BASELINE"]) staged[$0] = 1; next }
     $0 in staged { hit = 1 }
     END { print hit + 0 }
   ' "$scratch/staged.paths" "$scratch/unstaged") || return 2
 
-  # HEAD's baseline is the base. Without one the commit checks are skipped and
-  # nothing is tightened (onboarding, as in check --ci).
+  # `git commit <path>` runs the hook on a next-index-<pid> file: its add never
+  # reaches the index the commit keeps, so auto-tighten cannot land (see ADR-0007).
+  base_name=${GIT_INDEX_FILE:-}
+  base_name=${base_name##*/}
+  case "$base_name" in next-index-*) by_path=1 ;; esac
+
+  # HEAD's baseline is the reference for the new, touched, shadow and track checks.
   : > "$scratch/base.tsv"
   if git cat-file -e "HEAD:.gauntlet/baseline.tsv" 2>/dev/null; then
     known=1
     at_base HEAD .gauntlet/baseline.tsv > "$scratch/base.tsv" || return 2
   fi
+  # The index's baseline is what auto-tighten starts from.
+  : > "$scratch/index.tsv"
+  if git cat-file -e ":.gauntlet/baseline.tsv" 2>/dev/null; then
+    has_index=1
+    git show ":.gauntlet/baseline.tsv" > "$scratch/index.tsv" || return 2
+  fi
+  # Unstaged work in the baseline: tighten never overwrites it.
+  if [ "$known" -eq 1 ] && [ "$has_index" -eq 1 ]; then
+    if [ ! -f "$root/.gauntlet/baseline.tsv" ] || ! cmp -s "$root/.gauntlet/baseline.tsv" "$scratch/index.tsv"; then
+      unstaged_base=1
+    fi
+  fi
   LC_ALL=C sort -t "$DETECT_TAB" -k3,3n "$scratch/now/located.tsv" > "$scratch/located.byline" || return 2
 
-  # tight.tsv is the baseline this commit carries (ADR-0003): HEAD's rows, minus
-  # the commit-stage rows of every staged path, plus the rows just measured.
-  # Rows of push-stage rules and of unstaged paths stay as they are.
+  # tight.tsv is the baseline this commit carries (ADR-0003): the index's rows,
+  # minus the commit-stage rows of every staged path, plus the rows just measured.
+  # Rows of push-stage rules, of unstaged paths and of rules no longer on disk
+  # stay as the index has them.
   GL_IDS="$scratch/commit.ids" GL_STAGED="$scratch/staged.paths" awk -F "$DETECT_TAB" '
     FILENAME == ENVIRON["GL_IDS"] { commit[$0] = 1; next }
     FILENAME == ENVIRON["GL_STAGED"] { staged[$0] = 1; next }
     !(($1 in commit) && ($2 in staged))
-  ' "$scratch/commit.ids" "$scratch/staged.paths" "$scratch/base.tsv" > "$scratch/kept.tsv" || return 2
+  ' "$scratch/commit.ids" "$scratch/staged.paths" "$scratch/index.tsv" > "$scratch/kept.tsv" || return 2
   cat "$scratch/kept.tsv" "$scratch/now/measure.tsv" > "$scratch/tight.raw" || return 2
   LC_ALL=C sort "$scratch/tight.raw" > "$scratch/tight.tsv" || return 2
 
@@ -786,18 +815,29 @@ check_staged_run() {
   # R18: one problem per [new] line and one per [touched] line not explained by a
   # [new] line. Shadow and track count nothing.
   problems=$((new_n + touched_n))
-  # Auto-tighten runs only on a pass (decision 5). A partial stage skips it with a notice.
-  if [ "$known" -eq 1 ] && [ "$problems" -eq 0 ]; then
-    if [ "$partial" = 1 ]; then
+  # Each reason that keeps auto-tighten from running is printed, pass or fail.
+  if [ "$known" -eq 1 ]; then
+    if [ "$by_path" -eq 1 ]; then
+      printf 'note: partial commit by path; run gauntlet baseline before pushing\n' >> "$body"
+    fi
+    if [ "$partial" -eq 1 ]; then
       printf 'note: partially staged; run gauntlet baseline before pushing\n' >> "$body"
-    else
+    fi
+    if [ "$has_index" -eq 0 ]; then
+      printf 'note: baseline.tsv is not in the index; nothing tightened\n' >> "$body"
+    elif [ "$unstaged_base" -eq 1 ]; then
+      printf 'note: baseline.tsv has unstaged changes; run gauntlet baseline before pushing\n' >> "$body"
+    fi
+    # Auto-tighten runs only on a pass (decision 5), and only when nothing above skipped it.
+    if [ "$problems" -eq 0 ] && [ "$by_path" -eq 0 ] && [ "$partial" -eq 0 ] \
+      && [ "$has_index" -eq 1 ] && [ "$unstaged_base" -eq 0 ]; then
       tighten_baseline "$root" "$scratch" >> "$body" || return 2
     fi
   fi
 
   end=$(now_ms)
   ms=$((end - start))
-  if [ "$ms" -gt "$budget" ]; then
+  if GL_MS=$ms GL_BUDGET=$budget awk 'BEGIN { exit !(ENVIRON["GL_MS"] + 0 > ENVIRON["GL_BUDGET"] + 0) }'; then
     printf '[slow] over the 5 s commit budget\n' >> "$body"
   fi
   printf '[time]\n' >> "$body"
@@ -813,22 +853,27 @@ check_staged_run() {
   return 1
 }
 
-# tighten_baseline <root> <scratch>: write <scratch>/tight.tsv to the working-tree
-# .gauntlet/baseline.tsv when they differ, and git add it so it lands in the
-# commit that is being made (ADR-0007: the add must run in pre-commit). Prints one
-# line per commit-stage rule whose total changed, and returns 0; prints nothing
-# when the file already matches.
+# filter_to_staged <scratch> <file>: keep the rows of <file> whose path (field 2)
+# is a staged path, in place and in order. Both measured files have the path there.
+filter_to_staged() {
+  local scratch=$1 file=$2
+  GL_STAGED="$scratch/staged.paths" awk -F "$DETECT_TAB" '
+    FILENAME == ENVIRON["GL_STAGED"] { staged[$0] = 1; next }
+    ($2 in staged) { print }
+  ' "$scratch/staged.paths" "$file" > "$scratch/filter.tmp" || return 2
+  cp "$scratch/filter.tmp" "$file" || return 2
+}
+
+# tighten_baseline <root> <scratch>: when tight.tsv differs from the index's
+# baseline, write it to the working-tree .gauntlet/baseline.tsv and git add it, so
+# it lands in the commit being made (ADR-0007: the add must run in pre-commit).
+# The caller has checked that the working tree equals the index copy. Prints one
+# line per commit-stage rule whose total changed, or one line when only rows
+# moved. Prints nothing when nothing needed writing.
 tighten_baseline() {
-  local root=$1 scratch=$2 cur
-  cur="$root/.gauntlet/baseline.tsv"
-  if [ -f "$cur" ]; then
-    cp "$cur" "$scratch/old.tsv" || return 2
-    if cmp -s "$scratch/tight.tsv" "$cur"; then return 0; fi
-  else
-    : > "$scratch/old.tsv" || return 2
-  fi
-  # The totals are read before the file is replaced.
-  GL_IDS="$scratch/commit.ids" GL_OLD="$scratch/old.tsv" awk -F "$DETECT_TAB" '
+  local root=$1 scratch=$2
+  if cmp -s "$scratch/tight.tsv" "$scratch/index.tsv"; then return 0; fi
+  GL_IDS="$scratch/commit.ids" GL_OLD="$scratch/index.tsv" awk -F "$DETECT_TAB" '
     FILENAME == ENVIRON["GL_IDS"] { want[$0] = 1; next }
     FILENAME == ENVIRON["GL_OLD"] { old[$1] += $4; next }
     { new[$1] += $4 }
@@ -836,9 +881,9 @@ tighten_baseline() {
       for (r in want)
         if (old[r] + 0 != new[r] + 0) printf "%s\t%d\t%d\n", r, old[r] + 0, new[r] + 0
     }
-  ' "$scratch/commit.ids" "$scratch/old.tsv" "$scratch/tight.tsv" > "$scratch/tighten.raw" || return 2
+  ' "$scratch/commit.ids" "$scratch/index.tsv" "$scratch/tight.tsv" > "$scratch/tighten.raw" || return 2
   LC_ALL=C sort "$scratch/tighten.raw" > "$scratch/tighten.tsv" || return 2
-  cp "$scratch/tight.tsv" "$cur" || return 2
+  cp "$scratch/tight.tsv" "$root/.gauntlet/baseline.tsv" || return 2
   (cd "$root" && git add .gauntlet/baseline.tsv) || return 2
   if [ -s "$scratch/tighten.tsv" ]; then
     awk -F '\t' '{ printf "  %s  %s → %s   baseline updated and staged into this commit\n", $1, $2, $3 }' \

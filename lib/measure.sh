@@ -26,7 +26,15 @@ measure_in() {
   shift 4
   case "$mode" in
     all) (cd "$root" && tracked_files) > "$scratch/inputs" || return 2 ;;
-    staged) (cd "$root" && staged_files) > "$scratch/inputs" || return 2 ;;
+    staged)
+      # A staged path missing on disk (staged, then deleted) has no working-tree
+      # content to measure, so the detector never sees it.
+      (cd "$root" && staged_files) > "$scratch/staged.all" || return 2
+      : > "$scratch/inputs" || return 2
+      while IFS= read -r p; do
+        if [ -e "$root/$p" ] || [ -L "$root/$p" ]; then printf '%s\n' "$p"; fi
+      done < "$scratch/staged.all" > "$scratch/inputs" || return 2
+      ;;
     *)
       printf 'gauntlet: measure mode must be all or staged, got [%s]\n' "$mode" >&2
       return 2
