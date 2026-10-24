@@ -119,11 +119,11 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
   Implement `lib/core.sh` and the harness.
 - [ ] **Step 4:** Run `test/run.sh` and `shellcheck -x bin/gauntlet lib/*.sh test/*.sh`. Expected: all ok.
 - [ ] **Step 5:** Write `.github/workflows/test.yml`:
-  - triggers: `on: [push, pull_request]`;
+  - triggers: `push` to `main` and `pull_request`; `concurrency` cancels the run a newer push to the same ref replaces;
   - matrix: `ubuntu-latest` and `macos-latest`;
   - checkout with `fetch-depth: 0`;
-  - install tools: on ubuntu, `sudo apt-get install -y ripgrep shellcheck` and `pipx install ast-grep-cli`; on macOS, `brew install ripgrep ast-grep shellcheck`;
-  - then run shellcheck and `test/run.sh`.
+  - install tools: on ubuntu, `sudo apt-get install -y ripgrep shellcheck` and `pipx install ast-grep-cli==0.51.0` (pinned); on macOS, `brew install ripgrep ast-grep shellcheck`;
+  - then run shellcheck and `test/run.sh`; on ubuntu a second run with `GAUNTLET_TEST_BSD_DATE=1` covers a `date` without `%N`; on macOS a shim puts the system bash 3.2 first on `PATH` and the job fails if `bash` is not 3.x.
 
   Validate the YAML with `python3 -c 'import yaml,sys;yaml.safe_load(open(sys.argv[1]))' .github/workflows/test.yml`.
 - [ ] **Step 6:** Commit: `chore: add runner skeleton, test harness and CI`.
