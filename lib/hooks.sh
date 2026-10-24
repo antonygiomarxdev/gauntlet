@@ -279,6 +279,24 @@ install_source() {
   (cd "$GAUNTLET_BIN/.." && pwd -P)
 }
 
+# runner_not_executable_words <path>: what to say about a runner that exists and cannot run, which
+# install-hooks refuses (or warns of) and doctor fails. A file system without mode bits, or
+# core.fileMode=false, can check it out like that; the advice "run gauntlet install" would not
+# help, since install from the vendored copy stops at the same refusal.
+runner_not_executable_words() {
+  printf 'runner at %s is not executable; run chmod +x %s\n' "$1" "$1"
+}
+
+# repair_runner_mode: give a vendored runner without the exec bit its mode back. The index keeps
+# the mode it has until the change is added, and adding it is the user's to commit, so the message
+# says so; install does not touch the index.
+repair_runner_mode() {
+  local runner=.gauntlet/bin/gauntlet
+  if [ -x "$runner" ]; then return 0; fi
+  { chmod +x "$runner" && [ -x "$runner" ]; } 2> /dev/null || die "cannot make $HOOKS_ROOT/$runner executable; run chmod +x on it"
+  printf 'updated mode of %s; commit the mode change: git add --chmod=+x %s\n' "$runner" "$runner"
+}
+
 # vendor_runner <source>: copy bin/ and lib/ of the checkout <source> into
 # .gauntlet/, from the repo root. The copy is made first, as .bin.new and .lib.new;
 # then the old runner is moved aside and the new one moved in (swap_runner). An
@@ -288,6 +306,7 @@ install_source() {
 vendor_runner() {
   if [ -d .gauntlet ] && [ "$1" = "$(cd .gauntlet && pwd -P)" ]; then
     printf 'runner already vendored in .gauntlet/\n'
+    repair_runner_mode
     return 0
   fi
   mkdir -p .gauntlet || die "cannot create .gauntlet"
@@ -385,7 +404,7 @@ create_missing() {
 # the git common dir; a shared one outside them is printed only. An empty
 # core.hooksPath means unset: the default hooks directory is <common git dir>/hooks.
 install_hooks() {
-  local root target kind dir err
+  local root target kind dir err refuse='' warn=''
   root=$(repo_root)
   cd "$root" || die "cannot enter $root"
   hook_paths || die "cannot find the git directory"
@@ -396,12 +415,20 @@ install_hooks() {
   dir=${dir# }
   HOOKS_KIND=$kind
   # The hooks call .gauntlet/bin/gauntlet from the repo root. A hook written where that is not an
-  # executable fails every commit and push, so none is written: the message says what to do.
-  # What is only printed is not written, so it is warned about.
-  if [ ! -f .gauntlet/bin/gauntlet ] || [ ! -x .gauntlet/bin/gauntlet ]; then
+  # executable fails every commit and push, so none is written: the message says what to do, and
+  # it is not the same for a runner that is missing (install) and one that exists and cannot run
+  # (its mode). What is only printed is not written, so it is warned about.
+  if [ ! -f .gauntlet/bin/gauntlet ]; then
+    refuse="no runner at $HOOKS_ROOT/.gauntlet/bin/gauntlet; run gauntlet install first"
+    warn="no runner at $HOOKS_ROOT/.gauntlet/bin/gauntlet; run gauntlet install"
+  elif [ ! -x .gauntlet/bin/gauntlet ]; then
+    refuse=$(runner_not_executable_words "$HOOKS_ROOT/.gauntlet/bin/gauntlet")
+    warn=$refuse
+  fi
+  if [ -n "$refuse" ]; then
     case "$kind" in
-      husky|husky-v9|dir) die "no runner at $HOOKS_ROOT/.gauntlet/bin/gauntlet; run gauntlet install first" ;;
-      *) printf 'gauntlet: warning: no runner at %s; run gauntlet install\n' "$(path_spell "$HOOKS_ROOT/.gauntlet/bin/gauntlet")" >&2 ;;
+      husky|husky-v9|dir) die "$refuse" ;;
+      *) printf 'gauntlet: warning: %s\n' "$(path_spell "$warn")" >&2 ;;
     esac
   fi
   case "$kind" in

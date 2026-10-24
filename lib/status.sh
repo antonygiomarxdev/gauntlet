@@ -388,8 +388,9 @@ LIBS
       return 0
     fi
   fi
-  if [ -f "$bin" ] && [ -x "$bin" ] \
-    && "$bin" --version < /dev/null > /dev/null 2>&1; then
+  if [ -f "$bin" ] && [ ! -x "$bin" ]; then
+    doctor_fail "$(runner_not_executable_words "$bin")"
+  elif [ -f "$bin" ] && "$bin" --version < /dev/null > /dev/null 2>&1; then
     doctor_ok "runner .gauntlet/bin/gauntlet"
   else
     doctor_fail ".gauntlet/bin or .gauntlet/lib is broken or missing: run gauntlet install from a gauntlet checkout (a .gitignore entry such as lib/ also drops .gauntlet/lib)"

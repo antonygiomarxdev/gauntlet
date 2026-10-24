@@ -905,10 +905,78 @@ test_install_hooks_refuses_without_a_runner() {
   printf '#!/bin/sh\n' > .gauntlet/bin/gauntlet
   run "$G" install-hooks
   assert_eq 2 "$STATUS" "install-hooks with a runner that is not executable: $OUT"
+  assert_eq "gauntlet: runner at $TMP/repo/.gauntlet/bin/gauntlet is not executable; run chmod +x $TMP/repo/.gauntlet/bin/gauntlet" "$OUT"
   must chmod +x .gauntlet/bin/gauntlet
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks with an executable runner: $OUT"
   assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "the hook was written once the runner is there"
+}
+
+# W3b review D I1: a runner that exists and has lost its exec bit (a checkout from a file system
+# without mode bits, core.fileMode=false) is not "no runner": the advice "run gauntlet install first"
+# loops, because install from the vendored copy said "already vendored" and stopped on the same
+# refusal. The message says what to do; what is only printed gets it as a warning.
+test_a_runner_that_is_not_executable_gets_a_message_of_its_own() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must chmod 644 .gauntlet/bin/gauntlet
+  local want="runner at $TMP/repo/.gauntlet/bin/gauntlet is not executable; run chmod +x $TMP/repo/.gauntlet/bin/gauntlet"
+  run "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks: $OUT"
+  assert_eq "gauntlet: $want" "$OUT"
+  if [ -e .git/hooks/pre-commit ]; then fail "a hook was written for a runner that cannot run"; fi
+  must git config core.hooksPath .husky
+  run "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks with husky: $OUT"
+  assert_eq "gauntlet: $want" "$OUT"
+  must git config --unset core.hooksPath
+  printf 'pre-commit:\n  parallel: true\n' > lefthook.yml
+  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed for a config: $(cat "$TMP/out" "$TMP/err")"
+  assert_eq "gauntlet: warning: $want" "$(cat "$TMP/err")"
+  assert_contains "$(cat "$TMP/out")" "ACTION NEEDED: add to lefthook.yml:"
+}
+
+# install, run from the vendored copy, gives the runner its mode back and says that git has to be
+# told: the index keeps the mode it had until the change is added.
+test_install_gives_a_vendored_runner_its_exec_bit_back() {
+  hooks_repo "$TMP/repo"
+  run "$G" install
+  assert_eq 0 "$STATUS" "install: $OUT"
+  must git add -A
+  must git add --chmod=-x .gauntlet/bin/gauntlet
+  must git commit -q --no-verify -m "adopt gauntlet"
+  must chmod 644 .gauntlet/bin/gauntlet
+  run bash .gauntlet/bin/gauntlet install
+  assert_eq 0 "$STATUS" "install from the vendored copy: $OUT"
+  assert_contains "$OUT" "runner already vendored in .gauntlet/"
+  assert_contains "$OUT" "updated mode of .gauntlet/bin/gauntlet; commit the mode change: git add --chmod=+x .gauntlet/bin/gauntlet"
+  [ -x .gauntlet/bin/gauntlet ] || fail "the runner is still not executable"
+  case "$(git ls-files -s .gauntlet/bin/gauntlet)" in
+    100644*) ;;
+    *) fail "install changed the index: $(git ls-files -s .gauntlet/bin/gauntlet)" ;;
+  esac
+  run bash .gauntlet/bin/gauntlet install
+  assert_eq 0 "$STATUS" "second install: $OUT"
+  assert_not_contains "$OUT" "updated mode"
+  run "$G" doctor
+  assert_not_contains "$OUT" "is not executable"
+}
+
+test_install_stops_when_it_cannot_give_the_runner_its_exec_bit_back() {
+  hooks_repo "$TMP/repo"
+  run "$G" install
+  must chmod 644 .gauntlet/bin/gauntlet
+  must mkdir "$TMP/shim"
+  local rc
+  # A chmod that fails, and one that succeeds and changes nothing (a file system without mode bits).
+  for rc in 1 0; do
+    printf '#!/bin/sh\nexit %s\n' "$rc" > "$TMP/shim/chmod"
+    must chmod +x "$TMP/shim/chmod"
+    run env PATH="$TMP/shim:$PATH" bash .gauntlet/bin/gauntlet install
+    assert_eq 2 "$STATUS" "install with a chmod that exits $rc: $OUT"
+    assert_contains "$OUT" "gauntlet: cannot make $TMP/repo/.gauntlet/bin/gauntlet executable; run chmod +x on it"
+    assert_not_contains "$OUT" "updated mode"
+  done
 }
 
 # A runner path that is a directory is not a runner either.

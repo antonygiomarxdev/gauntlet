@@ -734,11 +734,16 @@ test_doctor_runner_bin_directory_fails() {
   doctor_one_fail "FAIL .gauntlet/bin or .gauntlet/lib is broken or missing"
 }
 
+# A runner that exists and cannot run is told apart from a missing or broken one, with the words
+# install-hooks uses.
 test_doctor_runner_not_executable_fails() {
   mkrepo
   doctor_install
   must chmod -x .gauntlet/bin/gauntlet
-  doctor_one_fail "FAIL .gauntlet/bin or .gauntlet/lib is broken or missing"
+  doctor_one_fail "FAIL runner at $TMP/repo/.gauntlet/bin/gauntlet is not executable; run chmod +x $TMP/repo/.gauntlet/bin/gauntlet"
+  must chmod 755 .gauntlet/bin/gauntlet
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor after chmod +x: $OUT"
 }
 
 test_doctor_runner_all_fine_is_ok() {

@@ -811,6 +811,24 @@ test_the_no_runner_messages_print_the_path_escaped() {
   assert_clean "$(cat "$TMP/err")" "the warning"
 }
 
+test_the_runner_that_is_not_executable_message_prints_the_path_escaped() {
+  esc_hooks_repo
+  must chmod 644 .gauntlet/bin/gauntlet
+  run "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" 'gauntlet: runner at '
+  assert_contains "$OUT" 'r\x1bp/.gauntlet/bin/gauntlet is not executable; run chmod +x '
+  assert_clean "$OUT" "the refusal"
+  printf 'pre-commit:\n  parallel: true\n' > lefthook.yml
+  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed for a config: $(cat "$TMP/out" "$TMP/err")"
+  assert_contains "$(cat "$TMP/err")" 'gauntlet: warning: runner at '
+  assert_clean "$(cat "$TMP/err")" "the warning"
+  run "$G" doctor
+  assert_contains "$OUT" 'FAIL runner at '
+  assert_contains "$OUT" 'r\x1bp/.gauntlet/bin/gauntlet is not executable; run chmod +x '
+  assert_clean "$OUT" "doctor"
+}
+
 test_the_shared_hooks_dir_advice_prints_the_paths_escaped() {
   local shared
   esc_hooks_repo
