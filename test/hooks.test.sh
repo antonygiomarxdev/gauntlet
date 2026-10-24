@@ -1632,18 +1632,38 @@ test_install_hooks_leaves_the_pre_commit_line_alone() {
   hooks_expect .git/hooks/pre-commit $'#!/bin/sh\n'"$HOOK_TEST_GATE_STAGED"$'\n'
 }
 
-# A hook we may not edit keeps its old line and is told the new one.
+# A hook we may not edit keeps its old line and is told to replace it with the new one (M-4: not
+# to add the new one beside it).
 test_an_old_gate_line_in_an_uneditable_hook_is_print_only() {
   hooks_repo "$TMP/repo"
   hooks_vendor
-  printf '#!/usr/bin/env python3\n# %s\nprint("x")\n' "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-push
+  printf '#!/usr/bin/env python3\n%s\nprint("x")\n' "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-push
   local before
   before=$(hooks_sum .git/hooks/pre-push)
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks: $OUT"
-  assert_contains "$OUT" "ACTION NEEDED: add to .git/hooks/pre-push:"
-  assert_contains "$OUT" "$HOOK_TEST_GATE_CI"
+  assert_contains "$OUT" "ACTION NEEDED: replace the line ending in \"# gauntlet\" in .git/hooks/pre-push with:"$'\n'"$HOOK_TEST_GATE_CI"
+  assert_not_contains "$OUT" "add to .git/hooks/pre-push"
   assert_eq "$before" "$(hooks_sum .git/hooks/pre-push)" "the hook is unchanged"
+}
+
+# Where none of our lines is, the advice is still to add one (and a comment that mentions the gate
+# is not our line).
+test_print_only_says_add_where_no_gauntlet_line_is_and_replace_where_one_is() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  local body
+  for body in '#!/usr/bin/env python3\nprint("x")\n' '#!/bin/sh\r\necho x\r\n' '#!/usr/bin/env python3\n# %s\nprint("x")\n'; do
+    # shellcheck disable=SC2059 # the bodies are printf formats on purpose
+    printf "$body" "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-push
+    run "$G" install-hooks
+    assert_contains "$OUT" "ACTION NEEDED: add to .git/hooks/pre-push:"
+    assert_not_contains "$OUT" "replace the line"
+  done
+  printf '#!/bin/sh\r\n%s\r\necho x\r\n' "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-push
+  run "$G" install-hooks
+  assert_contains "$OUT" "ACTION NEEDED: replace the line ending in \"# gauntlet\" in .git/hooks/pre-push with:"
+  assert_not_contains "$OUT" "add to .git/hooks/pre-push"
 }
 
 # The old line later in the hook, after the project's own commands, is replaced where it stands.

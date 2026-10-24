@@ -449,7 +449,7 @@ doctor_formats() {
 # lefthook or prek config needs the snippet in it (HOOK-AC7). The runner and the formats are
 # checked by doctor_runner and doctor_formats before it.
 doctor_hooks() {
-  local root=$1 scratch=$2 target kind dir f execcheck=1
+  local root=$1 scratch=$2 target kind dir f fix execcheck=1
   target=$(hook_target) || return 2
   kind=${target%% *}
   dir=${target#"$kind"}
@@ -467,6 +467,11 @@ doctor_hooks() {
         case "$(config_state "$f")" in
           ok) doctor_ok "gate in $f" ;;
           stdin) doctor_fail "lefthook pre-push gate in $f has no use_stdin: true, so it judges the checked-out branch whatever git pushes: add use_stdin: true" ;;
+          old)
+            fix="$(config_replace_words "$f"): $GAUNTLET_CMD_CI"
+            if config_is_lefthook "$f"; then fix="$fix, and set use_stdin: true on it"; fi
+            doctor_fail "pre-push gate in $f is an older gauntlet command (it differs from the current one): $fix"
+            ;;
           *) doctor_fail "gate missing from $f: run gauntlet install-hooks and add the snippet it prints" ;;
         esac
       done < "$scratch/configs"
@@ -482,7 +487,7 @@ doctor_hooks() {
     print)
       # A shared hooks directory: the guarded form is the one to add, and the gate form is accepted.
       if [ "$dir/pre-commit" -ef "$dir/pre-push" ]; then
-        doctor_one_script "$dir/pre-commit" "$dir/pre-push" "$execcheck"
+        doctor_one_script "$dir/pre-commit" "$dir/pre-push" "$execcheck" "$HOOK_SHARED_CI"
         return 0
       fi
       doctor_hook_file pre-commit "$dir/pre-commit" "$kind" "$execcheck" "$HOOK_SHARED_STAGED" "$GAUNTLET_CMD_STAGED" "$HOOK_GATE_STAGED" "$HOOK_SHARED_STAGED"
@@ -492,9 +497,10 @@ doctor_hooks() {
   return 0
 }
 
-# doctor_one_script <commit-hook> <push-hook> <execcheck>: the two hooks are one file, which
-# install-hooks does not edit (hooks_one_script says why). It must hold both gate lines inside
-# the tests on the hook's name; the FAIL says what install-hooks says.
+# doctor_one_script <commit-hook> <push-hook> <execcheck> [<push-line>]: the two hooks are one
+# file, which install-hooks does not edit (hooks_one_script says why). It must hold both gate lines
+# inside the tests on the hook's name; the FAIL says what install-hooks says. <push-line> is the
+# line install-hooks prints for the pre-push test (the guarded form in a shared hooks directory).
 doctor_one_script() {
   local shown
   shown=$(display_path "$1")
@@ -504,6 +510,8 @@ doctor_one_script() {
   if hooks_one_script_done "$1"; then
     doctor_ok "pre-commit gate in $shown"
     doctor_ok "pre-push gate in $shown"
+  elif [ "$(hook_gate_state "$1" "$HOOK_NEEDLE_CI" "$HOOK_GATE_CI" "$HOOK_SHARED_CI")" = old ]; then
+    doctor_fail "$shown and $(display_path "$2") are the same file, so a gate line in it would run in both hooks: $(hook_replace_words "$shown" 'check --ci'): ${4:-$HOOK_GATE_CI}"
   else
     doctor_fail "$shown and $(display_path "$2") are the same file, so a gate line in it would run in both hooks: run gauntlet install-hooks and add by hand the lines it prints, as the first commands of the script"
   fi
@@ -535,7 +543,7 @@ doctor_hook_file() {
   fi
   if [ "$state" = old ]; then
     if [ "$manual" -eq 1 ]; then
-      doctor_fail "$stage gate in $shown is an older gauntlet line (it differs from the current one): replace that line by hand with: $advice"
+      doctor_fail "$stage gate in $shown is an older gauntlet line (it differs from the current one): $(hook_replace_words "$shown"): $advice"
     else
       doctor_fail "$stage gate in $shown is an older gauntlet line (it differs from the current one): run gauntlet install-hooks"
     fi

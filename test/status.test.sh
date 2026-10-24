@@ -1653,17 +1653,146 @@ test_doctor_names_the_manual_line_for_an_old_pre_push_line() {
   must chmod +x "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
   run "$G" doctor
   assert_eq 1 "$STATUS" "doctor: $OUT"
-  assert_contains "$OUT" "FAIL pre-push gate in $TMP/shared/pre-push is an older gauntlet line (it differs from the current one): replace that line by hand with: $STATUS_TEST_SHARED_CI"
+  assert_contains "$OUT" "FAIL pre-push gate in $TMP/shared/pre-push is an older gauntlet line (it differs from the current one): replace the line ending in \"# gauntlet\" in $TMP/shared/pre-push with: $STATUS_TEST_SHARED_CI"
   assert_not_contains "$OUT" "run gauntlet install-hooks"
 }
 
-test_doctor_flags_an_old_pre_push_command_in_a_hook_manager_config() {
+# R43 M-4: where an older gauntlet line already is, the advice says "replace", not "add": following
+# "add" leaves both lines (and a duplicate YAML key in lefthook). install-hooks and doctor use the
+# same words for the same file, and neither says "add" when a line of ours is there.
+STATUS_TEST_OLD_CI='.gauntlet/bin/gauntlet check --ci --pre-push || exit $?  # gauntlet'
+
+test_a_crlf_hook_with_an_older_gauntlet_line_is_told_to_replace_it() {
+  mkrepo
+  doctor_install
+  printf '#!/bin/sh\r\n%s\r\necho x\r\n' "$STATUS_TEST_OLD_CI" > .git/hooks/pre-push
+  must chmod 755 .git/hooks/pre-push
+  cp .git/hooks/pre-push "$TMP/before"
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "ACTION NEEDED: replace the line ending in \"# gauntlet\" in .git/hooks/pre-push with:"$'\n'"$STATUS_TEST_GATE_CI"
+  assert_not_contains "$OUT" "add to .git/hooks/pre-push"
+  same_file "$TMP/before" .git/hooks/pre-push
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "FAIL pre-push gate in .git/hooks/pre-push is an older gauntlet line (it differs from the current one): replace the line ending in \"# gauntlet\" in .git/hooks/pre-push with: $STATUS_TEST_GATE_CI"
+}
+
+# A CRLF hook that holds the current line is done: the CR sits in the comment after the marker.
+test_a_crlf_hook_that_holds_the_current_line_is_done() {
+  mkrepo
+  doctor_install
+  printf '#!/bin/sh\r\n%s\r\necho x\r\n' "$STATUS_TEST_GATE_CI" > .git/hooks/pre-push
+  must chmod 755 .git/hooks/pre-push
+  run "$G" install-hooks
+  assert_contains "$OUT" "already present in .git/hooks/pre-push"
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "ok pre-push gate in .git/hooks/pre-push"
+}
+
+test_a_shared_hooks_dir_hook_with_an_older_gauntlet_line_is_told_to_replace_it() {
+  mkrepo
+  must mkdir "$TMP/shared"
+  must git config core.hooksPath "$TMP/shared"
+  doctor_install
+  printf '%s\n' '.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet' > "$TMP/shared/pre-commit"
+  printf '%s\n' "$STATUS_TEST_OLD_CI" > "$TMP/shared/pre-push"
+  must chmod +x "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "ACTION NEEDED: replace the line ending in \"# gauntlet\" in $TMP/shared/pre-push with:"$'\n'"$STATUS_TEST_SHARED_CI"
+  assert_not_contains "$OUT" "add to $TMP/shared/pre-push"
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "FAIL pre-push gate in $TMP/shared/pre-push is an older gauntlet line (it differs from the current one): replace the line ending in \"# gauntlet\" in $TMP/shared/pre-push with: $STATUS_TEST_SHARED_CI"
+}
+
+# The hook a project can have edited gets the same verdict from doctor and the same fix from
+# install-hooks, which does it.
+test_an_older_gauntlet_line_in_an_editable_hook_is_replaced_by_install_hooks() {
+  mkrepo
+  doctor_install
+  printf '#!/bin/sh\n%s\necho x\n' "$STATUS_TEST_OLD_CI" > .git/hooks/pre-push
+  must chmod 755 .git/hooks/pre-push
+  run "$G" doctor
+  assert_contains "$OUT" "FAIL pre-push gate in .git/hooks/pre-push is an older gauntlet line (it differs from the current one): run gauntlet install-hooks"
+  run "$G" install-hooks
+  assert_contains "$OUT" "updated gauntlet line in .git/hooks/pre-push"
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor after install-hooks: $OUT"
+}
+
+test_a_lefthook_config_with_an_older_gauntlet_command_is_told_to_replace_it() {
   mkrepo
   printf 'pre-commit:\n  commands:\n    gauntlet:\n      run: .gauntlet/bin/gauntlet check --staged\npre-push:\n  commands:\n    gauntlet:\n      run: .gauntlet/bin/gauntlet check --ci\n' > lefthook.yml
   doctor_install
+  cp lefthook.yml "$TMP/before"
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "ACTION NEEDED: replace the gauntlet command in lefthook.yml with: $STATUS_TEST_CMD_CI"
+  assert_contains "$OUT" "set use_stdin: true on it"
+  assert_not_contains "$OUT" "add to lefthook.yml"
+  same_file "$TMP/before" lefthook.yml
   run "$G" doctor
   assert_eq 1 "$STATUS" "doctor: $OUT"
-  assert_contains "$OUT" "FAIL gate missing from lefthook.yml: run gauntlet install-hooks"
+  assert_contains "$OUT" "FAIL pre-push gate in lefthook.yml is an older gauntlet command (it differs from the current one): replace the gauntlet command in lefthook.yml with: $STATUS_TEST_CMD_CI, and set use_stdin: true on it"
+  assert_eq 1 "$(doctor_fails)" "one FAIL for the config"
+}
+
+test_a_prek_config_with_an_older_gauntlet_command_is_told_to_replace_it() {
+  mkrepo
+  printf -- '- repo: local\n  hooks:\n    - id: gauntlet\n      entry: .gauntlet/bin/gauntlet check --staged\n    - id: gauntlet-ci\n      entry: .gauntlet/bin/gauntlet check --ci\n' > .pre-commit-config.yaml
+  doctor_install
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "ACTION NEEDED: replace the gauntlet command in .pre-commit-config.yaml with: $STATUS_TEST_CMD_CI"
+  assert_not_contains "$OUT" "use_stdin"
+  assert_not_contains "$OUT" "add to .pre-commit-config.yaml"
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "FAIL pre-push gate in .pre-commit-config.yaml is an older gauntlet command (it differs from the current one): replace the gauntlet command in .pre-commit-config.yaml with: $STATUS_TEST_CMD_CI"
+  assert_not_contains "$OUT" "use_stdin"
+}
+
+# One script serving both hooks: the old pre-push line sits inside its test on the hook's name, so
+# the advice names that line and does not print the whole block again.
+test_a_shared_script_with_an_older_pre_push_line_is_told_to_replace_that_line() {
+  mkrepo
+  printf '#!/bin/sh\necho shared\n' > .git/hooks/pre-commit
+  must chmod 755 .git/hooks/pre-commit
+  must ln -s pre-commit .git/hooks/pre-push
+  doctor_install
+  # shellcheck disable=SC2016 # the hook text holds ${0##*/}, which must not expand here
+  printf '#!/bin/sh\nif [ "${0##*/}" = pre-commit ]; then\n.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet\nfi\nif [ "${0##*/}" = pre-push ]; then\n%s\nfi\necho shared\n' "$STATUS_TEST_OLD_CI" > .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "ACTION NEEDED: .git/hooks/pre-commit and .git/hooks/pre-push are the same file"
+  assert_contains "$OUT" "replace the line ending in \"# gauntlet\" that runs check --ci in .git/hooks/pre-commit with:"$'\n'"$STATUS_TEST_GATE_CI"
+  assert_not_contains "$OUT" "Add to"
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_eq 1 "$(doctor_fails)" "one FAIL for the shared script: $OUT"
+  assert_contains "$OUT" "FAIL .git/hooks/pre-commit and .git/hooks/pre-push are the same file, so a gate line in it would run in both hooks: replace the line ending in \"# gauntlet\" that runs check --ci in .git/hooks/pre-commit with: $STATUS_TEST_GATE_CI"
+}
+
+# The same in a hooks directory shared with other repositories: the line to put there is the
+# guarded form, for install-hooks and for doctor.
+test_a_shared_dir_script_with_an_older_pre_push_line_is_told_the_guarded_line() {
+  mkrepo
+  must mkdir "$TMP/shared"
+  printf '#!/bin/sh\necho shared\n' > "$TMP/shared/pre-commit"
+  must chmod 755 "$TMP/shared/pre-commit"
+  must ln -s pre-commit "$TMP/shared/pre-push"
+  must git config core.hooksPath "$TMP/shared"
+  doctor_install
+  # shellcheck disable=SC2016 # the hook text holds ${0##*/}, which must not expand here
+  printf '#!/bin/sh\nif [ "${0##*/}" = pre-commit ]; then\n.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet\nfi\nif [ "${0##*/}" = pre-push ]; then\n%s\nfi\n' "$STATUS_TEST_OLD_CI" > "$TMP/shared/pre-commit"
+  run "$G" install-hooks
+  assert_contains "$OUT" "that runs check --ci in $TMP/shared/pre-commit with:"$'\n'"$STATUS_TEST_SHARED_CI"
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "that runs check --ci in $TMP/shared/pre-commit with: $STATUS_TEST_SHARED_CI"
 }
 
 # I1: doctor sees a runner that git ignores. The demo is a root .gitignore with bin/ and lib/.

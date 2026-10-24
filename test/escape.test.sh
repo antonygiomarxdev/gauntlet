@@ -619,6 +619,19 @@ test_the_one_script_advice_prints_the_paths_escaped() {
   assert_clean "$OUT" "doctor"
 }
 
+test_the_replace_advice_for_an_older_gauntlet_line_prints_the_path_escaped() {
+  esc_hooks_dir
+  printf '#!/bin/sh\r\n%s\r\n' '.gauntlet/bin/gauntlet check --ci || exit $?  # gauntlet' > "$ESC_DIR/pre-push"
+  chmod 755 "$ESC_DIR/pre-push"
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" 'ACTION NEEDED: replace the line ending in "# gauntlet" in hk\x1bd/pre-push with:'
+  assert_clean "$OUT" "the replace advice"
+  run "$G" doctor
+  assert_contains "$OUT" 'FAIL pre-push gate in hk\x1bd/pre-push is an older gauntlet line (it differs from the current one): replace the line ending in "# gauntlet" in hk\x1bd/pre-push with:'
+  assert_clean "$OUT" "doctor"
+}
+
 test_the_no_runner_messages_print_the_path_escaped() {
   esc_hooks_repo bare
   run "$G" install-hooks

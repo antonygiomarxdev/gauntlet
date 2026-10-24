@@ -411,8 +411,13 @@ hooks_one_script() {
     warn_if_not_executable "$1"
     return 0
   fi
-  a=$(path_spell "$(display_path "$1")")
+  a=$shown
   b=$(path_spell "$(display_path "$2")")
+  if [ "$(hook_gate_state "$1" "$HOOK_NEEDLE_CI" "$HOOK_GATE_CI" "$HOOK_SHARED_CI")" = old ]; then
+    printf 'ACTION NEEDED: %s and %s are the same file, so a gate line in it would run in both hooks. It is not edited. Its pre-push line is an older one: %s:\n%s\n' "$a" "$b" "$(hook_replace_words "$shown" 'check --ci')" "$ci"
+    warn_if_not_executable "$1"
+    return 0
+  fi
   printf 'ACTION NEEDED: %s and %s are the same file, so a gate line in it would run in both hooks (the staged gate on push, the push gate on commit). It is not edited. Add to %s, as the first commands, after the shebang line if there is one:\n' "$a" "$b" "$shown"
   printf '%s\n%s\nfi\n%s\n%s\nfi\n' "$HOOK_GUARD_STAGED" "$staged" "$HOOK_GUARD_CI" "$ci"
   warn_if_not_executable "$1"
@@ -427,8 +432,8 @@ print_hook_pair() {
     hooks_one_script "$1/pre-commit" "$1/pre-push" shared
     return 0
   fi
-  print_only "$1/pre-commit" "$HOOK_SHARED_STAGED"
-  print_only "$1/pre-push" "$HOOK_SHARED_CI"
+  print_only "$1/pre-commit" "$HOOK_SHARED_STAGED" "$(hook_gate_state "$1/pre-commit" "$GAUNTLET_CMD_STAGED" "$HOOK_GATE_STAGED" "$HOOK_SHARED_STAGED")"
+  print_only "$1/pre-push" "$HOOK_SHARED_CI" "$(hook_gate_state "$1/pre-push" "$HOOK_NEEDLE_CI" "$HOOK_GATE_CI" "$HOOK_SHARED_CI")"
 }
 
 # hook_reason <text>: the cause in the last line of a tool's or the shell's error, which reads
@@ -472,19 +477,19 @@ add_hook_line() {
   local file=$1 line=$2 gate=$3 needle=$4 state tmp rc=0
   state=$(hook_gate_state "$file" "$needle" "$line" "$gate")
   if [ "$state" = present ]; then
-    printf 'already present in %s\n' "$(display_path "$file")"
+    printf 'already present in %s\n' "$(hook_shown "$file")"
     warn_if_not_executable "$file"
     return 0
   fi
   hook_editable "$file" || rc=$?
   case "$rc" in
     0) ;;
-    1) print_only "$file" "$gate"; return 0 ;;
+    1) print_only "$file" "$gate" "$state"; return 0 ;;
     *) die "cannot read $file" ;;
   esac
   if [ "$state" = old ]; then
     upgrade_gate_line "$file" "$gate" "$needle"
-    printf 'updated gauntlet line in %s\n' "$(display_path "$file")"
+    printf 'updated gauntlet line in %s\n' "$(hook_shown "$file")"
     warn_if_not_executable "$file"
     return 0
   fi
@@ -494,7 +499,7 @@ add_hook_line() {
     hook_overwrite "$tmp" "$file" "$line"
     rm -f "$tmp"
     chmod +x "$file" || die "cannot make $file executable"
-    printf 'created %s\n' "$(display_path "$file")"
+    printf 'created %s\n' "$(hook_shown "$file")"
     return 0
   fi
   if [ ! -s "$file" ]; then
@@ -502,7 +507,7 @@ add_hook_line() {
     printf '#!/usr/bin/env sh\n%s\n' "$line" > "$tmp" || die "cannot create a temp file"
     hook_overwrite "$tmp" "$file" "$line"
     rm -f "$tmp"
-    printf 'added gauntlet line to %s\n' "$(display_path "$file")"
+    printf 'added gauntlet line to %s\n' "$(hook_shown "$file")"
     warn_if_not_executable "$file"
     return 0
   fi
@@ -513,7 +518,7 @@ add_hook_line() {
   fi
   hook_overwrite "$tmp" "$file" "$gate"
   rm -f "$tmp"
-  printf 'added gauntlet line to %s\n' "$(display_path "$file")"
+  printf 'added gauntlet line to %s\n' "$(hook_shown "$file")"
   warn_if_not_executable "$file"
 }
 
@@ -635,9 +640,25 @@ resolve_link() {
   printf '%s/%s\n' "$(cd "$(dirname "$p")" && pwd -P)" "$(basename "$p")"
 }
 
-# print_only <file> <gate>: a hook we will not edit. Say what to add, and where it goes.
+# hook_replace_words <file> [<command>]: the words of the fix for a line of ours that is not the
+# current form, in a hook that install-hooks does not edit. install-hooks prints them above the
+# current line and doctor puts them before it, so both say the same. <file> is already spelled.
+# With <command> the line is named by what it runs, for a script that holds the lines of both hooks.
+hook_replace_words() {
+  printf 'replace the line ending in "# gauntlet"%s in %s with' "${2:+ that runs $2}" "$1"
+}
+
+# print_only <file> <gate> [<state>]: a hook we will not edit. Say what to add, and where it goes;
+# when it already holds a line of ours that is not the current form (state old), say to replace
+# that line, because adding the gate beside it would leave both.
 print_only() {
-  printf 'ACTION NEEDED: add to %s:\n%s\n  (place it as the first command, after the shebang line if there is one)\n' "$(path_spell "$(display_path "$1")")" "$2"
+  local shown
+  shown=$(hook_shown "$1")
+  if [ "${3:-}" = old ]; then
+    printf 'ACTION NEEDED: %s:\n%s\n' "$(hook_replace_words "$shown")" "$2"
+  else
+    printf 'ACTION NEEDED: add to %s:\n%s\n  (place it as the first command, after the shebang line if there is one)\n' "$shown" "$2"
+  fi
   if [ -e "$1" ]; then
     warn_if_not_executable "$1"
   fi
@@ -704,6 +725,13 @@ print_config_snippets() {
         printf 'already configured in %s\n' "$(path_spell "$f")"
         continue
         ;;
+      old)
+        printf 'ACTION NEEDED: %s: %s\n' "$(config_replace_words "$(path_spell "$f")")" "$GAUNTLET_CMD_CI"
+        if config_is_lefthook "$f"; then
+          printf '  and set use_stdin: true on it, so that git'"'"'s ref lines reach it\n'
+        fi
+        continue
+        ;;
       stdin)
         printf 'ACTION NEEDED: add use_stdin: true to the pre-push gauntlet command in %s, so that git'"'"'s ref lines reach it\n' "$(path_spell "$f")"
         continue
@@ -728,14 +756,28 @@ config_is_lefthook() {
   return 1
 }
 
+# config_replace_words <file>: the words of the fix for a config that runs an older gauntlet
+# pre-push command. install-hooks prints them before the current command and doctor does too.
+config_replace_words() {
+  printf 'replace the gauntlet command in %s with' "$1"
+}
+
 # config_state <file>: how a hook-manager config stands with the gate, on stdout: "ok" when it has
 # both gate command strings (and, for lefthook, use_stdin set to true, in the way YAML, TOML or
 # JSON spell it), "stdin" when it has both but lefthook's pre-push command would get no stdin, so
-# the gate would judge the checked-out branch whatever git pushes, else "missing". The check is on
-# the file, not on the command: a use_stdin on another command satisfies it (a ceiling). doctor and
-# install-hooks both ask this, so a config is done or not by one rule.
+# the gate would judge the checked-out branch whatever git pushes, "old" when it runs an older
+# pre-push command (the gate without --pre-push), which is replaced, not added to, else
+# "missing". The check is on the file, not on the command: a use_stdin on another command
+# satisfies it (a ceiling). doctor and install-hooks both ask this, so a config is done or not by
+# one rule.
 config_state() {
-  if grep -Fq -- "$GAUNTLET_CMD_STAGED" "$1" 2> /dev/null && grep -Fq -- "$GAUNTLET_CMD_CI" "$1" 2> /dev/null; then
+  local staged=0 ci=0 needle=0
+  if grep -Fq -- "$GAUNTLET_CMD_STAGED" "$1" 2> /dev/null; then staged=1; fi
+  if grep -Fq -- "$GAUNTLET_CMD_CI" "$1" 2> /dev/null; then ci=1; fi
+  if grep -Fq -- "$HOOK_NEEDLE_CI" "$1" 2> /dev/null; then needle=1; fi
+  if [ "$ci" -eq 0 ] && [ "$needle" -eq 1 ]; then
+    printf 'old\n'
+  elif [ "$ci" -eq 1 ] && [ "$staged" -eq 1 ]; then
     if config_is_lefthook "$1" && ! grep -Eq 'use_stdin"?[[:space:]]*[:=][[:space:]]*true' "$1" 2> /dev/null; then
       printf 'stdin\n'
     else
@@ -850,6 +892,12 @@ owned_path() {
     "$2/"*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# hook_shown <path>: <path> as a message prints it: relative to the repo root when it is inside it,
+# and spelled (path_spell), because a hook path is the project's text.
+hook_shown() {
+  path_spell "$(display_path "$1")"
 }
 
 # display_path <path>: <path> relative to the repo root when it is inside it.
