@@ -38,7 +38,7 @@ Only `base <ref>` writes git config (`branch.<name>.gauntletBase`). `waive`, `lo
 
 A read that git cannot answer is exit 2, never "the file is absent": `gauntlet: cannot read <path> at <sha>`, with git's first error line after it when git gave one. A path with a tab or a newline in its name is refused: `gauntlet: path with a tab or newline: <name>; rename the file`. That covers the tracked files a run measures. A diff or a tree listing that names such a path only scopes checks, so a branch can still rename or delete the offending file.
 
-Names that come from the repo (paths, rule ids, refs, config values) are printed with control bytes escaped: `\x1b` for ESC, and the same for the C1 range, which a terminal in 8-bit mode reads as controls. A name that starts with `::` has its first colon written `\x3a`. `baseline.tsv` and `exceptions.tsv` keep the raw bytes. One limit: a valid UTF-8 character whose last byte falls in `0x80`-`0x9F` (the euro sign `E2 82 AC`, for one) stays as it is, because escaping it would break every non-ASCII name.
+Names that come from the repo (paths, rule ids, refs, config values) are printed with control bytes escaped: `\x1b` for ESC, and the same for the C1 range, which a terminal in 8-bit mode reads as controls. A name that starts with `::` has its first colon written `\x3a`. `baseline.tsv` and `exceptions.tsv` keep the raw bytes. One limit: a valid UTF-8 character whose last byte falls in `0x80`-`0x9F` (the euro sign `E2 82 AC`, for one) stays as it is, because escaping it would break every non-ASCII name. A command that gauntlet asks you to paste (the `chmod +x` of a runner or a hook, `gauntlet base <ref>` and `gauntlet loosen @config <text>` in the base hint) carries the repo's text as one single-quoted word, with an embedded single quote written `'\''`, so pasting it runs nothing the repo chose.
 
 ## Config: `.gauntlet/config`
 
@@ -162,7 +162,7 @@ slow: todo 51 ms (consider stage: push)
    - `note tool for rule <id> not checked: the detector starts with <word>, which is not a plain command name, so doctor cannot tell whether it exists`
 2. **Runner.** The vendored runner must be complete and run `--version`.
    - `FAIL .gauntlet/lib lacks files the runner sources (<names>): run gauntlet install to re-vendor`
-   - `FAIL runner at <path> is not executable; run chmod +x <path>`
+   - `FAIL runner at <path> is not executable; run chmod +x '<path>'`
    - `FAIL .gauntlet/bin or .gauntlet/lib is broken or missing: run gauntlet install from a gauntlet checkout …`
 3. **Formats.** Each rule's format must be built in or in `.gauntlet/formats/`.
    - `FAIL rule <id>: format <name> is unknown: use a built-in format or add .gauntlet/formats/<name>.md`
@@ -170,7 +170,7 @@ slow: todo 51 ms (consider stage: push)
    - `FAIL <stage> gate missing from <file>: run gauntlet install-hooks`, or `add this line by hand as the first command …` for a hook that `install-hooks` would only print.
    - `FAIL <stage> gate in <file> is an older gauntlet line (it differs from the current one): run gauntlet install-hooks`, or `replace the line ending in "# gauntlet" in <file> with: <line>` when it would only print.
    - `FAIL <file> has N lines ending in "# gauntlet" (lines a, b, ...); keep one, the current form, and remove the others`
-   - `FAIL <stage> hook <file> is not executable: chmod +x <file>`
+   - `FAIL <stage> hook <file> is not executable: chmod +x '<file>'`
    - `FAIL gate missing from <config>: run gauntlet install-hooks and add the snippet it prints`
    - `FAIL lefthook pre-push gate in <file> has no use_stdin: true, so it judges the checked-out branch whatever git pushes: add use_stdin: true`
    - `FAIL <stage> gate in <file>: shared hooks directory: the gate must use the guarded form; run gauntlet install-hooks to see it`

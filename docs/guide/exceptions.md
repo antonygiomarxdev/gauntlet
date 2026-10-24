@@ -79,10 +79,10 @@ The second comparison can ask for a row where CI would not. Take a repo whose de
 ```
 [loosened]
   @config  base (unset) → develop
-gauntlet: base= is also judged against origin/main (the base without it); add a row with gauntlet loosen @config "base (unset) → develop" "<reason>", or run gauntlet base develop on this branch
+gauntlet: base= is also judged against origin/main (the base without it); add a row with gauntlet loosen @config 'base (unset) → develop' "<reason>", or run gauntlet base 'develop' on this branch
 ```
 
-That is deliberate: a local run that is stricter than CI costs one command, and a looser one would pass what CI refuses. There are two ways out, and the message names both. Record the base with `gauntlet loosen @config "base=develop" "features are cut from develop"` and commit the row. Or run `gauntlet base develop` on the branch, which makes `develop` the selected base, and so the default one too. The extra line is not counted as a problem.
+That is deliberate: a local run that is stricter than CI costs one command, and a looser one would pass what CI refuses. There are two ways out, and the message names both as commands you can paste; the ref and the text between single quotes come from the repo, so they are quoted and a ref with a `$(...)` in it runs nothing. Record the base with `gauntlet loosen @config "base=develop" "features are cut from develop"` and commit the row. Or run `gauntlet base develop` on the branch, which makes `develop` the selected base, and so the default one too. The extra line is not counted as a problem.
 
 `gauntlet base <ref>` writes `branch.<name>.gauntletBase` into the clone's git config. gauntlet trusts it as local state, like the developer's own checkout: a local run honours it, and CI, which has no such setting, judges with its `--base`. It takes any ref, so `gauntlet base HEAD` makes both comparisons look at HEAD and silences the `@config` judgement in that clone. It is a command a person types in their own checkout, and CI still judges the change.
 
