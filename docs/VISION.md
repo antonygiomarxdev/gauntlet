@@ -16,7 +16,7 @@ An agent that writes code in a repository must not be able to make that reposito
 
 Rules written in prose get forgotten. Agents read `AGENTS.md`, standards pages and ADRs, agree with them, and break them three PRs later while every test stays green. In the origin project, a PR passed review, lint, type-check and 1,105 tests, and still shipped two defects that reproduced a production outage. None of the rules it broke had a detector. **A rule nobody counts is a suggestion.**
 
-The process was first built by hand in that project ([case study](guide/case-study.md)). It worked: debt fell 22–85 % per rule in six weeks while merged PRs per week went up. It also leaked:
+The process was first built by hand in that project ([case study](guide/case-study.md)). It worked: debt fell 22–85 % per rule in two to six weeks, depending on when the rule was locked while merged PRs per week went up. It also leaked:
 
 - **Bespoke scripts.** They grew from 16 to 41 check and ratchet scripts, each with its own format and no guide for adding one.
 - **A routine escape hatch.** A waiver trailer agents could write themselves appeared in up to 17 % of a week's commits.

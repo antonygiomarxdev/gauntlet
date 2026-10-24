@@ -53,7 +53,7 @@ Fragment files are named by kind and timestamp, so two `changie new` runs in the
 ## Running the tests
 
 ```sh
-test/run.sh              # the whole suite: over a thousand tests, 15 to 20 minutes
+test/run.sh              # the whole suite: over a thousand tests; a run takes about a quarter of an hour
 test/run.sh check        # one group: test/check.test.sh, the quick way to work
 ```
 
