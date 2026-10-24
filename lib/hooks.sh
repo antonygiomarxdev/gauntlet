@@ -229,11 +229,29 @@ gitignore_missing() {
   ' "$1"
 }
 
-# gauntlet_keeps <path>: succeed when <path>, relative to .gauntlet/, is one of GAUNTLET_KEEP.
+# slashes_in <text>: set SLASHES to the number of "/" in <text>. Parameter expansion only, so no
+# bracket expression has to be right about a backslash on every bash.
+slashes_in() {
+  local rest=$1
+  SLASHES=0
+  while [ "$rest" != "${rest#*/}" ]; do
+    rest=${rest#*/}
+    SLASHES=$((SLASHES + 1))
+  done
+}
+
+# gauntlet_keeps <path>: succeed when <path>, relative to .gauntlet/, is one of GAUNTLET_KEEP. As in a
+# .gitignore a "*" stays inside one path level: rules/*.md is a rule file, not a file in a directory
+# under rules/ (a shell case pattern would let "*" cross "/"). A pattern has literal slashes only, so
+# a path that matches it with as many slashes as the pattern has crossed none.
 gauntlet_keeps() {
-  local pat
+  local pat have
+  slashes_in "$1"
+  have=$SLASHES
   while IFS= read -r pat; do
     pat=${pat#/}
+    slashes_in "$pat"
+    [ "$SLASHES" -eq "$have" ] || continue
     # shellcheck disable=SC2254 # the pattern is a glob on purpose
     case "$1" in $pat) return 0 ;; esac
   done <<KEEP

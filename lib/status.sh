@@ -587,6 +587,12 @@ doctor_hook_file() {
 # rule that still hides the file with the lines in place.
 doctor_ignored() {
   local scratch=$1 path rc=0 hit missing src ln pat cause paths
+  # git skips an ignore file it cannot read, with a warning of its own, and so would this check:
+  # what is ignored cannot be told, so say so once, as install does.
+  if [ -e .gauntlet/.gitignore ] && [ ! -r .gauntlet/.gitignore ]; then
+    doctor_fail "gauntlet: cannot read .gauntlet/.gitignore; fix the permissions"
+    return 0
+  fi
   git ls-files -z --others --ignored --exclude-standard -- .gauntlet > "$scratch/ignored.all" || return 2
   : > "$scratch/ignored.keep" || return 2
   while IFS= read -r -d '' path; do
@@ -609,7 +615,10 @@ doctor_ignored() {
     1) ;;
     *) return 2 ;;
   esac
-  missing=$(gitignore_missing .gauntlet/.gitignore) || return 2
+  missing=$(gitignore_missing .gauntlet/.gitignore 2> /dev/null) || {
+    doctor_fail "gauntlet: cannot read .gauntlet/.gitignore; fix the permissions"
+    return 0
+  }
   rc=0
   git check-ignore -v -z --stdin < "$scratch/ignored.keep" > "$scratch/ignored.hits" || rc=$?
   [ "$rc" -le 1 ] || return 2

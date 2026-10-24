@@ -2093,6 +2093,88 @@ test_doctor_names_the_rule_that_hides_a_lib_file_when_the_lines_are_there() {
   assert_not_contains "$OUT" "run gauntlet install"
 }
 
+# R58 N4: a pattern of the lines install writes covers one path level: rules/*.md is a rule file, not
+# a file in a directory under rules/. A nested file is hidden by the root rule whatever install adds,
+# so it is not blamed on the missing lines.
+test_gauntlet_keeps_matches_one_path_level() {
+  . "$ROOT/lib/hooks.sh"
+  local path
+  for path in bin/gauntlet lib/core.sh lib/formats/tsc.md rules/todo.md formats/mine.md config baseline.tsv exceptions.tsv .gitignore; do
+    gauntlet_keeps "$path" || fail "$path is a file install writes under .gauntlet/"
+  done
+  for path in lib/sub/core.sh lib/formats/sub/tsc.md rules/todo.bad/n.md formats/sub/mine.md sub/config rules/todo.bad.txt bin/other lib/formats/tsc.txt; do
+    if gauntlet_keeps "$path"; then fail "$path is none of the files install writes"; fi
+  done
+}
+
+test_doctor_does_not_blame_the_missing_lines_for_a_nested_file_they_cannot_cover() {
+  mkrepo
+  doctor_install
+  doctor_untrack
+  printf '*.md\n' > .gitignore
+  printf '%s' "$STATUS_TEST_OLD_GITIGNORE" > .gauntlet/.gitignore
+  must mkdir -p .gauntlet/rules/foo.bad .gauntlet/formats
+  printf 'x\n' > .gauntlet/rules/foo.bad/n.md
+  printf 'x\n' > .gauntlet/formats/mine.md
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_eq 2 "$(doctor_fails)" "one FAIL per cause: $OUT"
+  assert_contains "$OUT" "FAIL a root ignore rule hides .gauntlet/rules/foo.bad/n.md (.gitignore:1:*.md); remove or narrow that rule"
+  assert_contains "$OUT" "FAIL required lines are missing from .gauntlet/.gitignore, so a root ignore rule hides .gauntlet/formats/mine.md (.gitignore:1:*.md): run gauntlet install to add them"
+}
+
+# R58 N5: a .gauntlet/.gitignore that cannot be read is one FAIL with a gauntlet: line, as install
+# says it; git's own warning and awk's are not passed on, and the other checks go on.
+test_doctor_fails_once_when_the_gauntlet_gitignore_cannot_be_read() {
+  [ "$(id -u)" -ne 0 ] || { skip "root reads any file"; return 77; }
+  mkrepo
+  doctor_install
+  doctor_untrack
+  printf '*.tsv\n' > .gitignore
+  must chmod 000 .gauntlet/.gitignore
+  run "$G" doctor
+  chmod 644 .gauntlet/.gitignore
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_eq 1 "$(doctor_fails)" "one FAIL: $OUT"
+  assert_contains "$OUT" "FAIL gauntlet: cannot read .gauntlet/.gitignore; fix the permissions"
+  assert_not_contains "$OUT" "unable to access"
+  assert_not_contains "$OUT" "cannot open"
+  assert_contains "$OUT" "ok base main"
+  assert_contains "$OUT" "ok no stale waivers"
+}
+
+# A read that fails after the permission test passed (the file goes away, the disk fails) says the
+# same, and awk's own message is not passed on.
+test_doctor_fails_once_when_the_gauntlet_gitignore_read_fails() {
+  mkrepo
+  doctor_install
+  doctor_untrack
+  printf '*.tsv\n' > .gitignore
+  printf '%s' "$STATUS_TEST_OLD_GITIGNORE" > .gauntlet/.gitignore
+  tool_fails awk '' .gitignore
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_eq 1 "$(doctor_fails)" "one FAIL: $OUT"
+  assert_contains "$OUT" "FAIL gauntlet: cannot read .gauntlet/.gitignore; fix the permissions"
+  assert_not_contains "$OUT" "simulated failure"
+  assert_contains "$OUT" "ok no stale waivers"
+}
+
+# Without any ignored file the unreadable file would go unnoticed, and git's warning would leak.
+test_doctor_fails_when_the_gauntlet_gitignore_cannot_be_read_and_nothing_is_ignored() {
+  [ "$(id -u)" -ne 0 ] || { skip "root reads any file"; return 77; }
+  mkrepo
+  doctor_install
+  must chmod 000 .gauntlet/.gitignore
+  run "$G" doctor
+  chmod 644 .gauntlet/.gitignore
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "FAIL gauntlet: cannot read .gauntlet/.gitignore; fix the permissions"
+  assert_not_contains "$OUT" "unable to access"
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor with the file readable again: $OUT"
+}
+
 # A root pattern that ignores .gauntlet/ itself cannot be undone from inside it: one FAIL says so.
 test_doctor_says_when_gauntlet_itself_is_ignored() {
   mkrepo
