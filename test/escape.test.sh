@@ -723,3 +723,102 @@ test_doctor_prints_the_unchecked_tool_word_escaped() {
   assert_contains "$OUT" 'note tool for rule s1 not checked: the detector starts with "r\x1b[2Jg"'
   assert_clean "$OUT" "doctor"
 }
+
+# --- base and ref text ---
+
+# The base= of the tracked config is somebody else's text, and so is a ref name a hook is given.
+
+# esc_ref <kind>: a ref name with a control in it: "esc" has ESC and BEL, "csi" has U+009B.
+esc_ref() {
+  case "$1" in
+    esc) printf 'x\033]0;pwned\a\033[2J' ;;
+    *) printf 'x\302\233y' ;;
+  esac
+}
+
+# esc_ref_spelt <kind>: the same name as path_spell writes it.
+esc_ref_spelt() {
+  case "$1" in
+    esc) printf 'x\\x1b]0;pwned\\x07\\x1b[2J' ;;
+    *) printf 'x\\xc2\\x9by' ;;
+  esac
+}
+
+test_a_base_in_the_config_with_a_control_is_refused_escaped() {
+  local kind ref spelt
+  for kind in esc csi; do
+    mkrepo
+    ref=$(esc_ref "$kind")
+    spelt=$(esc_ref_spelt "$kind")
+    printf 'base=%s\n' "$ref" > .gauntlet/config
+    must git add -A
+    must git commit -q -m "base $kind"
+    run "$G" check --ci
+    assert_eq 2 "$STATUS" "check --ci $kind: $OUT"
+    assert_contains "$OUT" "gauntlet: bad base= in .gauntlet/config: $spelt"
+    assert_clean "$OUT" "check --ci $kind"
+    run "$G" base
+    assert_eq 2 "$STATUS" "base $kind: $OUT"
+    assert_contains "$OUT" "gauntlet: bad base= in .gauntlet/config: $spelt"
+    assert_clean "$OUT" "base $kind"
+    cd "$TMP" || fail "cannot cd to $TMP"
+    rm -rf "$TMP/repo"
+  done
+}
+
+test_a_valid_base_in_the_config_is_printed_as_it_is() {
+  mkrepo
+  printf 'base=origin/main\n' > .gauntlet/config
+  run "$G" base
+  assert_eq 0 "$STATUS" "base: $OUT"
+  assert_eq origin/main "$OUT" "base"
+}
+
+# git echoes the refspec it is given in its own error, and gauntlet names the ref it failed to fetch.
+test_a_failed_fetch_of_a_base_with_a_control_prints_escaped() {
+  local kind ref spelt
+  for kind in esc csi; do
+    mkrepo
+    must git init -q --bare "$TMP/origin.git"
+    must git remote add origin "$TMP/origin.git"
+    ref=$(esc_ref "$kind")
+    spelt=$(esc_ref_spelt "$kind")
+    run "$G" check --ci --base "origin/$ref"
+    assert_eq 2 "$STATUS" "check --ci $kind: $OUT"
+    assert_contains "$OUT" "gauntlet: fetch of origin/$spelt failed; using the local ref"
+    assert_contains "$OUT" "fatal: "
+    assert_contains "$OUT" "gauntlet: unknown ref: origin/$spelt"
+    assert_clean "$OUT" "check --ci $kind"
+    cd "$TMP" || fail "cannot cd to $TMP"
+    rm -rf "$TMP/repo" "$TMP/origin.git"
+  done
+}
+
+test_the_pre_push_refusal_prints_a_branch_name_escaped() {
+  local kind ref spelt zero sha
+  mkrepo
+  zero=0000000000000000000000000000000000000000
+  sha=1111111111111111111111111111111111111111
+  for kind in esc csi; do
+    ref=$(esc_ref "$kind")
+    spelt=$(esc_ref_spelt "$kind")
+    OUT=$(printf 'refs/heads/%s %s refs/heads/%s %s\n' "$ref" "$sha" "$ref" "$zero" | "$G" check --ci --pre-push 2>&1) && STATUS=0 || STATUS=$?
+    assert_eq 1 "$STATUS" "pre-push $kind: $OUT"
+    assert_contains "$OUT" "gauntlet checks the checked-out branch; check out $spelt and push again"
+    assert_clean "$OUT" "pre-push $kind"
+  done
+}
+
+test_gauntlet_base_prints_the_ref_escaped() {
+  local kind ref spelt
+  mkrepo
+  for kind in esc csi; do
+    ref=$(esc_ref "$kind")
+    spelt=$(esc_ref_spelt "$kind")
+    must git config branch.main.gauntletBase "$ref"
+    run "$G" base
+    assert_eq 0 "$STATUS" "base $kind: $OUT"
+    assert_eq "$spelt" "$OUT" "base $kind"
+    assert_clean "$OUT" "base $kind"
+  done
+}

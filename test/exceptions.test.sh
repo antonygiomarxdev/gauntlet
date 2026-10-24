@@ -936,6 +936,23 @@ test_loosen_accepts_the_config_pseudo_rule_and_remove_does_not() {
 }
 
 # R32: a rule lookup that git cannot answer is exit 2, never "no such rule".
+# The base= of the config is looked up for a rule that only the base has; one that is no ref name is
+# a broken setup, and loosen says so rather than "no rule".
+test_loosen_with_a_bad_base_in_the_config_is_exit_2() {
+  exc_setup 'ok'
+  printf 'base=x\033[2Jy\n' > .gauntlet/config
+  exc_commit config
+  run "$G" loosen todo "paths" "reason"
+  assert_eq 0 "$STATUS" "a rule in the working tree is found first: $OUT"
+  must git rm -q --cached .gauntlet/rules/todo.md
+  rm .gauntlet/rules/todo.md
+  exc_commit "drop the rule"
+  run "$G" loosen todo "paths" "reason"
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" 'gauntlet: bad base= in .gauntlet/config: x\x1b[2Jy'
+  assert_not_contains "$OUT" "no rule"
+}
+
 test_a_failed_lookup_of_the_rule_in_head_is_exit_2() {
   exc_setup 'ok'
   must rm .gauntlet/rules/todo.md

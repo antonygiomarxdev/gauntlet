@@ -30,6 +30,10 @@ resolve_base() {
   if ref=$(git config --get "branch.$branch.gauntletBase") && [ -n "$ref" ]; then
     printf '%s\n' "$ref"
   elif ref=$(config_get base "") && [ -n "$ref" ]; then
+    # The tracked config is somebody else's text. A name that holds a control byte is no ref
+    # (git forbids them, and U+0080 to U+009F in UTF-8 form are terminal controls too), and
+    # it must never reach a terminal as it is: refuse it here, escaped.
+    [ "$(path_spell "$ref")" = "$ref" ] || die "bad base= in .gauntlet/config: $ref"
     printf '%s\n' "$ref"
   elif ref=$(git symbolic-ref -q --short refs/remotes/origin/HEAD) && [ -n "$ref" ]; then
     printf '%s\n' "$ref"
@@ -67,8 +71,13 @@ base_resolves() {
 # must use a plain x=$(...) or || exit; never local x=$(...), if x=$(...) or a
 # bare "$(...)", which mask the exit.
 merge_base() {
-  local ref=$1 sha
-  if ! fetch_base_ref "$ref"; then
+  local ref=$1 sha err rc=0
+  # git echoes the ref it was given in its own errors, so its lines go through path_spell too.
+  err=$(tmp_new) || die "cannot create a temp file"
+  fetch_base_ref "$ref" 2> "$err" || rc=$?
+  path_spell < "$err" >&2
+  rm -f "$err"
+  if [ "$rc" -ne 0 ]; then
     printf 'gauntlet: fetch of %s failed; using the local ref\n' "$(path_spell "$ref")" >&2
   fi
   git rev-parse --verify -q "$ref^{commit}" >/dev/null || die "unknown ref: $ref; $BASE_HINT"

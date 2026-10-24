@@ -93,6 +93,18 @@ test_failed_fetch_warns_and_continues() {
   assert_contains "$OUT" "$(git rev-parse HEAD)"
 }
 
+# A fetch that works says nothing: only the merge-base is printed.
+test_a_good_fetch_prints_only_the_merge_base() {
+  mkrepo
+  base_lib
+  must git init -q --bare "$TMP/origin.git"
+  must git remote add origin "$TMP/origin.git"
+  must git push -q origin main
+  run bash -c ". '$ROOT/lib/core.sh'; . '$ROOT/lib/base.sh'; merge_base origin/main"
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_eq "$(git rev-parse HEAD)" "$OUT" "output"
+}
+
 test_base_command_writes_only_branch_key() {
   mkrepo
   must git checkout -q -b feature-b

@@ -47,7 +47,7 @@ exc_rule_known() {
   rc=0
   base_has HEAD "$path" || rc=$?
   case "$rc" in 0) return 0 ;; 1) ;; *) return 2 ;; esac
-  ref=$(resolve_base "") || return 1
+  ref=$(resolve_base "") || return 2
   git rev-parse -q --verify "$ref^{commit}" > /dev/null 2>&1 || return 1
   mb=$(git merge-base HEAD "$ref" 2> /dev/null) || return 1
   rc=0

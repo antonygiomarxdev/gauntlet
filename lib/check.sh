@@ -75,7 +75,7 @@ PUSHLINE
       refs/heads/*) name=${lref#refs/heads/} ;;
       *) name=${rref#refs/heads/} ;;
     esac
-    printf 'gauntlet checks the checked-out branch; check out %s and push again\n' "$name" >&2
+    printf 'gauntlet checks the checked-out branch; check out %s and push again\n' "$(path_spell "$name")" >&2
     refused=1
   done
   [ "$refused" -eq 0 ] || return 1

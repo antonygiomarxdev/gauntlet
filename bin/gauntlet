@@ -94,7 +94,8 @@ case "${1:-}" in
       if [ "$branch" = HEAD ]; then die "detached HEAD: check out a branch first"; fi
       git config "branch.$branch.gauntletBase" "$2"
     else
-      resolve_base ""
+      ref=$(resolve_base "") || exit 2
+      printf '%s\n' "$(path_spell "$ref")"
     fi
     ;;
   baseline)
