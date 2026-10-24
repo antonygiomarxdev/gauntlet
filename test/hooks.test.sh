@@ -2528,6 +2528,42 @@ test_a_shared_script_serving_both_hooks_with_the_guarded_gates_alone_is_done() {
   assert_not_contains "$OUT" "ACTION NEEDED"
 }
 
+# R68: only a whole line is the guarded line. A copy that is commented out, indented, part of a
+# longer command, or cut short (the start of it) is not the gate, so beside a plain line of ours the hook still has the old form to
+# replace; it is not told to drop the plain line (that would leave it with no gate).
+test_only_a_whole_line_counts_as_the_guarded_line_of_a_shared_hook() {
+  local line
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must mkdir "$TMP/shared"
+  must git config core.hooksPath "$TMP/shared"
+  printf '#!/bin/sh\n%s\n' "$HOOK_TEST_SHARED_STAGED" > "$TMP/shared/pre-commit"
+  chmod 755 "$TMP/shared/pre-commit"
+  for line in "# $HOOK_TEST_SHARED_CI" "$HOOK_TEST_SHARED_CI && echo done" "echo go; $HOOK_TEST_SHARED_CI" "  $HOOK_TEST_SHARED_CI" "${HOOK_TEST_SHARED_CI%%;*};"; do
+    printf '#!/bin/sh\n%s\n%s\n' "$line" "$HOOK_TEST_GATE_CI" > "$TMP/shared/pre-push"
+    chmod 755 "$TMP/shared/pre-push"
+    run "$G" install-hooks
+    assert_eq 0 "$STATUS" "install-hooks with [$line]: $OUT"
+    assert_contains "$OUT" "ACTION NEEDED: replace the line ending in \"# gauntlet\" in $TMP/shared/pre-push with:"$'\n'"$HOOK_TEST_SHARED_CI"
+    assert_not_contains "$OUT" "already runs the gate"
+  done
+}
+
+# R68: a CR before the newline does not hide the guarded line: a hook with CRLF endings gets the same
+# advice as one without.
+test_a_crlf_shared_hook_with_the_guarded_line_and_a_plain_line_gets_the_drop_advice() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must mkdir "$TMP/shared"
+  must git config core.hooksPath "$TMP/shared"
+  printf '#!/bin/sh\r\n%s\r\n%s\r\n' "$HOOK_TEST_SHARED_CI" "$HOOK_TEST_GATE_CI" > "$TMP/shared/pre-push"
+  chmod 755 "$TMP/shared/pre-push"
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "ACTION NEEDED: $(shared_drop_words "$TMP/shared/pre-push"):"$'\n'"$HOOK_TEST_SHARED_CI"
+  assert_not_contains "$OUT" "replace the line"
+}
+
 # A shared hooks directory is only printed for: the same sentence per hook, and the guarded form
 # as the current line. Nothing in the directory is touched.
 test_a_shared_hooks_dir_with_two_marked_lines_is_named_and_the_guarded_line_printed() {
@@ -3257,6 +3293,17 @@ test_a_shared_script_with_a_second_gate_line_is_not_done() {
   run "$G" install-hooks
   assert_contains "$OUT" "gauntlet: .git/hooks/pre-commit has 2 lines ending in \"# gauntlet\" (lines 3, 4); keep one, the current form, and remove the others"
   assert_contains "$OUT" "gauntlet: .git/hooks/pre-commit has 2 lines ending in \"# gauntlet\" (lines 7, 8); keep one, the current form, and remove the others"
+}
+
+# R68: the block that follows the "keep one" sentences opens with one fixed sentence: which two
+# files are one, that nothing is edited, and that the lines after it are the current form to put at
+# the top of the script. The tests above match only its first words.
+test_the_block_of_a_crowded_one_script_opens_with_the_current_form_sentence() {
+  one_script_repo symlink
+  printf '#!/bin/sh\n%s\n%s\n%s\nfi\n%s\n%s\nfi\n' "$HOOK_TEST_GUARD_STAGED" "$HOOK_TEST_GATE_STAGED" "$HOOK_TEST_GATE_STAGED" "$HOOK_TEST_GUARD_CI" "$HOOK_TEST_GATE_CI" > .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" $'\n'"ACTION NEEDED: .git/hooks/pre-commit and .git/hooks/pre-push are the same file, so a gate line in it would run in both hooks. It is not edited. The current form, as the first commands of .git/hooks/pre-commit:"$'\n'"$HOOK_TEST_GUARD_STAGED"$'\n'
 }
 
 # The same in a shared hooks directory (the guarded forms are the gate, the marked plain lines are

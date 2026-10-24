@@ -2068,6 +2068,33 @@ test_doctor_fails_a_shared_hook_that_has_the_guarded_line_and_a_marked_plain_lin
   doctor_one_fail "FAIL $TMP/shared/pre-commit already runs the gate with its guarded line; remove the line ending in \"# gauntlet\" from it, which fails in a repository without .gauntlet/"
 }
 
+# R68: doctor finds the guarded line the way install-hooks does, as a whole line (a CR before the
+# newline ignored). A commented-out, indented, longer or cut-short copy is not the gate, so beside
+# a plain line of ours the FAIL says the gate must use the guarded form; the drop advice is for the
+# whole line only.
+# shellcheck disable=SC2016 # the hook text holds $? that must not expand here
+test_doctor_finds_the_guarded_line_of_a_shared_hook_as_a_whole_line() {
+  local line drop="already runs the gate with its guarded line"
+  mkrepo
+  must mkdir "$TMP/shared"
+  must git config core.hooksPath "$TMP/shared"
+  doctor_install
+  printf '#!/bin/sh\n%s\n' "$STATUS_TEST_SHARED_STAGED" > "$TMP/shared/pre-commit"
+  must chmod +x "$TMP/shared/pre-commit"
+  for line in "# $STATUS_TEST_SHARED_CI" "$STATUS_TEST_SHARED_CI && echo done" "echo go; $STATUS_TEST_SHARED_CI" "  $STATUS_TEST_SHARED_CI" "${STATUS_TEST_SHARED_CI%%;*};"; do
+    printf '#!/bin/sh\n%s\n%s\n' "$line" "$STATUS_TEST_GATE_CI" > "$TMP/shared/pre-push"
+    must chmod +x "$TMP/shared/pre-push"
+    run "$G" doctor
+    assert_eq 1 "$STATUS" "doctor with [$line]: $OUT"
+    assert_contains "$OUT" "FAIL pre-push gate in $TMP/shared/pre-push: shared hooks directory: the gate must use the guarded form; run gauntlet install-hooks to see it"
+    assert_not_contains "$OUT" "$drop"
+  done
+  printf '#!/bin/sh\r\n%s\r\n%s\r\n' "$STATUS_TEST_SHARED_CI" "$STATUS_TEST_GATE_CI" > "$TMP/shared/pre-push"
+  run "$G" doctor
+  assert_contains "$OUT" "FAIL $TMP/shared/pre-push $drop; remove the line ending in \"# gauntlet\" from it, which fails in a repository without .gauntlet/"
+  assert_not_contains "$OUT" "the gate must use the guarded form"
+}
+
 # R67 (b): a shared hooks directory whose two hooks are one script gets the same words.
 # shellcheck disable=SC2016 # the hook text holds ${0##*/}, which must not expand here
 test_doctor_fails_a_shared_script_serving_both_hooks_with_the_guarded_gates_and_a_plain_line() {
