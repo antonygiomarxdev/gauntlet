@@ -2039,3 +2039,52 @@ test_a_file_that_is_not_junk_still_refuses_beside_the_junk() {
   printf 'x\n' > .gauntlet/notes.md
   untracked_refused ".gauntlet/notes.md"
 }
+
+# R66: the refusal fails closed. When git cannot list the files, or the temp file for the list
+# cannot be made, the gate exits 2 with one line of gauntlet's own that says what to do; it never
+# passes on a list it could not read. (An unwritable TMPDIR stops the run before this point, in
+# bin/gauntlet, which cannot make its run root, so the temp file is made to fail with a mktemp that
+# refuses everything but the run root.)
+
+# untracked_shim <git|mktemp>: $TMP/shim holds a git that fails the listing of the files under
+# .gauntlet, or a mktemp that fails every file but the run root's directory; both run the real tool
+# for anything else. The shim dir is first on PATH of the run that uses it.
+untracked_shim() {
+  local real_git real_mktemp
+  real_git=$(command -v git)
+  real_mktemp=$(command -v mktemp)
+  must mkdir -p "$TMP/shim"
+  case "$1" in
+    git) printf '#!/bin/sh\ncase " $* " in *" ls-files "*" -- .gauntlet "*) echo "fatal: boom" >&2; exit 128 ;; esac\nexec "%s" "$@"\n' "$real_git" > "$TMP/shim/git" ;;
+    mktemp) printf '#!/bin/sh\ncase " $* " in *" -d "*) exec "%s" "$@" ;; esac\necho "mktemp: boom" >&2\nexit 1\n' "$real_mktemp" > "$TMP/shim/mktemp" ;;
+  esac
+  must chmod +x "$TMP/shim/$1"
+}
+
+test_the_refusal_fails_closed_when_git_cannot_list_the_untracked_files() {
+  gate_setup 'ok'
+  untracked_shim git
+  run env PATH="$TMP/shim:$PATH" "$G" check --ci --base main
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_eq "gauntlet: cannot list the untracked files under .gauntlet; check that git works in this repository" "$OUT" "the one line"
+  # The line is on stderr and stdout is empty.
+  PATH="$TMP/shim:$PATH" "$G" check --ci --base main > "$TMP/out" 2> "$TMP/err" || true
+  assert_eq "" "$(cat "$TMP/out")" "stdout"
+  assert_eq "gauntlet: cannot list the untracked files under .gauntlet; check that git works in this repository" "$(cat "$TMP/err")" "stderr"
+}
+
+test_the_refusal_fails_closed_when_its_temp_file_cannot_be_made() {
+  gate_setup 'ok'
+  untracked_shim mktemp
+  run env PATH="$TMP/shim:$PATH" "$G" check --ci --base main
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_eq "gauntlet: cannot list the untracked files under .gauntlet; check that git works in this repository" "$OUT" "the one line"
+}
+
+# Without the shims the same run passes: the refusal is what the shims break, nothing else.
+test_the_shims_of_the_fail_closed_tests_are_transparent_otherwise() {
+  gate_setup 'ok'
+  untracked_shim git
+  run env PATH="$TMP/shim:$PATH" "$G" status
+  assert_eq 0 "$STATUS" "status with the git shim: $OUT"
+}

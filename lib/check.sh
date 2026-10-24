@@ -52,9 +52,14 @@ check_ci() {
 # the junk the run never reads (gauntlet_junk, R65).
 untracked_gauntlet_refuse() {
   local tmp name n=0 list='' more='' rc=0
-  tmp=$(tmp_new) || return 2
-  git -c core.quotepath=off ls-files -o --exclude-standard -z -- .gauntlet > "$tmp" || rc=2
-  if [ "$rc" -eq 0 ]; then
+  local cannot="gauntlet: cannot list the untracked files under .gauntlet; check that git works in this repository"
+  # Fail closed (R66): a list that could not be made is not an empty list. One line of ours; the
+  # tools' own words (a fatal: from git, a mktemp error) are left out.
+  tmp=$(tmp_new 2> /dev/null) || { printf '%s\n' "$cannot" >&2; return 2; }
+  git -c core.quotepath=off ls-files -o --exclude-standard -z -- .gauntlet > "$tmp" 2> /dev/null || rc=2
+  if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "$cannot" >&2
+  else
     while IFS= read -r -d '' name; do
       if gauntlet_junk "${name#.gauntlet/}"; then continue; fi
       n=$((n + 1))
