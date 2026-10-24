@@ -5,13 +5,39 @@
 # compatible; awk, git and coreutils only. Needs core.sh. bin/gauntlet sets
 # GAUNTLET_BIN, the physical bin directory of the running runner, before sourcing.
 
-# The gate lines. A created hook gets the plain pinned form. An existing hook gets
-# the `|| exit $?` form on the line after its shebang (see add_hook_line). A hook
-# that has either form, as a whole line, is already done.
-HOOK_LINE_STAGED='.gauntlet/bin/gauntlet check --staged  # gauntlet'
-HOOK_GATE_STAGED='.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet'
-HOOK_LINE_CI='.gauntlet/bin/gauntlet check --ci --pre-push  # gauntlet'
-HOOK_GATE_CI='.gauntlet/bin/gauntlet check --ci --pre-push || exit $?  # gauntlet'
+# The command strings of the two gates. A hook manager's config (lefthook, prek) runs them as
+# they are, and doctor looks for them there; the pre-push one carries --pre-push, which is how the
+# gate learns what git is pushing (a hook manager has to pass git's stdin on: lefthook does with
+# use_stdin). A gate line of a stage is gauntlet's when it runs the NEEDLE of that stage.
+GAUNTLET_CMD_STAGED='.gauntlet/bin/gauntlet check --staged'
+HOOK_NEEDLE_CI='.gauntlet/bin/gauntlet check --ci'
+GAUNTLET_CMD_CI="$HOOK_NEEDLE_CI --pre-push"
+
+# The gate lines. A created hook gets the plain pinned form; an existing hook gets the `|| exit $?`
+# form on the line after its shebang (see add_hook_line). A hook that has either form, as a whole
+# line, is already done. A line that ends in the marker "# gauntlet" and runs the gate of its stage
+# is gauntlet's (R47): when it is not the current form, install-hooks replaces it where it stands
+# and doctor fails it. No list of older forms is kept.
+HOOK_LINE_STAGED="$GAUNTLET_CMD_STAGED  # gauntlet"
+HOOK_GATE_STAGED="$GAUNTLET_CMD_STAGED || exit \$?  # gauntlet"
+
+# The pre-push line (R41). Git sends the ref lines once, on stdin, and the gate reads them to the
+# end, so a command of the project's own after it (git lfs pre-push, a loop over the ref lines)
+# would read nothing. The line copies stdin to a temp file, runs the gate on the file, and gives
+# stdin back as the same file for the commands that follow; the file is removed once stdin is the
+# open descriptor, and on every way out. It is one line, POSIX sh (hooks run under dash, ash, bash,
+# zsh as sh, and under sh -e in husky v9), and fails closed: no temp file, no copy of stdin, or no
+# way to hand it back is exit 2 (a shell may exit on its own when the hand-back fails: 2 in dash,
+# 1 in the POSIX modes of bash, ash and zsh; the hook stops all the same), and a failing gate is
+# its own status. A terminal on stdin (a hook run by hand) is not read and is kept for the project's
+# commands; the gate then sees an empty file and judges the checked-out branch. A kill between the
+# mktemp and the end can leave a file in TMPDIR. The same one line is the plain form, the gate form
+# and, inside a test for the runner, the form for a shared hooks directory; the config snippets
+# keep the bare command because the hook manager owns stdin.
+# shellcheck disable=SC2016 # shell text for a hook: $(...) and $_gauntlet_in expand when the hook runs
+HOOK_BODY_CI='_gauntlet_in=$(mktemp) || exit 2; [ -t 0 ] || cat >"$_gauntlet_in" || { rm -f "$_gauntlet_in"; exit 2; }; '"$GAUNTLET_CMD_CI"' <"$_gauntlet_in" || { _gauntlet_rc=$?; rm -f "$_gauntlet_in"; exit "$_gauntlet_rc"; }; [ -t 0 ] || exec <"$_gauntlet_in" || { rm -f "$_gauntlet_in"; exit 2; }; rm -f "$_gauntlet_in"'
+HOOK_LINE_CI="$HOOK_BODY_CI  # gauntlet"
+HOOK_GATE_CI=$HOOK_LINE_CI
 
 # When pre-commit and pre-push are one file (a symlink, a hard link), that script runs for both
 # hooks, so a gate line in it would run in both: the staged gate under pre-push and the push gate
@@ -23,24 +49,25 @@ HOOK_GUARD_STAGED='if [ "${0##*/}" = pre-commit ]; then'
 # shellcheck disable=SC2016 # as above
 HOOK_GUARD_CI='if [ "${0##*/}" = pre-push ]; then'
 
-# The pre-push lines of the versions before --pre-push: they judge the checked-out branch
-# whatever git pushes. install-hooks replaces them in place; doctor names them.
-HOOK_OLD_LINE_CI='.gauntlet/bin/gauntlet check --ci  # gauntlet'
-HOOK_OLD_GATE_CI='.gauntlet/bin/gauntlet check --ci || exit $?  # gauntlet'
-
-# The command strings that show a config already runs the gate. The pre-push one carries
-# --pre-push, which is how the gate learns what git is pushing (a hook manager has to pass
-# git's stdin on: lefthook does with use_stdin).
-GAUNTLET_CMD_STAGED='.gauntlet/bin/gauntlet check --staged'
-GAUNTLET_CMD_CI='.gauntlet/bin/gauntlet check --ci --pre-push'
-
 # The form for a hooks directory shared with other repositories (core.hooksPath outside this
 # repo): the same gate, but only where the vendored runner exists, so a repository without
 # gauntlet is not blocked by it. The gate is the first command of the body, so git's stdin
 # reaches the pre-push gate. install-hooks prints it, doctor accepts it. Built from the command
 # strings above, so the gate text has one source.
 HOOK_SHARED_STAGED="if [ -x .gauntlet/bin/gauntlet ]; then $GAUNTLET_CMD_STAGED || exit \$?; fi"
-HOOK_SHARED_CI="if [ -x .gauntlet/bin/gauntlet ]; then $GAUNTLET_CMD_CI || exit \$?; fi"
+HOOK_SHARED_CI="if [ -x .gauntlet/bin/gauntlet ]; then $HOOK_BODY_CI; fi"
+
+# shellcheck disable=SC2016 # the awk program reads its record; it is not shell text to expand
+# marked(line, needle): whether a line of a hook is gauntlet's (R47): it ends in the marker (a CR
+# before the newline and blanks after the marker are ignored), it is not a comment, and it runs
+# the needle, the gate command of its stage. The marker alone is not enough: the project's own
+# "echo tidy  # gauntlet" is not ours. One definition for the check and the replacement.
+HOOK_MARKED_AWK='
+function marked(line, needle) {
+  sub(/\r$/, "", line)
+  return line ~ /# gauntlet[ \t]*$/ && line !~ /^[ \t]*#/ && index(line, needle) > 0
+}
+'
 
 # shellcheck disable=SC2016 # the awk program reads its record; it is not shell text to expand
 # The decision for one existing hook, run by awk over the file: exit 0 when the gate
@@ -354,16 +381,16 @@ add_hook_pair() {
     hooks_one_script "$1/pre-commit" "$1/pre-push"
     return 0
   fi
-  add_hook_line "$1/pre-commit" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED"
-  add_hook_line "$1/pre-push" "$HOOK_LINE_CI" "$HOOK_GATE_CI" "$HOOK_OLD_LINE_CI" "$HOOK_OLD_GATE_CI"
+  add_hook_line "$1/pre-commit" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED" "$GAUNTLET_CMD_STAGED"
+  add_hook_line "$1/pre-push" "$HOOK_LINE_CI" "$HOOK_GATE_CI" "$HOOK_NEEDLE_CI"
 }
 
 # hooks_one_script_done <file>: succeed when <file>, which serves both hooks, holds both gate
 # lines and both tests on the hook's name (HOOK_GUARD_*), as whole lines. Presence, not meaning:
 # like every check of a hook, it cannot tell what the lines around them do.
 hooks_one_script_done() {
-  hook_has_gate "$1" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED" "$HOOK_SHARED_STAGED" \
-    && hook_has_gate "$1" "$HOOK_LINE_CI" "$HOOK_GATE_CI" "$HOOK_SHARED_CI" \
+  hook_has_gate "$1" "$GAUNTLET_CMD_STAGED" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED" "$HOOK_SHARED_STAGED" \
+    && hook_has_gate "$1" "$HOOK_NEEDLE_CI" "$HOOK_LINE_CI" "$HOOK_GATE_CI" "$HOOK_SHARED_CI" \
     && grep -Fxq -- "$HOOK_GUARD_STAGED" "$1" 2> /dev/null \
     && grep -Fxq -- "$HOOK_GUARD_CI" "$1" 2> /dev/null
 }
@@ -438,11 +465,13 @@ hook_overwrite() {
 # (check --ci --pre-push), and any command before it that reads stdin would take them. The
 # project's hook then runs unchanged and keeps its own exit status. A hook we must not edit is
 # printed instead. A missing file, or an empty one, gets the plain pinned form. An existing
-# file keeps its mode and every byte except the inserted line. A line of the old forms, which
-# older versions wrote, is replaced where it stands (upgrade_gate_line).
+# file keeps its mode and every byte except the inserted line. A line that is gauntlet's (it
+# ends in the marker and runs the <needle> gate) but not the current form is replaced where it
+# stands (upgrade_gate_line, R47) instead of getting a second gate.
 add_hook_line() {
-  local file=$1 line=$2 gate=$3 old_line=${4:-} old_gate=${5:-} tmp rc=0
-  if [ -e "$file" ] && hook_has_gate "$file" "$line" "$gate"; then
+  local file=$1 line=$2 gate=$3 needle=$4 state tmp rc=0
+  state=$(hook_gate_state "$file" "$needle" "$line" "$gate")
+  if [ "$state" = present ]; then
     printf 'already present in %s\n' "$(display_path "$file")"
     warn_if_not_executable "$file"
     return 0
@@ -453,8 +482,8 @@ add_hook_line() {
     1) print_only "$file" "$gate"; return 0 ;;
     *) die "cannot read $file" ;;
   esac
-  if [ -n "$old_line" ] && [ -e "$file" ] && hook_has_gate "$file" "$old_line" "$old_gate"; then
-    upgrade_gate_line "$file" "$line" "$gate" "$old_line" "$old_gate"
+  if [ "$state" = old ]; then
+    upgrade_gate_line "$file" "$gate" "$needle"
     printf 'updated gauntlet line in %s\n' "$(display_path "$file")"
     warn_if_not_executable "$file"
     return 0
@@ -488,15 +517,15 @@ add_hook_line() {
   warn_if_not_executable "$file"
 }
 
-# upgrade_gate_line <file> <plain> <gate> <old-plain> <old-gate>: replace each whole line of
-# <file> that is an old form by the same form of the new line, where it stands. Every other
-# byte stays, a missing final newline included.
+# upgrade_gate_line <file> <gate> <needle>: replace each line of <file> that is gauntlet's for
+# the <needle> gate (marked, HOOK_MARKED_AWK) by <gate>, where it stands. Every other byte stays,
+# a missing final newline included.
 upgrade_gate_line() {
   local file=$1 tmp size
   tmp=$(tmp_new) || die "cannot create a temp file"
-  GL_PLAIN=$2 GL_GATE=$3 GL_OLD_PLAIN=$4 GL_OLD_GATE=$5 awk '
-    $0 == ENVIRON["GL_OLD_PLAIN"] { print ENVIRON["GL_PLAIN"]; next }
-    $0 == ENVIRON["GL_OLD_GATE"] { print ENVIRON["GL_GATE"]; next }
+  GL_GATE=$2 GL_NEEDLE=$3 LC_ALL=C awk "$HOOK_MARKED_AWK"'
+    BEGIN { gate = ENVIRON["GL_GATE"]; needle = ENVIRON["GL_NEEDLE"] }
+    marked($0, needle) { print gate; next }
     { print }
   ' "$file" > "$tmp" || { rm -f "$tmp"; die "cannot read $file"; }
   if [ -n "$(tail -c 1 "$file")" ]; then
@@ -505,19 +534,38 @@ upgrade_gate_line() {
     head -c "$((size - 1))" "$tmp" > "$tmp.cut" || { rm -f "$tmp" "$tmp.cut"; die "cannot read $file"; }
     mv "$tmp.cut" "$tmp" || { rm -f "$tmp" "$tmp.cut"; die "cannot read $file"; }
   fi
-  hook_overwrite "$tmp" "$file" "$3"
+  hook_overwrite "$tmp" "$file" "$2"
   rm -f "$tmp"
 }
 
-# hook_has_gate <file> <form>...: succeed when <file> holds any of the forms as a whole line. doctor
-# and install-hooks both ask this, so a hook is done by one rule.
+# hook_gate_state <file> <needle> <form>...: how <file> stands with the gate line of one stage,
+# on stdout: "present" when a line of it is one of the <form>s (whole line, a CR before the
+# newline ignored), else "old" when a line of it is gauntlet's for the <needle> gate (marked) but
+# is none of them, else "none". A file that is missing or cannot be read is "none". doctor and
+# install-hooks both ask this, so a hook is done, old or missing by one rule.
+hook_gate_state() {
+  local file=$1 needle=$2 forms='' form
+  shift 2
+  for form in "$@"; do forms="$forms$form"$'\n'; done
+  if [ ! -f "$file" ]; then
+    printf 'none\n'
+    return 0
+  fi
+  GL_FORMS=$forms GL_NEEDLE=$needle LC_ALL=C awk "$HOOK_MARKED_AWK"'
+    BEGIN { n = split(ENVIRON["GL_FORMS"], form, "\n"); needle = ENVIRON["GL_NEEDLE"] }
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      for (i = 1; i <= n; i++) if (form[i] != "" && line == form[i]) present = 1
+      if (marked($0, needle)) old = 1
+    }
+    END { print (present ? "present" : (old ? "old" : "none")) }
+  ' "$file" 2> /dev/null || printf 'none\n'
+}
+
+# hook_has_gate <file> <needle> <form>...: succeed when hook_gate_state says "present".
 hook_has_gate() {
-  local file=$1 form
-  shift
-  for form in "$@"; do
-    if grep -Fxq -- "$form" "$file" 2> /dev/null; then return 0; fi
-  done
-  return 1
+  [ "$(hook_gate_state "$@")" = present ]
 }
 
 # hook_editable <file>: say whether install-hooks may edit <file> itself. Returns 0

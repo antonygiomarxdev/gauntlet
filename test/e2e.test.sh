@@ -10,7 +10,10 @@
 
 E2E_GATE_STAGED='.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet'
 E2E_LINE_STAGED='.gauntlet/bin/gauntlet check --staged  # gauntlet'
-E2E_LINE_CI='.gauntlet/bin/gauntlet check --ci --pre-push  # gauntlet'
+# The pre-push text has one source, lib/hooks.sh; the tests read it there and never paste it.
+E2E_LINE_CI=$(hook_const HOOK_LINE_CI)
+E2E_GATE_CI=$(hook_const HOOK_GATE_CI)
+E2E_CMD_CI=$(hook_const GAUNTLET_CMD_CI)
 
 # e2e_repo: a fresh repo at "$TMP/my repo" on main with one commit made before any
 # gauntlet state exists, then cd into it.
@@ -471,7 +474,7 @@ test_the_installed_pre_push_hook_passes_git_stdin_to_the_gate() {
   e2e_repo
   e2e_install
   assert_eq 1 "$(e2e_count_line "$E2E_LINE_CI" .git/hooks/pre-push)" "pre-push gate line"
-  assert_contains "$(cat .git/hooks/pre-push)" "check --ci --pre-push"
+  assert_contains "$(cat .git/hooks/pre-push)" "$E2E_CMD_CI"
 }
 
 test_push_of_the_checked_out_branch_passes_the_gate() {
@@ -547,7 +550,7 @@ test_an_existing_pre_push_hook_still_hands_stdin_to_the_gate() {
   must chmod +x .git/hooks/pre-push
   e2e_install
   assert_eq "#!/bin/sh" "$(sed -n 1p .git/hooks/pre-push)" "shebang first"
-  assert_eq ".gauntlet/bin/gauntlet check --ci --pre-push || exit \$?  # gauntlet" "$(sed -n 2p .git/hooks/pre-push)" "gate second"
+  assert_eq "$E2E_GATE_CI" "$(sed -n 2p .git/hooks/pre-push)" "gate second"
   e2e_todo
   e2e_baseline
   run git commit -q -m "chore: add the gate"
@@ -563,4 +566,78 @@ test_an_existing_pre_push_hook_still_hands_stdin_to_the_gate() {
   run git push origin other
   assert_eq 1 "$STATUS" "push: $OUT"
   assert_contains "$OUT" "check out other and push again"
+}
+
+# e2e_same_bytes <file> <content>: fail unless <file> is exactly <content>, byte for byte.
+e2e_same_bytes() {
+  printf '%s' "$2" > "$TMP/expected.txt" || fail "cannot write the expectation"
+  cmp -s "$TMP/expected.txt" "$1" || fail "$1 differs from what git sent; it holds [$(cat "$1")], git sent [$2]"
+}
+
+# e2e_own_pre_push_hook <seen-file>: replace the pre-push hook of e2e_push_repo by one of the
+# project's own, which writes what it reads on stdin to <seen-file>, then let install-hooks put the
+# gate line into it, the way a project that already had a hook gets it.
+e2e_own_pre_push_hook() {
+  printf '#!/bin/sh\ncat > "%s"\n' "$1" > .git/hooks/pre-push
+  must chmod +x .git/hooks/pre-push
+  e2e_gl install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "added gauntlet line to .git/hooks/pre-push"
+  assert_eq "$E2E_GATE_CI" "$(sed -n 2p .git/hooks/pre-push)" "the gate line is the second line"
+}
+
+# R41 with the real hook and a real `git push`: the gate is the first command of the project's own
+# hook and used to drain stdin, so a project command after it (git lfs pre-push reads the ref
+# lines) saw nothing. It gets every byte git sent. The expectation is built from the push: one
+# line, "<local ref> <local sha> <remote ref> <remote sha>", the remote sha all zeros for a new branch.
+test_an_existing_pre_push_hook_still_receives_the_ref_lines_git_sent() {
+  e2e_push_repo
+  e2e_own_pre_push_hook "$TMP/seen.txt"
+  local sha zero
+  sha=$(git rev-parse feat)
+  zero=$(printf '%040d' 0)
+  run git push origin feat
+  assert_eq 0 "$STATUS" "push: $OUT"
+  assert_contains "$OUT" "gauntlet: ok"
+  e2e_same_bytes "$TMP/seen.txt" "refs/heads/feat $sha refs/heads/feat $zero"$'\n'
+  e2e_remote_has refs/heads/feat || fail "feat did not reach the remote"
+}
+
+# Two refs in one push are two lines, in the order git sends them.
+test_an_existing_pre_push_hook_receives_every_ref_of_a_push() {
+  e2e_push_repo
+  e2e_own_pre_push_hook "$TMP/seen.txt"
+  local sha zero
+  sha=$(git rev-parse feat)
+  zero=$(printf '%040d' 0)
+  run git push origin feat HEAD:refs/heads/x
+  assert_eq 0 "$STATUS" "push: $OUT"
+  e2e_same_bytes "$TMP/seen.txt" "refs/heads/feat $sha refs/heads/feat $zero"$'\n'"HEAD $sha refs/heads/x $zero"$'\n'
+}
+
+# The buffer is not a leftover: after a push that passes and after one the gate refuses, TMPDIR is
+# empty, and the refused push never reaches the project's command.
+test_the_pre_push_line_leaves_nothing_in_tmpdir_after_a_push_or_a_refusal() {
+  e2e_push_repo
+  e2e_own_pre_push_hook "$TMP/seen.txt"
+  must mkdir "$TMP/pushtmp"
+  run env TMPDIR="$TMP/pushtmp" git push origin feat
+  assert_eq 0 "$STATUS" "push: $OUT"
+  assert_eq "" "$(ls -A "$TMP/pushtmp")" "TMPDIR after a push that passed"
+  rm -f "$TMP/seen.txt"
+  run env TMPDIR="$TMP/pushtmp" git push origin other
+  assert_eq 1 "$STATUS" "refused push: $OUT"
+  assert_contains "$OUT" "check out other and push again"
+  assert_eq "" "$(ls -A "$TMP/pushtmp")" "TMPDIR after a refused push"
+  if [ -e "$TMP/seen.txt" ]; then fail "the project's own command ran although the gate refused the push"; fi
+}
+
+# A temp directory git's hook cannot use blocks the push: no gate, no push.
+test_a_push_is_blocked_when_the_hook_cannot_make_its_temp_file() {
+  e2e_push_repo
+  e2e_own_pre_push_hook "$TMP/seen.txt"
+  run env TMPDIR="$TMP/no-such-dir" git push origin feat
+  if [ "$STATUS" -eq 0 ]; then fail "the push went through without the gate: $OUT"; fi
+  if e2e_remote_has refs/heads/feat; then fail "feat reached the remote"; fi
+  if [ -e "$TMP/seen.txt" ]; then fail "the project's own command ran"; fi
 }

@@ -6,6 +6,7 @@
 # The pre-push gate text has one source, lib/hooks.sh; the tests read it there and never paste it.
 STATUS_TEST_GATE_CI=$(hook_const HOOK_GATE_CI)
 STATUS_TEST_SHARED_CI=$(hook_const HOOK_SHARED_CI)
+STATUS_TEST_CMD_CI=$(hook_const GAUNTLET_CMD_CI)
 
 # same_file <want> <got>: fail with a diff unless the two files are byte-equal.
 same_file() {
@@ -417,7 +418,7 @@ test_doctor_lefthook_needs_snippet() {
   assert_eq 1 "$STATUS" "doctor without the snippet"
   assert_contains "$OUT" "FAIL gate missing from lefthook.yml: run gauntlet install-hooks"
   assert_eq 1 "$(doctor_fails)" "FAIL count without the snippet"
-  printf 'pre-commit:\n  commands:\n    gauntlet:\n      run: .gauntlet/bin/gauntlet check --staged\npre-push:\n  commands:\n    gauntlet:\n      run: .gauntlet/bin/gauntlet check --ci --pre-push\n      use_stdin: true\n' >> lefthook.yml
+  printf 'pre-commit:\n  commands:\n    gauntlet:\n      run: .gauntlet/bin/gauntlet check --staged\npre-push:\n  commands:\n    gauntlet:\n      run: %s\n      use_stdin: true\n' "$STATUS_TEST_CMD_CI" >> lefthook.yml
   run "$G" doctor
   assert_eq 0 "$STATUS" "doctor with the snippet"
   assert_contains "$OUT" "ok gate in lefthook.yml"
@@ -1581,15 +1582,22 @@ test_check_ignores_keys_it_does_not_know() {
   assert_contains "$OUT" "gauntlet: ok"
 }
 
-# FRD-03 section 4.11: a pre-push line without --pre-push keeps judging the checked-out branch
-# whatever git pushes, so doctor names it and says how to get the new one.
-test_doctor_flags_an_old_pre_push_line_without_the_flag() {
+# R47: a line that ends in "# gauntlet" and is not the current form is an older line, whatever
+# it lacks. Before the flag the line judged the checked-out branch whatever git pushed; before the
+# buffer it left the project's own pre-push commands without git's stdin. doctor says the line
+# differs and how to get the current one.
+test_doctor_flags_a_pre_push_line_that_is_not_the_current_form() {
   mkrepo
   doctor_install
-  printf '#!/bin/sh\n%s\n' '.gauntlet/bin/gauntlet check --ci  # gauntlet' > .git/hooks/pre-push
-  doctor_one_fail "FAIL pre-push gate in .git/hooks/pre-push has no --pre-push, so it judges the checked-out branch whatever git pushes: run gauntlet install-hooks"
-  printf '#!/bin/sh\n%s\n' '.gauntlet/bin/gauntlet check --ci || exit $?  # gauntlet' > .git/hooks/pre-push
-  doctor_one_fail "FAIL pre-push gate in .git/hooks/pre-push has no --pre-push"
+  local old
+  for old in \
+    '.gauntlet/bin/gauntlet check --ci  # gauntlet' \
+    '.gauntlet/bin/gauntlet check --ci || exit $?  # gauntlet' \
+    '.gauntlet/bin/gauntlet check --ci --pre-push  # gauntlet' \
+    '.gauntlet/bin/gauntlet check --ci --pre-push || exit $?  # gauntlet'; do
+    printf '#!/bin/sh\n%s\n' "$old" > .git/hooks/pre-push
+    doctor_one_fail "FAIL pre-push gate in .git/hooks/pre-push is an older gauntlet line (it differs from the current one): run gauntlet install-hooks"
+  done
   run "$G" install-hooks
   run "$G" doctor
   assert_eq 0 "$STATUS" "doctor after install-hooks: $OUT"
@@ -1602,11 +1610,11 @@ test_doctor_names_the_manual_line_for_an_old_pre_push_line() {
   must git config core.hooksPath "$TMP/shared"
   doctor_install
   printf '%s\n' '.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet' > "$TMP/shared/pre-commit"
-  printf '%s\n' '.gauntlet/bin/gauntlet check --ci || exit $?  # gauntlet' > "$TMP/shared/pre-push"
+  printf '%s\n' '.gauntlet/bin/gauntlet check --ci --pre-push || exit $?  # gauntlet' > "$TMP/shared/pre-push"
   must chmod +x "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
   run "$G" doctor
   assert_eq 1 "$STATUS" "doctor: $OUT"
-  assert_contains "$OUT" "FAIL pre-push gate in $TMP/shared/pre-push has no --pre-push, so it judges the checked-out branch whatever git pushes: replace that line by hand with: $STATUS_TEST_SHARED_CI"
+  assert_contains "$OUT" "FAIL pre-push gate in $TMP/shared/pre-push is an older gauntlet line (it differs from the current one): replace that line by hand with: $STATUS_TEST_SHARED_CI"
   assert_not_contains "$OUT" "run gauntlet install-hooks"
 }
 

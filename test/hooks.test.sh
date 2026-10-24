@@ -14,6 +14,7 @@ HOOK_TEST_GATE_STAGED='.gauntlet/bin/gauntlet check --staged || exit $?  # gaunt
 # the tests that push for real.
 HOOK_TEST_CI=$(hook_const HOOK_LINE_CI)
 HOOK_TEST_GATE_CI=$(hook_const HOOK_GATE_CI)
+HOOK_TEST_CMD_CI=$(hook_const GAUNTLET_CMD_CI)
 HOOK_TEST_SHARED_STAGED='if [ -x .gauntlet/bin/gauntlet ]; then .gauntlet/bin/gauntlet check --staged || exit $?; fi'
 HOOK_TEST_SHARED_CI=$(hook_const HOOK_SHARED_CI)
 # shellcheck disable=SC2016 # shell text for a hook: ${0##*/} is expanded when the hook runs
@@ -387,7 +388,7 @@ test_lefthook_prints_snippet_no_edit() {
   assert_eq 0 "$STATUS" "install-hooks"
   assert_contains "$OUT" "ACTION NEEDED: add to lefthook.yml:"
   assert_contains "$OUT" "run: .gauntlet/bin/gauntlet check --staged"
-  assert_contains "$OUT" "run: .gauntlet/bin/gauntlet check --ci --pre-push"
+  assert_contains "$OUT" "run: $HOOK_TEST_CMD_CI"
   assert_contains "$OUT" "use_stdin: true"
   assert_eq "$config" "$(hooks_sum lefthook.yml)" "lefthook.yml is unchanged"
   assert_eq "$hooks" "$(hooks_sum .git/hooks)" "no hook was written"
@@ -417,7 +418,7 @@ test_prek_prints_snippet_no_edit() {
   assert_eq 0 "$STATUS" "install-hooks"
   assert_contains "$OUT" "ACTION NEEDED: add to .pre-commit-config.yaml:"
   assert_contains "$OUT" "entry: .gauntlet/bin/gauntlet check --staged"
-  assert_contains "$OUT" "entry: .gauntlet/bin/gauntlet check --ci --pre-push"
+  assert_contains "$OUT" "entry: $HOOK_TEST_CMD_CI"
   assert_eq "$config" "$(hooks_sum .pre-commit-config.yaml)" "the config is unchanged"
   assert_eq "$hooks" "$(hooks_sum .git/hooks)" "no hook was written"
 }
@@ -430,7 +431,7 @@ test_already_configured_on_second_install() {
   run "$G" install-hooks
   assert_contains "$OUT" "ACTION NEEDED: add to lefthook.yml:"
   assert_contains "$OUT" "ACTION NEEDED: add to .pre-commit-config.yaml:"
-  cat > lefthook.yml <<'YAML'
+  cat > lefthook.yml <<YAML
 pre-commit:
   commands:
     gauntlet:
@@ -438,16 +439,16 @@ pre-commit:
 pre-push:
   commands:
     gauntlet:
-      run: .gauntlet/bin/gauntlet check --ci --pre-push
+      run: $HOOK_TEST_CMD_CI
       use_stdin: true
 YAML
-  cat > .pre-commit-config.yaml <<'YAML'
+  cat > .pre-commit-config.yaml <<YAML
 - repo: local
   hooks:
     - id: gauntlet
       entry: .gauntlet/bin/gauntlet check --staged
     - id: gauntlet-ci
-      entry: .gauntlet/bin/gauntlet check --ci --pre-push
+      entry: $HOOK_TEST_CMD_CI
 YAML
   local config
   config=$(hooks_sum lefthook.yml .pre-commit-config.yaml)
@@ -473,7 +474,7 @@ test_json_and_toml_configs_get_generic_snippet() {
   assert_contains "$OUT" "ACTION NEEDED: add to lefthook.toml:"
   assert_contains "$OUT" "ACTION NEEDED: add to prek.toml:"
   assert_contains "$OUT" "pre-commit: .gauntlet/bin/gauntlet check --staged"
-  assert_contains "$OUT" "pre-push: .gauntlet/bin/gauntlet check --ci --pre-push"
+  assert_contains "$OUT" "pre-push: $HOOK_TEST_CMD_CI"
   assert_eq "$before" "$(hooks_sum lefthook.json lefthook.toml prek.toml)" "the configs are unchanged"
   if [ -e .git/hooks/pre-commit ]; then fail "hooks were written although a config owns them"; fi
 }
@@ -1150,8 +1151,8 @@ test_read_only_source_installs_twice() {
   assert_eq 0 "$STATUS" "vendored --version"
 }
 
-# Presence is a whole-line match: an indented marker and a marker inside a comment
-# do not count, so the gate line is added.
+# Presence is a whole-line match: an indented line is not the current form, so it is replaced where
+# it stands (R47), and a marker inside a comment is no gauntlet line at all and is kept.
 test_presence_is_whole_line_not_indented_or_comment() {
   hooks_repo "$TMP/repo"
   hooks_vendor
@@ -1159,7 +1160,8 @@ test_presence_is_whole_line_not_indented_or_comment() {
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks"
   assert_not_contains "$OUT" "already present in .git/hooks/pre-commit"
-  assert_eq 1 "$(hooks_lines "$HOOK_TEST_GATE_STAGED" .git/hooks/pre-commit)" "the whole-line gate was added"
+  assert_contains "$OUT" "updated gauntlet line in .git/hooks/pre-commit"
+  hooks_expect .git/hooks/pre-commit $'#!/bin/sh\n'"$HOOK_TEST_GATE_STAGED"$'\n# '"$HOOK_TEST_STAGED"$'\necho x\n'
 }
 
 # A husky path outside the repo root is not husky's: printed, and nothing created.
@@ -1629,6 +1631,218 @@ test_replacing_the_old_line_keeps_a_missing_final_newline() {
   printf '#!/bin/sh\necho one\n%s' "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-push
   run "$G" install-hooks
   hooks_expect .git/hooks/pre-push $'#!/bin/sh\necho one\n'"$HOOK_TEST_GATE_CI"
+}
+
+# R41: the pre-push line is the first command of an existing hook, and git sends the ref lines
+# once, on stdin. The line buffers them in a temp file, runs the gate on the file and hands stdin
+# back as the file, so the project's own commands after it (git lfs pre-push, a loop over the ref
+# lines) read what git sent. The tests below run the line itself under each shell installed here,
+# with a runner that records what it read; the push tests in e2e.test.sh run it through git.
+
+# hooks_each_shell <fn>: call <fn> with the words of each shell that is installed here and runs a
+# hook line: sh, bash, busybox sh and zsh as sh, each plain and with -e (husky v9 runs a hook with
+# sh -e). A shell that is not installed is not tried.
+hooks_each_shell() {
+  local fn=$1 e
+  for e in '' -e; do
+    "$fn" sh ${e:+"$e"}
+    if command -v bash > /dev/null; then "$fn" bash ${e:+"$e"}; fi
+    if command -v busybox > /dev/null && busybox sh -c : 2> /dev/null; then "$fn" busybox sh ${e:+"$e"}; fi
+    if command -v zsh > /dev/null; then "$fn" zsh --emulate sh ${e:+"$e"}; fi
+  done
+}
+
+# hooks_line_dir: $TMP/line holds a runner that writes what it reads on stdin to gate.seen (and
+# whether stdin was a terminal or a file to gate.stdin; it never reads a terminal), can erase
+# TMPDIR and exits with $GATE_RC (0 by default), and a hook made of the pre-push line and a
+# command of the project's own that writes its stdin to own.seen and leaves ran. $TMP/line.in is
+# what git sends: a CR, bytes that are not text, a blank line, a NUL and no final newline.
+hooks_line_dir() {
+  rm -rf "$TMP/line" "$TMP/line-tmp"
+  must mkdir -p "$TMP/line/.gauntlet/bin" "$TMP/line-tmp"
+  cat > "$TMP/line/.gauntlet/bin/gauntlet" <<'RUNNER'
+#!/bin/sh
+if [ -t 0 ]; then echo tty > gate.stdin; : > gate.seen; else echo file > gate.stdin; cat > gate.seen; fi
+if [ -n "${GATE_ERASES_TMP:-}" ]; then rm -f "$TMPDIR"/*; fi
+exit "${GATE_RC:-0}"
+RUNNER
+  must chmod +x "$TMP/line/.gauntlet/bin/gauntlet"
+  printf '#!/bin/sh\n%s\ncat > own.seen\n: > ran\n' "$HOOK_TEST_CI" > "$TMP/line/hook"
+  printf 'refs/heads/a 1 refs/heads/a 0\r\n\377\200 not text\n\n\000nul\nlast line, no newline' > "$TMP/line.in"
+}
+
+# hooks_line_run <shell words...>: run the hook under that shell with $TMP/line.in on stdin
+# ($LINE_INPUT when set) and a TMPDIR of its own ($LINE_TMPDIR when set); output in $TMP/line.out;
+# the shell's status is returned.
+hooks_line_run() {
+  (cd "$TMP/line" && TMPDIR="${LINE_TMPDIR:-$TMP/line-tmp}" "$@" ./hook < "${LINE_INPUT:-$TMP/line.in}") > "$TMP/line.out" 2>&1
+}
+
+# hooks_line_clean: the temp directory the hook used holds nothing.
+hooks_line_clean() {
+  assert_eq "" "$(ls -A "$TMP/line-tmp")" "[$*] a temp file was left behind"
+}
+
+hooks_case_the_gate_and_the_next_command_get_every_byte() {
+  local rc=0
+  hooks_line_dir
+  hooks_line_run "$@" || rc=$?
+  assert_eq 0 "$rc" "[$*] exit: $(cat "$TMP/line.out")"
+  cmp -s "$TMP/line.in" "$TMP/line/gate.seen" || fail "[$*] the gate did not get the bytes git sent"
+  cmp -s "$TMP/line.in" "$TMP/line/own.seen" || fail "[$*] the project's own command did not get the bytes git sent"
+  hooks_line_clean "$@"
+}
+
+test_the_pre_push_line_hands_every_byte_to_the_gate_and_to_the_next_command() {
+  hooks_each_shell hooks_case_the_gate_and_the_next_command_get_every_byte
+}
+
+hooks_case_a_failing_gate_blocks_and_cleans_up() {
+  local rc=0
+  hooks_line_dir
+  GATE_RC=3 hooks_line_run "$@" || rc=$?
+  assert_eq 3 "$rc" "[$*] the hook exits with the gate's status"
+  cmp -s "$TMP/line.in" "$TMP/line/gate.seen" || fail "[$*] the gate did not get the bytes git sent"
+  if [ -e "$TMP/line/ran" ]; then fail "[$*] the project's own command ran after a failing gate"; fi
+  hooks_line_clean "$@"
+}
+
+test_a_failing_gate_stops_the_hook_with_its_status_and_leaves_no_temp_file() {
+  hooks_each_shell hooks_case_a_failing_gate_blocks_and_cleans_up
+}
+
+hooks_case_mktemp_failing_blocks() {
+  local rc=0
+  hooks_line_dir
+  LINE_TMPDIR="$TMP/no-such-dir" hooks_line_run "$@" || rc=$?
+  assert_eq 2 "$rc" "[$*] the hook exits 2 when it cannot make its temp file: $(cat "$TMP/line.out")"
+  if [ -e "$TMP/line/gate.seen" ]; then fail "[$*] the gate ran without its input"; fi
+  if [ -e "$TMP/line/ran" ]; then fail "[$*] the project's own command ran"; fi
+}
+
+test_a_temp_file_that_cannot_be_made_blocks_the_push_with_exit_2() {
+  hooks_each_shell hooks_case_mktemp_failing_blocks
+}
+
+# A directory on stdin: the shell opens it, cat cannot read it (busybox runs cat as a built-in, so a
+# cat on PATH would not stop it).
+hooks_case_cat_failing_blocks() {
+  local rc=0
+  hooks_line_dir
+  LINE_INPUT="$TMP/line-tmp/.." hooks_line_run "$@" || rc=$?
+  assert_eq 2 "$rc" "[$*] the hook exits 2 when it cannot buffer stdin: $(cat "$TMP/line.out")"
+  if [ -e "$TMP/line/gate.seen" ]; then fail "[$*] the gate ran on a partial input"; fi
+  if [ -e "$TMP/line/ran" ]; then fail "[$*] the project's own command ran"; fi
+  hooks_line_clean "$@"
+}
+
+test_stdin_that_cannot_be_buffered_blocks_the_push_with_exit_2_and_cleans_up() {
+  hooks_each_shell hooks_case_cat_failing_blocks
+}
+
+# The buffer is gone before stdin is handed back (here the runner erases it). A shell exits on its
+# own when a redirection of exec fails, with 2 in dash and 1 in the POSIX-mode shells, so what is
+# pinned is that the hook stops: the push is blocked and the project's command never runs.
+hooks_case_exec_failing_blocks() {
+  local rc=0
+  hooks_line_dir
+  GATE_ERASES_TMP=1 hooks_line_run "$@" || rc=$?
+  if [ "$rc" -eq 0 ]; then fail "[$*] the hook went on without its stdin: $(cat "$TMP/line.out")"; fi
+  if [ -e "$TMP/line/ran" ]; then fail "[$*] the project's own command ran"; fi
+}
+
+test_stdin_that_cannot_be_handed_back_blocks_the_push() {
+  hooks_each_shell hooks_case_exec_failing_blocks
+}
+
+# A person who runs the hook by hand has a terminal on stdin. Nothing is read from it, the gate
+# gets an empty file (it then judges the checked-out branch), and the project's own commands keep
+# the terminal.
+test_the_pre_push_line_reads_nothing_from_a_terminal_and_keeps_it() {
+  if ! script --version 2>&1 | grep -q util-linux; then
+    skip "script is not util-linux's: no way to give the hook a terminal"
+    return 77
+  fi
+  hooks_line_dir
+  printf '#!/bin/sh\n%s\nif [ -t 0 ]; then : > own.tty; fi\n' "$HOOK_TEST_CI" > "$TMP/line/hook"
+  must chmod +x "$TMP/line/hook"
+  local rc=0
+  # A line that read the terminal would wait for ever: with_timeout turns that into a failure.
+  (cd "$TMP/line" && TMPDIR="$TMP/line-tmp" with_timeout 20 script -qec "sh ./hook" /dev/null < "$TMP/line.in") > "$TMP/line.out" 2>&1 || rc=$?
+  assert_eq 0 "$rc" "the hook run by hand (124 means it waited on the terminal): $(cat "$TMP/line.out")"
+  [ -e "$TMP/line/gate.stdin" ] || fail "the gate did not run"
+  assert_eq file "$(cat "$TMP/line/gate.stdin")" "the gate's stdin is an (empty) file, not the terminal"
+  assert_eq 0 "$(wc -c < "$TMP/line/gate.seen" | tr -d ' ')" "the gate read nothing from the terminal"
+  [ -e "$TMP/line/own.tty" ] || fail "the project's own command lost the terminal"
+  hooks_line_clean sh
+}
+
+# One form for every pre-push line: the plain and the gate form are the one line, and the
+# guarded form for a shared hooks directory is that line inside the test for the runner.
+test_every_form_of_the_pre_push_line_is_one_line() {
+  assert_eq "$HOOK_TEST_CI" "$HOOK_TEST_GATE_CI" "plain and gate form"
+  assert_eq "if [ -x .gauntlet/bin/gauntlet ]; then ${HOOK_TEST_CI%  # gauntlet}; fi" "$HOOK_TEST_SHARED_CI" "guarded form"
+  case "$HOOK_TEST_CI" in
+    *"$HOOK_TEST_CMD_CI"*"  # gauntlet") ;;
+    *) fail "the line does not run the gate command and end in the marker: $HOOK_TEST_CI" ;;
+  esac
+  assert_eq 1 "$(printf '%s\n' "$HOOK_TEST_CI" | wc -l | tr -d ' ')" "the line is one line"
+}
+
+# R47: a line that ends in "# gauntlet" and runs the gate of that hook is gauntlet's. When it is not
+# the current form, install-hooks puts the current form where it stands (no list of old forms is
+# kept), and a second run finds it done.
+test_any_gauntlet_line_that_is_not_the_current_form_is_replaced_where_it_stands() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  local old n=0
+  for old in \
+    '.gauntlet/bin/gauntlet check --ci  # gauntlet' \
+    '.gauntlet/bin/gauntlet check --ci --pre-push  # gauntlet' \
+    '.gauntlet/bin/gauntlet check --ci --pre-push || exit $?  # gauntlet' \
+    '.gauntlet/bin/gauntlet check --ci --base main || exit $?  # gauntlet' \
+    '  .gauntlet/bin/gauntlet check --ci --pre-push  # gauntlet  '; do
+    n=$((n + 1))
+    printf '#!/bin/sh\necho one\n%s\necho two\n' "$old" > .git/hooks/pre-push
+    chmod 755 .git/hooks/pre-push
+    run "$G" install-hooks
+    assert_eq 0 "$STATUS" "[$n] install-hooks: $OUT"
+    assert_contains "$OUT" "updated gauntlet line in .git/hooks/pre-push"
+    hooks_expect .git/hooks/pre-push $'#!/bin/sh\necho one\n'"$HOOK_TEST_GATE_CI"$'\necho two\n'
+    run "$G" install-hooks
+    assert_contains "$OUT" "already present in .git/hooks/pre-push"
+  done
+  printf '#!/bin/sh\n%s\necho x\n' '.gauntlet/bin/gauntlet check --staged --quiet || exit $?  # gauntlet' > .git/hooks/pre-commit
+  chmod 755 .git/hooks/pre-commit
+  run "$G" install-hooks
+  hooks_expect .git/hooks/pre-commit $'#!/bin/sh\n'"$HOOK_TEST_GATE_STAGED"$'\necho x\n'
+}
+
+# Only a line that runs the gate is gauntlet's: the marker on the project's own line, or on a
+# comment, is no reason to touch either, and the gate goes in at the top.
+test_a_marker_on_a_comment_or_on_another_command_is_not_gauntlets_line() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  printf '#!/bin/sh\n# .gauntlet/bin/gauntlet check --ci  # gauntlet\necho tidy  # gauntlet\n.gauntlet/bin/gauntlet doctor  # gauntlet\n' > .git/hooks/pre-push
+  chmod 755 .git/hooks/pre-push
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "added gauntlet line to .git/hooks/pre-push"
+  hooks_expect .git/hooks/pre-push $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\n# .gauntlet/bin/gauntlet check --ci  # gauntlet\necho tidy  # gauntlet\n.gauntlet/bin/gauntlet doctor  # gauntlet\n'
+}
+
+# A hook with the current line and a stale one (a copy someone pasted) is done: the current line
+# is there, and nothing is rewritten.
+test_a_hook_that_holds_the_current_line_is_done_whatever_else_it_holds() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  printf '#!/bin/sh\n%s\necho x\n%s\n' "$HOOK_TEST_GATE_CI" '.gauntlet/bin/gauntlet check --ci  # gauntlet' > .git/hooks/pre-push
+  chmod 755 .git/hooks/pre-push
+  local before
+  before=$(hooks_sum .git/hooks/pre-push)
+  run "$G" install-hooks
+  assert_contains "$OUT" "already present in .git/hooks/pre-push"
+  assert_eq "$before" "$(hooks_sum .git/hooks/pre-push)" "the hook is unchanged"
 }
 
 # C4 (final review B): monorepo `prepare` scripts run install and install-hooks at the same

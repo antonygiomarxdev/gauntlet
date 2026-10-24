@@ -550,8 +550,10 @@ test_every_mktemp_call_is_inside_the_run_root() {
   # does both after vendoring. The shim saw only the six commands above before (W2b re-review N3),
   # so a bare mktemp at these sites passed. The allow-list is still empty.
   must cp -R "$ROOT/bin" "$ROOT/lib" .gauntlet/
+  # An older gauntlet line (a marked line that is not the current form): install-hooks replaces it.
+  local old_line='.gauntlet/bin/gauntlet check --ci  # gauntlet'
   printf '#!/bin/sh\necho mine\n' > .git/hooks/pre-commit
-  printf '#!/bin/sh\n%s\n' "$(hook_const HOOK_OLD_LINE_CI)" > .git/hooks/pre-push
+  printf '#!/bin/sh\n%s\n' "$old_line" > .git/hooks/pre-push
   chmod 755 .git/hooks/pre-commit .git/hooks/pre-push
   rule shadowed severity=shadow
   for cmd in "install-hooks" "promote shadowed" "install"; do
@@ -562,7 +564,7 @@ test_every_mktemp_call_is_inside_the_run_root() {
     assert_eq 0 "$STATUS" "gauntlet $cmd: $OUT"
     if cmp -s "$TMP/mktemp.before" "$TMP/mktemp.log"; then fail "gauntlet $cmd made no temp file at all: $OUT"; fi
     printf '#!/bin/sh\necho mine\n' > .git/hooks/pre-commit
-    printf '#!/bin/sh\n%s\n' "$(hook_const HOOK_OLD_LINE_CI)" > .git/hooks/pre-push
+    printf '#!/bin/sh\n%s\n' "$old_line" > .git/hooks/pre-push
   done
   # The other two ways a hook is written: a hook that does not exist yet, and an empty one.
   rm -f .git/hooks/pre-commit .git/hooks/pre-push

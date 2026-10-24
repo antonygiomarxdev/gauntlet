@@ -476,8 +476,8 @@ doctor_hooks() {
         doctor_one_script "$dir/pre-commit" "$dir/pre-push" "$execcheck"
         return 0
       fi
-      doctor_hook_file pre-commit "$dir/pre-commit" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED" "$kind" "$execcheck"
-      doctor_hook_file pre-push "$dir/pre-push" "$HOOK_LINE_CI" "$HOOK_GATE_CI" "$kind" "$execcheck" "$HOOK_OLD_LINE_CI" "$HOOK_OLD_GATE_CI"
+      doctor_hook_file pre-commit "$dir/pre-commit" "$kind" "$execcheck" "$HOOK_GATE_STAGED" "$GAUNTLET_CMD_STAGED" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED"
+      doctor_hook_file pre-push "$dir/pre-push" "$kind" "$execcheck" "$HOOK_GATE_CI" "$HOOK_NEEDLE_CI" "$HOOK_LINE_CI" "$HOOK_GATE_CI"
       ;;
     print)
       # A shared hooks directory: the guarded form is the one to add, and the gate form is accepted.
@@ -485,8 +485,8 @@ doctor_hooks() {
         doctor_one_script "$dir/pre-commit" "$dir/pre-push" "$execcheck"
         return 0
       fi
-      doctor_hook_file pre-commit "$dir/pre-commit" "$HOOK_GATE_STAGED" "$HOOK_SHARED_STAGED" "$kind" "$execcheck"
-      doctor_hook_file pre-push "$dir/pre-push" "$HOOK_GATE_CI" "$HOOK_SHARED_CI" "$kind" "$execcheck" "$HOOK_OLD_LINE_CI" "$HOOK_OLD_GATE_CI"
+      doctor_hook_file pre-commit "$dir/pre-commit" "$kind" "$execcheck" "$HOOK_SHARED_STAGED" "$GAUNTLET_CMD_STAGED" "$HOOK_GATE_STAGED" "$HOOK_SHARED_STAGED"
+      doctor_hook_file pre-push "$dir/pre-push" "$kind" "$execcheck" "$HOOK_SHARED_CI" "$HOOK_NEEDLE_CI" "$HOOK_GATE_CI" "$HOOK_SHARED_CI"
       ;;
   esac
   return 0
@@ -509,38 +509,38 @@ doctor_one_script() {
   fi
 }
 
-# doctor_hook_file <stage> <file> <plain> <gate> <kind> <execcheck> [<old-plain> <old-gate>]:
-# <file> must hold a gate line. When execcheck is 1 the hook must be executable, since git
-# ignores it otherwise. A hook install-hooks cannot edit, and a hooks dir it only prints for
-# (kind print), get the line to add by hand: running install-hooks would print the same thing.
-# A line of the old forms (the pre-push line without --pre-push) is named: it keeps judging the
-# checked-out branch whatever git pushes, and nothing else shows it.
+# doctor_hook_file <stage> <file> <kind> <execcheck> <advice> <needle> <form>...: <file> must hold a
+# gate line of its stage: one of the <form>s, whole line. When execcheck is 1 the hook must be
+# executable, since git ignores it otherwise. A hook install-hooks cannot edit, and a hooks dir it
+# only prints for (kind print), get the line to add by hand, <advice>: running install-hooks would
+# print the same thing. A line that is gauntlet's (marked, running the <needle> gate) but is not
+# one of the forms is an older line (R47): the verdict is the same whatever it lacks, and the
+# message says it differs from the current one.
 doctor_hook_file() {
-  local stage=$1 file=$2 line=$3 gate=$4 kind=$5 execcheck=$6 old_line=${7:-} old_gate=${8:-} shown manual=0 old=0
+  local stage=$1 file=$2 kind=$3 execcheck=$4 advice=$5 needle=$6 shown manual=0 state
+  shift 6
   shown=$(display_path "$file")
   if [ "$execcheck" -eq 1 ] && [ -f "$file" ] && [ ! -x "$file" ]; then
     doctor_fail "$stage hook $shown is not executable: chmod +x $shown"
   fi
-  if [ -f "$file" ] && hook_has_gate "$file" "$line" "$gate"; then
+  state=$(hook_gate_state "$file" "$needle" "$@")
+  if [ "$state" = present ]; then
     doctor_ok "$stage gate in $shown"
     return 0
-  fi
-  if [ -n "$old_line" ] && [ -f "$file" ] && hook_has_gate "$file" "$old_line" "$old_gate"; then
-    old=1
   fi
   if [ "$kind" = print ]; then
     manual=1
   else
     hook_editable "$file" || manual=1
   fi
-  if [ "$old" -eq 1 ]; then
+  if [ "$state" = old ]; then
     if [ "$manual" -eq 1 ]; then
-      doctor_fail "$stage gate in $shown has no --pre-push, so it judges the checked-out branch whatever git pushes: replace that line by hand with: $gate"
+      doctor_fail "$stage gate in $shown is an older gauntlet line (it differs from the current one): replace that line by hand with: $advice"
     else
-      doctor_fail "$stage gate in $shown has no --pre-push, so it judges the checked-out branch whatever git pushes: run gauntlet install-hooks"
+      doctor_fail "$stage gate in $shown is an older gauntlet line (it differs from the current one): run gauntlet install-hooks"
     fi
   elif [ "$manual" -eq 1 ]; then
-    doctor_fail "$stage gate missing from $shown: add this line by hand as the first command, after the shebang line if there is one: $gate"
+    doctor_fail "$stage gate missing from $shown: add this line by hand as the first command, after the shebang line if there is one: $advice"
   else
     doctor_fail "$stage gate missing from $shown: run gauntlet install-hooks"
   fi
