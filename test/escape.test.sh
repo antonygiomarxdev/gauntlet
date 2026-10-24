@@ -49,7 +49,122 @@ test_path_spell_writes_c1_controls_and_keeps_valid_utf8() {
   assert_eq "$(printf '\303\261.ts')" "$(path_spell "$(printf '\303\261.ts')")" "n tilde"
   assert_eq "$(printf '\302\240')" "$(path_spell "$(printf '\302\240')")" "no-break space is not a control"
   assert_eq "$(printf 'a\302')" "$(path_spell "$(printf 'a\302')")" "a lone lead byte at the end"
-  assert_eq "$(printf 'a\233b')" "$(path_spell "$(printf 'a\233b')")" "a lone byte 0x9b is not escaped"
+}
+
+# A terminal in 8-bit mode reads the single byte 0x9B as CSI, so a byte 0x80-0x9f that no valid UTF-8
+# character uses is written \xNN. One that is part of a valid character is text and stays.
+test_a_lone_byte_in_the_c1_range_is_escaped_and_valid_text_stays() {
+  esc_lib
+  assert_eq 'a\x9bb' "$(path_spell "$(printf 'a\233b')")" "a lone CSI"
+  assert_eq '\x80\x9f' "$(path_spell "$(printf '\200\237')")" "the ends of the range"
+  assert_eq "$(printf 'a\240b\377')" "$(path_spell "$(printf 'a\240b\377')")" "0xa0 and 0xff are not controls"
+  assert_eq "$(printf '\342\202\254 \303\233 \340\245\260 \360\237\230\200')" \
+    "$(path_spell "$(printf '\342\202\254 \303\233 \340\245\260 \360\237\230\200')")" "euro, U circumflex (C3 9B), a three-byte and a four-byte character"
+  assert_eq "$(printf 'a\342')"'\x82b' "$(path_spell "$(printf 'a\342\202b')")" "a character that is cut short"
+  assert_eq "$(printf 'a\342')"'\x82' "$(path_spell "$(printf 'a\342\202')")" "a character cut short by the end"
+  assert_eq "$(printf '\300')"'\x9b' "$(path_spell "$(printf '\300\233')")" "an overlong lead byte"
+  assert_eq "$(printf '\301')"'\x9b' "$(path_spell "$(printf '\301\233')")" "0xc1 is no lead byte either"
+  assert_eq "$(printf '\365')"'\x80\x80\x80' "$(path_spell "$(printf '\365\200\200\200')")" "0xf5 is no lead byte"
+  assert_eq "$(printf '\340')"'\x80\x80' "$(path_spell "$(printf '\340\200\200')")" "an overlong three-byte form"
+  assert_eq "$(printf '\340')"'\x9f'"$(printf '\277')" "$(path_spell "$(printf '\340\237\277')")" "just below U+0800"
+  assert_eq "$(printf '\340\240\200')" "$(path_spell "$(printf '\340\240\200')")" "U+0800, the first three-byte character"
+  assert_eq "$(printf '\355\240')"'\x80' "$(path_spell "$(printf '\355\240\200')")" "a surrogate"
+  assert_eq "$(printf '\360')"'\x80\x80\x80' "$(path_spell "$(printf '\360\200\200\200')")" "an overlong four-byte form"
+  assert_eq "$(printf '\364')"'\x90\x80\x80' "$(path_spell "$(printf '\364\220\200\200')")" "above U+10FFFF"
+  assert_eq "$(printf 'x\302')"'\xc2\x9b' "$(path_spell "$(printf 'x\302\302\233')")" "a lead byte, then a C1 pair"
+}
+
+# A name is one line: the newline that ends it is printed, not left to the caller's substitution.
+test_a_name_ends_with_one_newline() {
+  esc_lib
+  path_spell 'a b' > "$TMP/name.out"
+  assert_eq 4 "$(wc -c < "$TMP/name.out" | tr -d ' ')" "bytes printed for a name of three bytes"
+  path_spell "$(printf 'a\nb')" > "$TMP/name.out"
+  assert_eq 5 "$(wc -c < "$TMP/name.out" | tr -d ' ')" "bytes printed for a name with a newline in it"
+  assert_eq 1 "$(wc -l < "$TMP/name.out" | tr -d ' ')" "one line"
+}
+
+test_lines_mode_writes_the_ends_of_every_range() {
+  esc_lib
+  assert_eq 'a\x01b' "$(printf 'a\001b\n' | path_spell)" "0x01"
+  assert_eq 'a\x08b' "$(printf 'a\010b\n' | path_spell)" "0x08, the last before the tab"
+  assert_eq "$(printf 'a\tb')" "$(printf 'a\tb\n' | path_spell)" "the tab stays"
+  assert_eq 'a\x0bb' "$(printf 'a\013b\n' | path_spell)" "0x0b, the first after the newline"
+  assert_eq 'a\x1fb' "$(printf 'a\037b\n' | path_spell)" "0x1f, the last control"
+  assert_eq 'a b' "$(printf 'a b\n' | path_spell)" "0x20 is a space"
+  assert_eq 'a\x7fb' "$(printf 'a\177b\n' | path_spell)" "0x7f"
+  assert_eq '~' "$(printf '~\n' | path_spell)" "0x7e"
+  assert_eq 'a\x80' "$(printf 'a\200\n' | path_spell)" "0x80"
+}
+
+# The work is linear in the length of the line. A minified bundle is one long line, and it used to
+# take minutes when it held a single character that needs a look.
+esc_long_line() {
+  local half=$((${1:-400000} / 2))
+  {
+    head -c "$half" /dev/zero | tr '\0' a
+    printf '\302\251'
+    head -c "$((half - 10))" /dev/zero | tr '\0' b
+    printf '\033\n'
+  } > "$TMP/long"
+}
+
+esc_time_long_line() {
+  local start end
+  start=$(now_ms)
+  path_spell < "$TMP/long" > "$TMP/long.out"
+  end=$(now_ms)
+  ELAPSED=$((end - start))
+  assert_eq 399997 "$(wc -c < "$TMP/long.out" | tr -d ' ')" "size of the escaped line"
+}
+
+test_a_long_line_with_one_copyright_sign_and_one_escape_is_fast() {
+  local start end
+  esc_lib
+  esc_long_line
+  esc_time_long_line
+  if [ "$ELAPSED" -ge 2500 ]; then fail "400 KB line took $ELAPSED ms"; fi
+  head -c 100000 /dev/zero | tr '\0' '\033' > "$TMP/long"
+  printf '\n' >> "$TMP/long"
+  start=$(now_ms)
+  path_spell < "$TMP/long" > "$TMP/long.out"
+  end=$(now_ms)
+  if [ $((end - start)) -ge 2500 ]; then fail "a line of 100000 escapes took $((end - start)) ms"; fi
+}
+
+test_a_long_line_is_linear_under_busybox_awk_too() {
+  local bb
+  bb=$(command -v busybox) || { skip "busybox not installed"; return 77; }
+  esc_lib
+  must mkdir -p "$TMP/bb"
+  printf '#!/bin/sh\nexec "%s" awk "$@"\n' "$bb" > "$TMP/bb/awk"
+  must chmod +x "$TMP/bb/awk"
+  PATH="$TMP/bb:$PATH"
+  # This awk copies the whole string on every substr call, so a walk over one long string is
+  # quadratic: 1.6 MB takes about 80 s that way (400 KB took 95 s in the first version, 5 s in a
+  # per-character walk). Walked in pieces it is linear: about 3 s. The run is cut off at 25 s.
+  esc_long_line 1600000
+  with_timeout 25 path_spell < "$TMP/long" > "$TMP/long.out" || fail "a 1.6 MB line took more than 25 s under busybox awk"
+  assert_eq 1599997 "$(wc -c < "$TMP/long.out" | tr -d ' ')" "size of the escaped line"
+}
+
+# A long line is walked in pieces of 1024 bytes, and no piece ends inside a character: whatever
+# sits across the end of a piece is judged as it is anywhere else in the line.
+test_the_end_of_a_piece_of_a_long_line_cuts_no_character() {
+  local off pad item want
+  esc_lib
+  for off in 1019 1020 1021 1022 1023 1024 1025 1026 2046 2047 2048 2049; do
+    pad=$(head -c "$off" /dev/zero | tr '\0' a)
+    for item in $'\303\251' $'\342\202\254' $'\360\237\230\200' $'\302\240'; do
+      assert_eq "$pad$item" "$(printf '%s%s\n' "$pad" "$item" | path_spell)" "valid text after $off bytes"
+    done
+    assert_eq "$pad"'\xc2\x9b' "$(printf '%s\302\233\n' "$pad" | path_spell)" "a C1 pair after $off bytes"
+    assert_eq "$pad"'\x9b' "$(printf '%s\233\n' "$pad" | path_spell)" "a lone CSI after $off bytes"
+    assert_eq "$pad"'\x1b' "$(printf '%s\033\n' "$pad" | path_spell)" "ESC after $off bytes"
+    # A character, then continuation bytes no lead byte owns: each is a lone byte.
+    want=$'\303\200''\x80\x80\x80\x9f'
+    assert_eq "$pad$want" "$(printf '%s\303\200\200\200\200\237\n' "$pad" | path_spell)" "a run of continuation bytes after $off bytes"
+  done
 }
 
 test_path_spell_filters_lines_and_keeps_tabs_and_blank_lines() {

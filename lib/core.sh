@@ -8,10 +8,11 @@ GAUNTLET_VERSION=0.1.0-dev
 # path_spell [<name>]: print text that somebody else wrote so that it cannot move the cursor,
 # clear the screen, hide text with a carriage return or set the terminal title. Every byte below
 # 0x20 and 0x7f is written \xNN, and so is each C1 control (U+0080 to U+009F) in its UTF-8 form,
-# the two bytes C2 80 to C2 9F: xterm reads C2 9B as CSI. Everything else is printed as it is,
-# non-ASCII included, a lone byte 0x80 to 0x9f too (it is the continuation byte of valid text:
-# the euro sign is E2 82 AC). This is the one escape for printed text, applied where the text is
-# printed and never to the rows gauntlet stores.
+# the two bytes C2 80 to C2 9F: xterm reads C2 9B as CSI. A terminal in 8-bit mode reads the
+# single byte 0x9B as CSI too, so a byte 0x80 to 0x9f that no valid UTF-8 character uses is
+# written \xNN as well; the continuation byte of a valid character is text (the euro sign is
+# E2 82 AC) and stays. Everything else is printed as it is, non-ASCII included. This is the one
+# escape for printed text, applied where the text is printed and never to the rows gauntlet stores.
 #   with an argument: a name. The tab is written \t, the newline \n, and the result is one line.
 #   without one: filter standard input line by line; a line's own newline and its tabs, which
 #   the diff of the baseline and tool messages print, stay.
@@ -25,36 +26,74 @@ path_spell() {
   fi
 }
 
-# spell_awk <name|lines>: the awk program of path_spell.
+# spell_awk <name|lines>: the awk program of path_spell. A line with no byte that needs a look
+# is printed as it is. Any other is walked once: the text between two escapes is written in one
+# piece and nothing is accumulated, so the work is linear in the length of the line. Some awks
+# (busybox) copy the whole string on every substr call, so a long line is walked in pieces of
+# CH bytes, none of which ends inside a UTF-8 character: the copies are of one piece.
 spell_awk() {
   LC_ALL=C awk -v mode="$1" '
-    function spell(s, name,   i, n, c, k, out) {
+    function spell(s, name,   n, p, e, e0, k, b) {
       n = length(s)
-      out = ""
-      for (i = 1; i <= n; i++) {
-        c = substr(s, i, 1)
-        if (c in code) {
-          if (c == "\t" && name) out = out "\\t"
-          else if (c == "\n" && name) out = out "\\n"
-          else if (c == "\t") out = out c
-          else out = out sprintf("\\x%02x", code[c])
-        } else if (c == "\302" && i < n && (k = index(C1, substr(s, i + 1, 1))) > 0) {
-          out = out sprintf("\\xc2\\x%02x", 127 + k)
-          i++
-        } else out = out c
+      for (p = 1; p <= n; p = e) {
+        e = p + CH
+        if (e <= n) {
+          # Back to the lead byte when the piece would end inside a character: a character has
+          # at most three continuation bytes, and a longer run of them has no lead byte to keep.
+          e0 = e
+          for (k = 0; k < 3; k++) {
+            b = ord[substr(s, e, 1)]
+            if (b < 128 || b > 191) break
+            e--
+          }
+          b = ord[substr(s, e, 1)]
+          if (b >= 128 && b <= 191) e = e0
+        }
+        walk(substr(s, p, e - p), name)
       }
-      return out
+    }
+    function walk(s, name,   n, i, run, v, need, lo, hi, j, b, w) {
+      n = length(s); i = 1; run = 1
+      while (i <= n) {
+        v = ord[substr(s, i, 1)]
+        if (v >= 32 && v < 127) { i++; continue }
+        w = ""; need = 0
+        if (v < 128) {
+          if (v == 9 && !name) { i++; continue }
+          w = (v == 9) ? "\\t" : (v == 10) ? "\\n" : sprintf("\\x%02x", v)
+        } else {
+          # A lead byte and the continuation bytes it needs are one valid character.
+          if (v >= 194 && v <= 244) {
+            need = (v < 224) ? 1 : (v < 240) ? 2 : 3
+            lo = 128; hi = 191
+            if (v == 224) lo = 160; else if (v == 237) hi = 159; else if (v == 240) lo = 144; else if (v == 244) hi = 143
+            for (j = 1; j <= need; j++) {
+              b = ord[substr(s, i + j, 1)] + 0
+              if (b < lo || b > hi) { need = 0; break }
+              lo = 128; hi = 191
+            }
+          }
+          b = ord[substr(s, i + 1, 1)] + 0
+          if (need > 0 && v == 194 && b < 160) { w = sprintf("\\xc2\\x%02x", b); need = 1 }
+          else if (need > 0) { i += need + 1; continue }
+          else if (v < 160) w = sprintf("\\x%02x", v)
+          else { i++; continue }
+        }
+        if (i > run) printf "%s", substr(s, run, i - run)
+        printf "%s", w
+        i += need + 1; run = i
+      }
+      if (n >= run) printf "%s", substr(s, run, n - run + 1)
     }
     BEGIN {
-      for (i = 1; i < 32; i++) code[sprintf("%c", i)] = i
-      code[sprintf("%c", 127)] = 127
-      C1 = "\200\201\202\203\204\205\206\207\210\211\212\213\214\215\216\217\220\221\222\223\224\225\226\227\230\231\232\233\234\235\236\237"
+      for (i = 1; i < 256; i++) ord[sprintf("%c", i)] = i
+      CH = 1024
       # Tab and newline are no reason to look at a line closely: only the rest are.
-      unsafe = "[\001-\010\013-\037\177]"
-      if (mode == "name") { print spell(ENVIRON["GL_SPELL_NAME"], 1); exit }
+      unsafe = "[\001-\010\013-\037\177\200-\237]"
+      if (mode == "name") { spell(ENVIRON["GL_SPELL_NAME"], 1); printf "\n"; exit }
     }
-    $0 !~ unsafe && index($0, "\302") == 0 { print; next }
-    { print spell($0, 0) }
+    $0 !~ unsafe { print; next }
+    { spell($0, 0); printf "\n" }
   '
 }
 
