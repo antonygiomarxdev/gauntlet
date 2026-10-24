@@ -28,7 +28,7 @@ gauntlet borrows freely from the tools below. This page says what each does well
 - **Onboarding that researches and proposes** (planned). The agent studies your stack and the technology's own guidance, then asks rule by rule.
 - **Rules learned from mistakes** (planned). A repeated correction becomes a rule proposal.
 - **Exceptions in a file**, written by command, with path waivers that apply only on their own branch.
-- **Coexistence.** gauntlet adds one line to your existing hooks instead of owning them.
+- **Coexistence.** gauntlet adds one line to the hooks it may edit instead of owning them. For a hook manager's config, a shared hooks directory, or a hook it must not edit, it prints what to add.
 
 ## When to use something else
 
