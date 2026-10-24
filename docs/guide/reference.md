@@ -25,7 +25,7 @@ There is no `--help`. A missing or mistyped command prints `gauntlet: unknown co
 
 `waive`, `loosen` and `remove` exit 2 with `gauntlet: no .gauntlet/ directory; run gauntlet install` when there is none. `loosen` and `remove` also refuse a rule that exists nowhere: `gauntlet: no rule <id>`. A rule exists when its file is in the working tree, in HEAD or at the merge-base. A case file such as `todo.bad.md` is not a rule.
 
-Only `base <ref>` writes git config (`branch.<name>.gauntletBase`). `waive`, `loosen` and `remove` write `.gauntlet/exceptions.tsv`; `baseline` and `status` write their own files; the commit gate writes `baseline.tsv` only when it tightens it; `install` and `install-hooks` write the files in [install](#install-and-what-it-creates). `core.hooksPath` is never written.
+Only `base <ref>` writes git config (`branch.<name>.gauntletBase`). `waive`, `loosen` and `remove` write `.gauntlet/exceptions.tsv`; `baseline` and `status` write their own files; the commit gate writes `baseline.tsv` only when a commit changes what it measures (a fix lowers it; a `shadow` or `track` rule, or a waived path, can raise it); `install` and `install-hooks` write the files in [install](#install-and-what-it-creates). `core.hooksPath` is never written.
 
 ## Exit codes
 

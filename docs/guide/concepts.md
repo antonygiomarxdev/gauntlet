@@ -42,7 +42,7 @@ The baseline is **derived**:
 - A hand edit is caught, not prevented: CI re-measures and requires the committed baseline to equal the measurement exactly.
 - Edit it only through the runner.
 
-When debt falls, the lowered baseline is staged into the same commit that paid it.
+When a commit lowers the debt, the lowered baseline is staged into the same commit that paid it. The same step records a rise in a `shadow` or `track` rule, or on a waived path; a rise in a `block` rule still fails `[global]` at push.
 
 ## Severity
 

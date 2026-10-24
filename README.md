@@ -59,7 +59,7 @@ flowchart LR
   D --> E[pre-commit<br/>staged files · under 5 s]
   D --> F[pre-push<br/>everything CI runs]
   D --> G[CI<br/>same command]
-  E -->|debt fell| H[baseline lowered<br/>in the same commit]
+  E -->|debt changed| H[baseline rewritten<br/>in the same commit]
   E & F & G -->|new violation| I[blocked<br/>with the fix]
 ```
 
@@ -71,7 +71,7 @@ flowchart LR
    - optionally, every touched file comes out lower than it went in;
    - the baseline equals what the code measures;
    - no rule was loosened.
-4. **Tighten.** When a commit lowers the debt, the new baseline travels in that same commit, so nobody has to remember to commit it.
+4. **Tighten.** When a commit lowers the debt, the new baseline travels in that same commit, so nobody has to remember to commit it. A `shadow` or `track` rule, or a waived path, can also raise it there.
 
 The [concepts page](docs/guide/concepts.md) explains each piece.
 

@@ -105,15 +105,16 @@ Limits:
 
 ## Auto-tighten
 
-When a commit lowers the debt, `pre-commit` rewrites `baseline.tsv` and stages it into that same commit. The fix and its lower number always travel together. It starts from the baseline as the index holds it, and it runs only when the commit passes.
+`pre-commit` rewrites `baseline.tsv` to what the commit measures and stages it into that same commit. For a fix, that is the lowered baseline: the fix and its lower number always travel together. A `shadow` or `track` rule, or a waived path, can rise the same way, and a rise in a `block` rule still fails `[global]` at push. It starts from the baseline as the index holds it, and it runs only when the commit passes.
 
-It is skipped, with a note, in four cases:
+It is skipped, with a note, in five cases:
 - a staged file also has unstaged changes: `note: partially staged; run gauntlet baseline before pushing`;
 - the working-tree `baseline.tsv` has unstaged changes: `note: baseline.tsv has unstaged changes; run gauntlet baseline before pushing`;
 - the commit is `git commit <path>`: `note: partial commit by path; run gauntlet baseline before pushing`;
-- `baseline.tsv` is not in the index, for example because it was removed from it: `note: baseline.tsv is not in the index; nothing tightened`.
+- `baseline.tsv` is not in the index, for example because it was removed from it: `note: baseline.tsv is not in the index; nothing tightened`;
+- `baseline.tsv` is absent at HEAD, as in the commit that first adds it: `note: no baseline at HEAD; new, touched, shadow and track checks skipped`.
 
-A skipped tighten does not skip the check: new violations still block the commit. Run `gauntlet baseline`, commit the result, and then push.
+In the first four cases a skipped tighten does not skip the check: new violations still block the commit. In the fifth there is no baseline to compare with, so those checks are skipped too. Run `gauntlet baseline`, commit the result, and then push.
 
 Two things to know:
 - A baseline you raise by hand passes the commit gate, because the commit gate does not check exactness. `check --ci` on push and in CI refuses it.
