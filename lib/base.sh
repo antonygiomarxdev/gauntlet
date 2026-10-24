@@ -82,16 +82,16 @@ merge_base() {
   die "no merge-base between HEAD and $ref"
 }
 
-# git_has <what> <git args...>: run git and tell "there" from "not there" from "cannot
-# tell". Returns 0 when git prints something, 1 when it succeeds and prints nothing,
-# and 2 when git fails, after printing "gauntlet: cannot read <what>: <git's first
-# error line>" once. The caller says what to list, so a failure to read (a damaged
-# object, a bad sha, a corrupt index) is never taken for an absent path.
-git_has() {
-  local what=$1 out err rc=0
-  shift
-  out=$(tmp_new) || return 2
-  err=$(tmp_new) || { rm -f "$out"; return 2; }
+# git_read <what> <out> <git args...>: run git with its standard output in the file <out>, and
+# tell "there" from "not there" from "cannot tell". Returns 0 when git printed something, 1
+# when it succeeds and prints nothing, and 2 when git fails, after printing "gauntlet: cannot
+# read <what>: <git's first error line>" once. The caller says what to list, so a failure to
+# read (a damaged object, a bad sha, a corrupt index) is never taken for an absent path. The one
+# place that message is made and its text escaped.
+git_read() {
+  local what=$1 out=$2 err rc=0
+  shift 2
+  err=$(tmp_new) || return 2
   git "$@" > "$out" 2> "$err" || rc=$?
   if [ "$rc" -ne 0 ]; then
     printf 'gauntlet: cannot read %s: %s\n' "$(path_spell "$what")" "$(path_spell "$(head -n 1 "$err")")" >&2
@@ -101,7 +101,18 @@ git_has() {
   else
     rc=1
   fi
-  rm -f "$out" "$err"
+  rm -f "$err"
+  return "$rc"
+}
+
+# git_has <what> <git args...>: git_read for a caller that wants only the answer, not the
+# output.
+git_has() {
+  local what=$1 out rc=0
+  shift
+  out=$(tmp_new) || return 2
+  git_read "$what" "$out" "$@" || rc=$?
+  rm -f "$out"
   return "$rc"
 }
 

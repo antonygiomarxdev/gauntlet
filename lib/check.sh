@@ -716,7 +716,7 @@ cmp_loosened() {
 # Only rules that exist at the base are judged; a rule added on the branch is never
 # loosened.
 cmp_loosened_in() {
-  local mb=$1 scratch=$2 root name rest id reason
+  local mb=$1 scratch=$2 root name id reason n
   root=$(repo_root) || return 2
   exc_new_rows "$mb" "$scratch/exc.new" || return 2
   # The new rows' targets and reasons: "<rule>: <what>" with its reason, and the removed rule.
@@ -724,15 +724,16 @@ cmp_loosened_in() {
   awk -F "$DETECT_TAB" '$1 == "remove" { print $2 "\t" $3 }' "$scratch/exc.new" > "$scratch/new.remove" || return 2
   : > "$scratch/covered"
   git_nul_diff_lines -c core.quotepath=off ls-tree --full-tree -r --name-only -z "$mb" -- .gauntlet/rules > "$scratch/base.rules" || return 2
+  # Which files the detectors of those rules name changed, answered for the whole run at once.
+  detector_prime "$mb" "$scratch" "$root" || return 2
+  LOOSEN_FMT_SEEN=
 
   : > "$scratch/out"
+  n=0
   while IFS= read -r name; do
-    case "$name" in .gauntlet/rules/*.md) ;; *) continue ;; esac
-    rest=${name#.gauntlet/rules/}
-    case "$rest" in */*) continue ;; esac
-    id=${rest%.md}
-    # The same case files rule_ids skips.
-    case "$id" in *.bad|*.bad.*|*.good|*.good.*) continue ;; esac
+    judged_id "$name" || continue
+    id=$JUDGED_ID
+    n=$((n + 1))
     at_base "$mb" "$name" > "$scratch/base.md" || return 2
 
     if [ ! -f "$root/$name" ]; then
@@ -742,7 +743,7 @@ cmp_loosened_in() {
       continue
     fi
 
-    loosen_changes "$mb" "$scratch" "$scratch/base.md" "$root/$name" > "$scratch/changes" || return 2
+    loosen_changes "$mb" "$scratch" "$scratch/base.md" "$root/$name" "$n" > "$scratch/changes" || return 2
     reason=$(GL_ID=$id awk -F "$DETECT_TAB" 'index($1, ENVIRON["GL_ID"] ":") == 1 { print "x" $2; exit }' "$scratch/new.loosen") || return 2
     loosen_row "$id" "$reason" "$scratch" || return 2
   done < "$scratch/base.rules"
@@ -843,12 +844,13 @@ loosen_row() {
   fi
 }
 
-# loosen_changes <merge-base> <scratch> <base-rule> <current-rule>: print one line
+# loosen_changes <merge-base> <scratch> <base-rule> <current-rule> <n>: print one line
 # per way the rule was loosened since the merge-base. Raising a severity, widening
-# paths, narrowing exclude and a format that stays the same are not loosening.
+# paths, narrowing exclude and a format that stays the same are not loosening. <n> is the
+# rule's number in the run (detector_prime).
 loosen_changes() {
-  local mb=$1 scratch=$2 brule=$3 crule=$4
-  local bsev csev rb rc bp cp be ce beng ceng bdet cdet bfe cfe bfmt cfmt gp has w st
+  local mb=$1 scratch=$2 brule=$3 crule=$4 n=$5
+  local bsev csev rb rc bp cp be ce beng ceng bdet cdet bfe cfe bfmt cfmt gp has st
   bsev=$(rule_get "$brule" severity) || return 2
   csev=$(rule_get "$crule" severity) || return 2
   rb=$(severity_rank "$bsev") || rb=0
@@ -870,27 +872,15 @@ loosen_changes() {
   bdet=$(rule_get "$brule" detector) || return 2
   cdet=$(rule_get "$crule" detector) || return 2
   if [ "$bdet" != "$cdet" ]; then printf 'detector changed\n'; fi
-  # Each word of an unchanged detector that names a file is judged by that file's content
-  # (blob_changed). The words are cut the way the shell cuts them (detector_words), with
-  # nothing expanded, so {files}, flags and globs are plain words that name nothing. A
-  # changed string is reported above.
+  # Each word of an unchanged detector that names a file is judged by that file's content.
+  # detector_prime has read them all: the words are cut the way the shell cuts them
+  # (detector_words), with nothing expanded, so {files}, flags and globs are plain words that
+  # name nothing. A changed string is reported above.
   if [ "$bdet" = "$cdet" ]; then
-    # The ast-grep rule field is one path, quoted whole when the command is built (detect_rule).
-    if [ "$ceng" = ast-grep ]; then
-      printf '%s\n' "$cdet" > "$scratch/words" || return 2
-    else
-      detector_words "$cdet" > "$scratch/words" || return 2
-    fi
-    while IFS= read -r w; do
-      w=${w#./}
-      st=0
-      blob_changed "$mb" "$w" || st=$?
-      case "$st" in
-        0) printf 'detector file %s changed\n' "$w" ;;
-        1) ;;
-        *) return 2 ;;
-      esac
-    done < "$scratch/words"
+    GL_CHANGED="$scratch/words.changed" awk '
+      FILENAME == ENVIRON["GL_CHANGED"] { c[$0] = 1; next }
+      ($0 in c) { print "detector file " $0 " changed" }
+    ' "$scratch/words.changed" "$scratch/dw/$n" || return 2
   fi
 
   # A format decides which output lines count, so it is judged for block rules.
@@ -901,8 +891,16 @@ loosen_changes() {
   if [ "$csev" = block ]; then
     if [ "$bfmt" != "$cfmt" ]; then printf 'format %s → %s\n' "$bfmt" "$cfmt"; fi
     gp=.gauntlet/formats/$cfmt.md
-    st=0
-    blob_changed "$mb" "$gp" || st=$?
+    # Most rules share one format: its file is judged once for the run.
+    case "$LOOSEN_FMT_SEEN" in
+      *"|$gp=changed|"*) st=0 ;;
+      *"|$gp=same|"*) st=1 ;;
+      *)
+        st=0
+        blob_changed "$mb" "$gp" || st=$?
+        case "$st" in 0) LOOSEN_FMT_SEEN="$LOOSEN_FMT_SEEN|$gp=changed|" ;; 1) LOOSEN_FMT_SEEN="$LOOSEN_FMT_SEEN|$gp=same|" ;; esac
+        ;;
+    esac
     case "$st" in
       0)
         has=0
@@ -927,24 +925,33 @@ loosen_changes() {
   fi
 }
 
-# detector_words <command>: print the words of a detector command, one per line, cut the
-# way the shell cuts a command line and with nothing expanded. A space, a tab, a newline or
-# one of the operators ; & | < > ( ) ends a word outside quotes, so a file glued to an
-# operator (tools/find.sh;true, (tools/find.sh)) is a word of its own; the pieces can only add
-# candidate names, and a name that is no file is silent. 'single quotes' keep everything.
-# "Double quotes" keep everything but a backslash before ", \, $ or a backtick, which makes
-# that character literal. Outside quotes a backslash makes the next character literal. Quoted
-# and unquoted parts that touch are one word ("tools"/find.sh is tools/find.sh); the quotes and
-# escaping backslashes are gone; an empty word ("") is dropped; a quote left open takes the
-# rest of the line. A word that starts with "-" and holds "=" (--pre=tools/pre.sh) is printed
-# whole and then as the text after the first "=". No $variable, ` command, glob, brace or ~ is
-# interpreted: the command is judged as text.
+# detector_words <command>: print the words of a detector command that can name a file, one
+# per line, cut the way the shell cuts a command line and with nothing expanded. A space, a
+# tab, a newline or one of the operators ; & | < > ( ) ends a word outside quotes, so a file
+# glued to an operator (tools/find.sh;true, (tools/find.sh)) is a word of its own; the pieces
+# can only add candidate names, and a name that is no file is silent. 'single quotes' keep
+# everything. "Double quotes" keep everything but a backslash before ", \, $ or a backtick,
+# which makes that character literal. Outside quotes a backslash makes the next character
+# literal. Quoted and unquoted parts that touch are one word ("tools"/find.sh is
+# tools/find.sh); the quotes and escaping backslashes are gone; an empty word ("") is
+# dropped; a quote left open takes the rest of the line. A word that starts with "-" and
+# holds "=" (--pre=tools/pre.sh) is printed whole and then as the text after the first "=".
+# A leading "./" is dropped. A word that cannot name a file is not printed: an option (it
+# starts with "-" and holds no "="), and a word with a "{" (the {files} placeholder, a brace
+# expansion, which is not expanded). No $variable, ` command, glob or ~ is interpreted: the
+# command is judged as text.
 detector_words() {
   GL_CMD=$1 LC_ALL=C awk '
+    function keep(x) {
+      sub(/^\.\//, "", x)
+      if (substr(x, 1, 1) == "-" && index(x, "=") == 0) return
+      if (index(x, "{") > 0) return
+      print x
+    }
     function emit(   e) {
       if (inword && w != "") {
-        print w
-        if (substr(w, 1, 1) == "-" && (e = index(w, "=")) > 0 && e < length(w)) print substr(w, e + 1)
+        keep(w)
+        if (substr(w, 1, 1) == "-" && (e = index(w, "=")) > 0 && e < length(w)) keep(substr(w, e + 1))
       }
       w = ""; inword = 0
     }
@@ -972,35 +979,163 @@ detector_words() {
   '
 }
 
+# judged_id <name>: succeed when <name>, a path listed under .gauntlet/rules at the merge-base,
+# is a rule the loosening check judges (.gauntlet/rules/<id>.md directly in that directory, not
+# a case file: the ones rule_ids skips), and set JUDGED_ID to its id.
+judged_id() {
+  local rest
+  case "$1" in .gauntlet/rules/*.md) ;; *) return 1 ;; esac
+  rest=${1#.gauntlet/rules/}
+  case "$rest" in */*) return 1 ;; esac
+  JUDGED_ID=${rest%.md}
+  case "$JUDGED_ID" in *.bad|*.bad.*|*.good|*.good.*) return 1 ;; esac
+  return 0
+}
+
+# detector_prime <merge-base> <scratch> <root>: find out, for the whole run and in a fixed
+# number of git calls, which files the detectors name that differ between the merge-base and
+# HEAD. For each rule of <scratch>/base.rules that judged_id accepts and that still exists, the
+# words of its current detector go to <scratch>/dw/<n>, n being the rule's number in that
+# order (cmp_loosened_in counts the same way); the ast-grep rule field is the one word. Every
+# distinct word that can name a file of the tree (no absolute path, no tab, nothing that folds
+# to the root or climbs out of it) is folded (TREE_FOLD_AWK) and listed once per side, as a
+# literal path, in batches that stay under the argument limit. A file is the same on both sides, or it
+# is not (a blob id; mode is ignored); a symlink goes through blob_changed, which follows it.
+# <scratch>/words.changed gets the words, as written in the detector, whose file differs.
+# Returns 2 when git cannot tell (R32).
+detector_prime() {
+  local mb=$1 scratch=$2 root=$3 name n=0 eng det p st
+  mkdir -p "$scratch/dw" || return 2
+  : > "$scratch/words.changed" || return 2
+  : > "$scratch/folded" || return 2
+  while IFS= read -r name; do
+    judged_id "$name" || continue
+    n=$((n + 1))
+    : > "$scratch/dw/$n" || return 2
+    if [ -f "$root/$name" ]; then
+      eng=$(rule_get "$root/$name" engine) || return 2
+      det=$(rule_get "$root/$name" detector) || return 2
+      if [ "$eng" = ast-grep ]; then
+        printf '%s\n' "${det#./}" > "$scratch/dw/$n" || return 2
+      else
+        detector_words "$det" > "$scratch/dw/$n" || return 2
+      fi
+    fi
+  done < "$scratch/base.rules"
+  if [ "$n" -eq 0 ]; then return 0; fi
+  cat "$scratch"/dw/* > "$scratch/words.all" || return 2
+  # word, a tab, its folded path: one row per distinct word that can name a file; and the
+  # distinct folded paths.
+  GL_FOLDED="$scratch/folded" awk "$TREE_FOLD_AWK"'
+    {
+      w = $0
+      if (w == "" || (w in seen)) next
+      seen[w] = 1
+      if (index(w, "\t") > 0) next
+      if (substr(w, 1, 1) == "/" || substr(w, length(w)) == "/") next
+      f = fold(w)
+      if (f == "") next
+      print w "\t" f
+      if (!(f in done)) { done[f] = 1; print f > ENVIRON["GL_FOLDED"] }
+    }
+  ' "$scratch/words.all" > "$scratch/words.map" || return 2
+  if [ ! -s "$scratch/words.map" ]; then return 0; fi
+  ls_tree_batch "$mb" "$scratch/folded" "$scratch/tree.base" || return 2
+  ls_tree_batch HEAD "$scratch/folded" "$scratch/tree.head" || return 2
+  : > "$scratch/folded.changed" || return 2
+  : > "$scratch/folded.links" || return 2
+  GL_BASE="$scratch/tree.base" GL_HEAD="$scratch/tree.head" GL_OUT="$scratch/folded.changed" GL_LINKS="$scratch/folded.links" awk '
+    FILENAME == ENVIRON["GL_BASE"] || FILENAME == ENVIRON["GL_HEAD"] {
+      t = index($0, "\t")
+      if (t == 0) next
+      split(substr($0, 1, t - 1), m, " ")
+      v = (m[2] != "blob") ? "" : (m[1] == "120000") ? "link" : "blob " m[3]
+      if (FILENAME == ENVIRON["GL_BASE"]) a[substr($0, t + 1)] = v
+      else b[substr($0, t + 1)] = v
+      next
+    }
+    {
+      if (a[$0] == "link" || b[$0] == "link") print $0 > ENVIRON["GL_LINKS"]
+      else if (a[$0] != b[$0]) print $0 > ENVIRON["GL_OUT"]
+    }
+  ' "$scratch/tree.base" "$scratch/tree.head" "$scratch/folded" || return 2
+  while IFS= read -r p; do
+    st=0
+    blob_changed "$mb" "$p" || st=$?
+    case "$st" in
+      0) printf '%s\n' "$p" >> "$scratch/folded.changed" || return 2 ;;
+      1) ;;
+      *) return 2 ;;
+    esac
+  done < "$scratch/folded.links"
+  GL_CHANGED="$scratch/folded.changed" awk -F '\t' '
+    FILENAME == ENVIRON["GL_CHANGED"] { c[$0] = 1; next }
+    ($2 in c) { print $1 }
+  ' "$scratch/folded.changed" "$scratch/words.map" > "$scratch/words.changed" || return 2
+}
+
+# ls_tree_batch <rev> <list> <out>: write to <out> the ls-tree entries ("<mode> <type> <id>", a
+# tab, the name; one per line) of the paths in the file <list>, one path per line, at <rev>.
+# The paths are literal and go to git in batches of at most 50000 characters, so the argument
+# limit is never reached whatever the number of rules.
+ls_tree_batch() {
+  local rev=$1 list=$2 out=$3 p size=0 count=0
+  local batch=()
+  : > "$out" || return 2
+  while IFS= read -r p; do
+    if [ "$count" -gt 0 ] && [ $((size + ${#p})) -gt 50000 ]; then
+      ls_tree_run "$rev" "$out" "${batch[@]}" || return 2
+      batch=()
+      size=0
+      count=0
+    fi
+    batch[count]=$p
+    count=$((count + 1))
+    size=$((size + ${#p} + 1))
+  done < "$list"
+  if [ "$count" -gt 0 ]; then ls_tree_run "$rev" "$out" "${batch[@]}" || return 2; fi
+}
+
+# ls_tree_run <rev> <out> <path>...: append the ls-tree entries of the paths to <out>. A path
+# that is a directory lists what is under it too; nobody asks for those names.
+ls_tree_run() {
+  local rev=$1 out=$2 tmp rc=0
+  shift 2
+  tmp=$(tmp_new) || return 2
+  git_read "files named by detectors at $rev" "$tmp" --literal-pathspecs ls-tree --full-tree -z "$rev" -- "$@" || rc=$?
+  if [ "$rc" -le 1 ]; then
+    LC_ALL=C tr '\0' '\n' < "$tmp" >> "$out" || rc=2
+  fi
+  rm -f "$tmp"
+  [ "$rc" -le 1 ]
+}
+
 # tree_entry <rev> <path>: print the ls-tree entry of <path> at <rev> ("<mode> <type> <id>",
 # a tab, the name), nothing when the path is absent, and return 2 after a message when git
-# cannot tell (R32). The listing is the one base_has makes, with its content kept.
+# cannot tell (R32). The listing is the one base_has makes (git_read), with its content kept.
 tree_entry() {
-  local out err rc=0
+  local out rc=0 entry=
   out=$(tmp_new) || return 2
-  err=$(tmp_new) || { rm -f "$out"; return 2; }
-  git ls-tree --full-tree -z "$1" -- "$2" > "$out" 2> "$err" || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    printf 'gauntlet: cannot read %s at %s: %s\n' "$(path_spell "$2")" "$1" "$(path_spell "$(head -n 1 "$err")")" >&2
-    rc=2
-  else
-    LC_ALL=C tr '\0' '\n' < "$out" | head -n 1
+  git_read "$2 at $1" "$out" --literal-pathspecs ls-tree --full-tree -z "$1" -- "$2" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    IFS= read -r -d '' entry < "$out" || true
+    printf '%s\n' "$entry"
   fi
-  rm -f "$out" "$err"
-  return "$rc"
+  rm -f "$out"
+  [ "$rc" -le 1 ]
 }
 
 # path_identity <rev> <path> [hops]: print what <path> is at <rev> as far as a command that
 # runs it can tell: the blob id of a file; for a symlink its text and then the identity of the
 # file it leads to in the same tree, links followed up to ten deep. Prints nothing when the
 # path is absent, is a directory (a tree id is never read as a blob), a link leads out of the
-# tree or nowhere, or the word is no path of the tree: an empty or absolute one, one that
-# starts with ":" (git's pathspec magic), one with a trailing slash (a directory), and one
-# that folds to the root or climbs above it ("." and ".."). Returns 2 when git cannot tell
-# (R32).
+# tree or nowhere, or the word is no path of the tree: an empty or absolute one, one with a
+# trailing slash (a directory), and one that folds to the root or climbs above it ("." and
+# ".."). The path is literal: ":(glob)x" is a file of that name or nothing. Returns 2 when git
+# cannot tell (R32).
 path_identity() {
   local rev=$1 path=$2 hops=${3:-0} entry mode rest type oid text dir
-  case "$path" in /* | :* | */) return 0 ;; esac
+  case "$path" in /* | */) return 0 ;; esac
   path=$(tree_join "" "$path")
   if [ -z "$path" ]; then return 0; fi
   entry=$(tree_entry "$rev" "$path") || return 2
@@ -1041,20 +1176,27 @@ blob_changed() {
   [ "$a" != "$b" ]
 }
 
-# tree_join <dir> <relative>: print "<dir>/<relative>" with "." and ".." folded, as a path
-# inside the repository. Prints nothing when the result is the root itself or climbs above it.
-tree_join() {
-  GL_P="$1/$2" awk 'BEGIN {
-    n = split(ENVIRON["GL_P"], a, "/"); k = 0
+# TREE_FOLD_AWK: the awk function fold(path), a path with its "." and ".." parts folded and
+# empty parts dropped, as a path inside the repository; "" when the result is the root itself
+# or climbs above it. Put in front of an awk program.
+TREE_FOLD_AWK='
+  function fold(p,   n, a, i, k, b, out) {
+    n = split(p, a, "/"); k = 0
     for (i = 1; i <= n; i++) {
       if (a[i] == "" || a[i] == ".") continue
-      if (a[i] == "..") { if (k == 0) exit; k--; continue }
+      if (a[i] == "..") { if (k == 0) return ""; k--; continue }
       b[++k] = a[i]
     }
     out = ""
     for (i = 1; i <= k; i++) out = out (i > 1 ? "/" : "") b[i]
-    if (out != "") print out
-  }'
+    return out
+  }
+'
+
+# tree_join <dir> <relative>: print "<dir>/<relative>" with "." and ".." folded, as a path
+# inside the repository. Prints nothing when the result is the root itself or climbs above it.
+tree_join() {
+  GL_P="$1/$2" awk "$TREE_FOLD_AWK"'BEGIN { out = fold(ENVIRON["GL_P"]); if (out != "") print out }'
 }
 
 # list_missing <label> <list> <other>: print "<label> <glob>" for each word of

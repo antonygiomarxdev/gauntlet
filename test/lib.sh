@@ -170,10 +170,11 @@ unreadable_object() {
 }
 
 # git_fails <ls-tree|ls-files> <path> [<rev> [<nth>]]: put a git first on PATH that fails
-# the <nth> listing of <path> (the first by default) and, when <rev> is given, only at <rev>,
-# with a git error, as a damaged repository would, and runs every other call through the real
-# git. Only that one, so a later read of the same path cannot stand in for the site under
-# test, and <nth> reaches a site behind an earlier read of the same path.
+# the <nth> listing that names <path> (the first by default) and, when <rev> is given, only at
+# <rev>, with a git error, as a damaged repository would, and runs every other call through the
+# real git. Only that one, so a later read of the same path cannot stand in for the site under
+# test, and <nth> reaches a site behind an earlier read of the same path. A listing names the
+# path when it is any of the paths after "--", so a batch of paths is failed by one of them.
 git_fails() {
   local real
   real=$(command -v git) || fail "git_fails: no git on PATH"
@@ -181,11 +182,11 @@ git_fails() {
   rm -f "$TMP/shim/count"
   cat > "$TMP/shim/git" <<'SHIM'
 #!/bin/sh
-cmd= ; path= ; rev= ; prev=
+cmd= ; path= ; rev= ; prev= ; after=0
 for a in "$@"; do
   case "$a" in ls-tree|ls-files) if [ -z "$cmd" ]; then cmd=$a; fi ;; esac
-  if [ "$prev" = -- ]; then path=${a#":(top,literal)"}; fi
-  if [ "$a" = -- ]; then rev=$prev; fi
+  if [ "$after" = 1 ] && [ "${a#":(top,literal)"}" = "$SHIM_PATH" ]; then path=$SHIM_PATH; fi
+  if [ "$a" = -- ] && [ "$after" = 0 ]; then rev=$prev; after=1; fi
   prev=$a
 done
 if [ "$cmd" = "$SHIM_CMD" ] && [ "$path" = "$SHIM_PATH" ] && { [ -z "$SHIM_REV" ] || [ "$rev" = "$SHIM_REV" ]; }; then
@@ -202,6 +203,24 @@ SHIM
   must chmod +x "$TMP/shim/git"
   export SHIM_REAL=$real SHIM_CMD=$1 SHIM_PATH=$2 SHIM_REV=${3:-} SHIM_NTH=${4:-1} SHIM_COUNT="$TMP/shim/count"
   PATH="$TMP/shim:$PATH"
+  export PATH
+}
+
+# git_counts: put a git first on PATH that appends one line, its arguments, to $SHIM_CALLS for
+# every call and runs the real git, so a test can bound how many times a command asks git.
+git_counts() {
+  local real
+  real=$(command -v git) || fail "git_counts: no git on PATH"
+  must mkdir -p "$TMP/shim-calls"
+  cat > "$TMP/shim-calls/git" <<'SHIM'
+#!/bin/sh
+printf '%s\n' "$*" >> "$SHIM_CALLS"
+exec "$SHIM_REAL_GIT" "$@"
+SHIM
+  must chmod +x "$TMP/shim-calls/git"
+  export SHIM_REAL_GIT=$real SHIM_CALLS="$TMP/shim-calls/calls"
+  : > "$SHIM_CALLS"
+  PATH="$TMP/shim-calls:$PATH"
   export PATH
 }
 

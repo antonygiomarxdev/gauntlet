@@ -432,7 +432,7 @@ test_a_detector_word_git_cannot_read_prints_escaped() {
   git_fails ls-tree "$name" HEAD
   run "$G" check --ci --base main
   assert_eq 2 "$STATUS" "check --ci: $OUT"
-  assert_contains "$OUT" 'gauntlet: cannot read tools/\x1b[2Jfind.sh at HEAD: fatal: simulated failure reading tools/\x1b[2Jfind.sh'
+  assert_contains "$OUT" 'gauntlet: cannot read files named by detectors at HEAD: fatal: simulated failure reading tools/\x1b[2Jfind.sh'
   assert_clean "$OUT" "check --ci"
 }
 

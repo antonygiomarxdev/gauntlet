@@ -1884,6 +1884,226 @@ test_an_ast_grep_rule_path_with_a_space_is_one_word() {
   assert_contains "$OUT" "  dbg  detector file ast/with space.yml changed"
 }
 
+# What a detector word can name is decided once for the whole run, in a fixed number of git calls.
+# exc_many_words <rules> <words>: main with <rules> script rules, each running tools/find.sh with
+# <words> - 1 more words that are paths of its own (every other one is a file of the repository),
+# then a feat branch with a commit that changes none of them.
+exc_many_words() {
+  local r=$1 w=$2 i k det p
+  cd "$TMP" || fail "cannot cd to $TMP"
+  rm -rf "$TMP/repo"
+  mkrepo
+  must mkdir -p tools data
+  printf '#!/bin/sh\nexit 1\n' > tools/find.sh
+  printf 'ok\n' > a.ts
+  i=1
+  while [ "$i" -le "$r" ]; do
+    det='bash tools/find.sh'
+    k=1
+    while [ "$k" -lt "$w" ]; do
+      p=data/r$i-w$k.txt
+      if [ $((k % 2)) -eq 0 ]; then printf '%s %s\n' "$i" "$k" > "$p"; fi
+      det="$det $p"
+      k=$((k + 1))
+    done
+    rule "r$i" paths='**/*.ts' engine=script "detector=$det"
+    script_row "r$i"
+    i=$((i + 1))
+  done
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  exc_tool_commit
+}
+
+# git_calls: the number of calls git_counts has logged.
+git_calls() {
+  wc -l < "$SHIM_CALLS" | tr -d ' '
+}
+
+test_the_git_calls_of_the_loosening_check_do_not_depend_on_the_detector_words() {
+  git_counts
+  exc_many_words 6 1
+  : > "$SHIM_CALLS"
+  exc_gate
+  assert_eq 0 "$STATUS" "one word per rule: $OUT"
+  few=$(git_calls)
+  exc_many_words 6 10
+  : > "$SHIM_CALLS"
+  exc_gate
+  assert_eq 0 "$STATUS" "ten words per rule: $OUT"
+  many=$(git_calls)
+  assert_eq "$few" "$many" "git calls with one and with ten words per rule"
+  # 54 distinct paths, read once on each side, not once per word.
+  assert_eq 2 "$(grep -c 'data/r1-w2.txt' "$SHIM_CALLS")" "calls that list a word"
+}
+
+# A format file that changed is reported once for each rule that uses it, though it is judged
+# once for the run.
+test_a_changed_format_file_is_reported_for_each_rule_that_uses_it() {
+  mkrepo
+  printf 'TODO\n' > a.ts
+  rule todo paths='**/*.ts'
+  rule todo2 paths='**/*.ts'
+  cases_of todo 'TODO FIXME x'
+  cases_of todo2 'TODO FIXME x'
+  mkdir -p .gauntlet/formats
+  printf -- '---\nmatch: ^([^:]+):([0-9]+)(:[0-9]+)?(: ?(.*))?$\npath: 1\nline: 2\nmessage: 5\nignore: nomatch\n---\n' > .gauntlet/formats/path-line.md
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf 'a note after the front matter\n' >> .gauntlet/formats/path-line.md
+  exc_rebase
+  exc_commit feat
+  git_counts
+  run "$G" check --ci --base main
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  format file .gauntlet/formats/path-line.md changed"
+  assert_contains "$OUT" "  todo2  format file .gauntlet/formats/path-line.md changed"
+  # Both sides once for the run, then the two listings that tell changed from added from removed,
+  # for each rule: 2 + 2 * 2.
+  assert_eq 6 "$(grep -c 'formats/' "$SHIM_CALLS")" "calls that list the format file"
+}
+
+# Paths are literal: git's pathspec magic is no magic here. A word that folds to ":(glob)x" names
+# no file and is no error, and a file that is called ":tool.sh" is a file like any other.
+test_a_word_that_folds_to_pathspec_magic_names_no_file() {
+  mkrepo
+  must mkdir -p tools
+  printf '#!/bin/sh\nexit 1\n' > tools/quiet.sh
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script 'detector=bash tools/quiet.sh "sub/../:(glob)y" sub/../:z'
+  script_row todo
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  exc_tool_commit
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "detector file"
+  assert_not_contains "$OUT" "cannot read"
+}
+
+test_a_detector_file_called_with_a_leading_colon_is_found() {
+  mkrepo
+  printf '#!/bin/sh\nrg --with-filename --line-number --no-heading TODO "$@"\n' > ':tool.sh'
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script 'detector=bash :tool.sh {files}'
+  script_row todo
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  exc_change_tool ':tool.sh'
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  detector file :tool.sh changed"
+}
+
+# A word that holds a tab can be no tracked file (R31); its parts are not read as files.
+test_a_word_with_a_tab_is_not_mistaken_for_the_files_in_it() {
+  local tab
+  tab=$(printf '\t')
+  exc_script_rule "bash tools/find.sh tools/other.sh \"tools/other.sh${tab}tools/find.sh\""
+  printf 'unchanged\n' > tools/other.sh
+  exc_rebase
+  exc_commit other
+  must git checkout -q main
+  must git merge -q --ff-only feat
+  must git checkout -q -b feat2
+  exc_change_tool tools/find.sh
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_eq "  todo  detector file tools/find.sh changed" "$(printf '%s\n' "$OUT" | grep 'detector file')" "only the one file that changed: $OUT"
+}
+
+# A symlink that leads to a name git's pathspec magic would read is followed as a literal name.
+test_a_symlink_that_leads_to_pathspec_magic_is_followed_to_nothing() {
+  mkrepo
+  must mkdir -p tools
+  printf '#!/bin/sh\nexit 1\n' > tools/quiet.sh
+  ln -s ':(glob)y' link.sh
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script 'detector=bash tools/quiet.sh link.sh'
+  script_row todo
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  exc_tool_commit
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "cannot read"
+}
+
+# Many rules name one format: its file is judged once for the run.
+test_a_format_file_shared_by_the_rules_is_read_once_per_side() {
+  git_counts
+  exc_many_words 6 2
+  : > "$SHIM_CALLS"
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_eq 2 "$(grep -c 'formats/' "$SHIM_CALLS")" "calls that list the format file"
+}
+
+# The paths go to git in batches under the argument limit, and the last batch is sent too.
+test_a_detector_with_many_words_is_listed_in_batches() {
+  local words='' k=1 last
+  mkrepo
+  must mkdir -p tools dir
+  printf '#!/bin/sh\nexit 1\n' > tools/find.sh
+  printf 'ok\n' > a.ts
+  while [ "$k" -le 1500 ]; do
+    last=$(printf 'dir/%058d' "$k")
+    words="$words $last"
+    k=$((k + 1))
+  done
+  printf 'one\n' > "$last"
+  rule todo paths='**/*.ts' engine=script "detector=bash tools/find.sh$words"
+  script_row todo
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf 'two\n' > "$last"
+  exc_rebase
+  exc_commit feat
+  git_counts
+  exc_gate
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_eq "  todo  detector file $last changed" "$(printf '%s\n' "$OUT" | grep 'detector file')" "only the last word"
+  assert_eq 4 "$(grep -c 'ls-tree.*dir/' "$SHIM_CALLS")" "two batches on each side"
+}
+
+# Each rule gets the words of its own detector, and the files they name are judged for each.
+test_the_words_of_each_rule_are_judged_for_that_rule() {
+  mkrepo
+  must mkdir -p tools
+  printf '#!/bin/sh\nexit 1\n' > tools/a.sh
+  printf '#!/bin/sh\nexit 1\n' > tools/b.sh
+  printf 'ok\n' > a.ts
+  rule ra paths='**/*.ts' engine=script 'detector=bash tools/a.sh'
+  rule rb paths='**/*.ts' engine=script 'detector=bash tools/b.sh'
+  rule rc paths='**/*.ts' engine=script 'detector=bash tools/b.sh'
+  script_row ra
+  script_row rb
+  script_row rc
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  exc_change_tool tools/b.sh
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "  ra  detector file"
+  assert_contains "$OUT" "  rb  detector file tools/b.sh changed"
+  assert_contains "$OUT" "  rc  detector file tools/b.sh changed"
+}
+
+# An option and a placeholder cannot name a file, and a leading ./ is not part of the name.
+test_detector_words_leave_out_options_and_placeholders() {
+  # shellcheck source=lib/check.sh
+  . "$ROOT/lib/check.sh"
+  assert_eq 'rg
+a.sh
+--pre=./b.sh
+b.sh
+c.sh' "$(detector_words 'rg -n --no-heading ./a.sh --pre=./b.sh {files} x{a,b} ./c.sh --')" "words"
+}
+
 # exc_link_rule [chain]: main holds tools/find.sh as a symlink to real.sh and the rule runs it;
 # with an argument the rule runs tools/entry.sh, a link to that link.
 exc_link_rule() {
