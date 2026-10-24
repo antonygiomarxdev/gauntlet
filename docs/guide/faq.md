@@ -1,7 +1,7 @@
 # FAQ
 
 **Will gauntlet break my CI on day one?**
-No. Existing debt is measured and accepted as the floor. Write new rules as `shadow` first: a shadow rule reports what it would have failed and never blocks. The touched-file gate starts off. Only new violations of `block` rules fail, and only once you have promoted their rule.
+No. Existing debt is measured and accepted as the floor. Write new rules as `shadow` first: a shadow rule reports what it would have failed and never blocks. The touched-file gate starts off. A rule blocks only once you have promoted it to `block`, and [Gates](gates.md#what-check---ci-verifies) lists everything that fails the gate.
 
 **Will it touch my existing hooks?**
 It adds one line to each existing shell hook, placed first, right after the shebang, so the gate runs before anything else in the hook. It never replaces your hooks, never deletes a line from them and never writes `core.hooksPath`. For lefthook and prek configs, it edits nothing and prints what to add: a snippet to paste for YAML, the two commands to write in the config's own syntax for JSON and TOML. See [Gates](gates.md#hooks-coexist-never-take-over).

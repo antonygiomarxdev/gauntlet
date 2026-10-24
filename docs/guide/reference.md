@@ -158,7 +158,7 @@ slow: todo 51 ms (consider stage: push)
 
 `gauntlet doctor` prints one line per check: `ok <thing>`, `FAIL <thing>: <how to fix>`, or `note <thing>` for something it could not check, which is neither. It exits 1 on any FAIL, and 2 when it cannot run (not in a git repo, or no `.gauntlet/` directory). It never touches the network. It runs ten groups of checks, in this order:
 
-1. **Tools.** Each rule's tool must be on `PATH`. For an `ast-grep` rule the tool is `ast-grep`. For `rg`, `linter` and `script` rules it is the first word of the detector. A first word with a quote, `$`, `=`, `~` or a backtick is not checked, and `doctor` says so with a `note`.
+1. **Tools.** Each rule's tool must be on `PATH`. For an `ast-grep` rule the tool is `ast-grep`. For `rg`, `linter` and `script` rules it is the first word of the detector. A first word that starts with `~`, or has a quote, `$`, `=` or a backtick in it, is not checked, and `doctor` says so with a `note`.
    - `FAIL tool <tool> for rule <id> is missing: <install hint>`, or `install it or fix the detector in .gauntlet/rules/<id>.md` when there is no hint.
    - `note tool for rule <id> not checked: the detector starts with <word>, which is not a plain command name, so doctor cannot tell whether it exists`
 2. **Runner.** The vendored runner must be complete and run `--version`.

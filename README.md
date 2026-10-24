@@ -77,9 +77,9 @@ The [concepts page](docs/guide/concepts.md) explains each piece.
 
 ## Proven by hand first
 
-Before gauntlet existed as a tool, its process ran by hand in a **large production monorepo** (mobile app, backend, shared packages; ~580 merged PRs over the period, largely written by AI agents). Over about six weeks:
+Before gauntlet existed as a tool, its process ran by hand in a **large production monorepo** (mobile app, backend, shared packages; ~580 merged PRs over the period, largely written by AI agents). From each ratchet's first lock to 2026-10-16 (three to six weeks):
 
-| Measured debt | Start | Six weeks later | Change |
+| Measured debt | Start | 2026-10-16 | Change |
 |---|---:|---:|---:|
 | Type-check errors | 40 | 6 | **−85 %** |
 | Duplicate definitions | 369 | 68 | **−82 %** |
@@ -88,7 +88,7 @@ Before gauntlet existed as a tool, its process ran by hand in a **large producti
 | Silent `catch` blocks | 173 | 51 | **−71 %** |
 | Exported functions without a return type | 265 | 91 | **−66 %** |
 | React compiler rule violations | 113 | 58 | **−49 %** |
-| Layer-boundary violations | 35 | 22 | **−37 %** |
+| Mobile ↔ backend boundary violations | 35 | 22 | **−37 %** |
 
 ```mermaid
 %%{init: {"themeVariables": {"xyChart": {"plotColorPalette": "#2f81f7"}}}}%%
