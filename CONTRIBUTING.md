@@ -43,20 +43,21 @@ Fragment files are named by kind and timestamp, so two `changie new` runs in the
 
 - `git`. The suite builds real repositories and runs the runner against them.
 - `rg` (ripgrep). The rules use it, and the suite's rule tests call it.
-- `ast-grep`. CI installs 0.51.0. The suite itself runs a stub, so it is not needed to run the tests.
+- `ast-grep`. CI installs 0.51.0. Most of the suite runs a stub; the two tests that run the real tool skip when it is missing.
 - `shellcheck`. `shellcheck -x bin/gauntlet lib/*.sh test/*.sh` must print nothing.
 - `bash` 3.2 or later. macOS ships 3.2, and the runner and the suite must run on it.
 - A POSIX `awk`. BWK awk (macOS), mawk and gawk all work.
+- `busybox`, `zsh` and util-linux `script`, optional. The tests of the hook lines run them under every shell found, and give a hook a terminal, and skip what is missing.
 - `changie`, optional: only for the changelog fragments below.
 
 ## Running the tests
 
 ```sh
-test/run.sh              # the whole suite, about two and a half minutes
-test/run.sh check        # one group: test/check.test.sh
+test/run.sh              # the whole suite: over a thousand tests, 15 to 20 minutes
+test/run.sh check        # one group: test/check.test.sh, the quick way to work
 ```
 
-The groups are the files `test/*.test.sh`: `base`, `cases`, `check`, `core`, `detect`, `e2e`, `exceptions`, `harness`, `hooks`, `measure`, `paths`, `rules`, `staged` and `status`.
+The groups are the files `test/*.test.sh`: `base`, `cases`, `check`, `core`, `detect`, `e2e`, `escape`, `exceptions`, `harness`, `hooks`, `measure`, `paths`, `rules`, `staged` and `status`.
 
 On macOS, Homebrew's bash often comes first on `PATH`. The runner and the tests start with `env bash`, so put the system bash (3.2) first:
 
