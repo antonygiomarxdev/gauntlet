@@ -453,6 +453,45 @@ test_doctor_fails_a_lefthook_pre_push_gate_without_use_stdin() {
   assert_contains "$OUT" "ok gate in lefthook.yml"
 }
 
+# status_lefthook <run line> <pre-push extra line>: a lefthook.yml whose pre-push command is
+# <run line> followed by <extra line> (both indented as written), in a repo that has the runner.
+status_lefthook() {
+  mkrepo
+  printf 'pre-commit:\n  commands:\n    gauntlet:\n      run: .gauntlet/bin/gauntlet check --staged\npre-push:\n  commands:\n    gauntlet:\n%s\n%s\n' "$1" "$2" > lefthook.yml
+  doctor_install
+}
+
+# A commented line is not a setting: use_stdin in a comment passes no stdin to the gate.
+test_doctor_does_not_take_a_commented_use_stdin_for_the_switch() {
+  status_lefthook "      run: $STATUS_TEST_CMD_CI" '      # use_stdin: true'
+  doctor_one_fail "FAIL lefthook pre-push gate in lefthook.yml has no use_stdin: true, so it judges the checked-out branch whatever git pushes: add use_stdin: true"
+  # A comma in the comment puts the words where a flow mapping's next key would start.
+  status_lefthook "      run: $STATUS_TEST_CMD_CI" '      # off for now, use_stdin: true'
+  doctor_one_fail "FAIL lefthook pre-push gate in lefthook.yml has no use_stdin: true"
+}
+
+test_doctor_takes_use_stdin_with_a_trailing_comment() {
+  status_lefthook "      run: $STATUS_TEST_CMD_CI" '      use_stdin: true  # why: the gate reads the ref lines'
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "ok gate in lefthook.yml"
+}
+
+# Text inside a block scalar that reads like the setting is not the setting.
+test_doctor_does_not_take_use_stdin_inside_a_block_scalar_for_the_switch() {
+  status_lefthook "      run: $STATUS_TEST_CMD_CI" '      description: |
+        remember: use_stdin: true'
+  doctor_one_fail "FAIL lefthook pre-push gate in lefthook.yml has no use_stdin: true"
+}
+
+# The gate commands are read the same way: a commented-out command is not configured.
+test_doctor_does_not_take_a_commented_out_gate_command_for_the_gate() {
+  mkrepo
+  printf 'pre-commit:\n  commands:\n    gauntlet:\n      # run: .gauntlet/bin/gauntlet check --staged\npre-push:\n  commands:\n    gauntlet:\n      # run: %s\n      use_stdin: true\n' "$STATUS_TEST_CMD_CI" > lefthook.yml
+  doctor_install
+  doctor_one_fail "FAIL gate missing from lefthook.yml: run gauntlet install-hooks"
+}
+
 # The switch is spelled the way each lefthook config format spells it; prek has no such switch.
 test_doctor_reads_use_stdin_in_every_lefthook_format_and_asks_none_of_prek() {
   mkrepo

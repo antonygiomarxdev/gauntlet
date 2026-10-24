@@ -505,6 +505,44 @@ YAML
   assert_contains "$OUT" "already configured in lefthook.yml"
 }
 
+# install-hooks reads the config the way doctor does: a use_stdin in a comment is not the switch, a
+# trailing comment after the value is fine, and a commented-out command is not configured.
+test_install_hooks_ignores_comments_when_it_reads_a_lefthook_config() {
+  hooks_repo "$TMP/repo"
+  cat > lefthook.yml <<YAML
+pre-commit:
+  commands:
+    gauntlet:
+      run: .gauntlet/bin/gauntlet check --staged
+pre-push:
+  commands:
+    gauntlet:
+      run: $HOOK_TEST_CMD_CI
+      # use_stdin: true
+YAML
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks"
+  assert_contains "$OUT" "ACTION NEEDED: add use_stdin: true to the pre-push gauntlet command in lefthook.yml"
+  assert_not_contains "$OUT" "already configured"
+  printf '      use_stdin: true  # the gate reads the ref lines\n' >> lefthook.yml
+  run "$G" install-hooks
+  assert_contains "$OUT" "already configured in lefthook.yml"
+  cat > lefthook.yml <<YAML
+pre-commit:
+  commands:
+    gauntlet:
+      # run: .gauntlet/bin/gauntlet check --staged
+pre-push:
+  commands:
+    gauntlet:
+      # run: $HOOK_TEST_CMD_CI
+      use_stdin: true
+YAML
+  run "$G" install-hooks
+  assert_contains "$OUT" "ACTION NEEDED: add to lefthook.yml:"
+  assert_not_contains "$OUT" "already configured"
+}
+
 # The generic snippet is what lefthook.toml and lefthook.json get; it names the switch there.
 test_the_generic_snippet_for_lefthook_names_use_stdin_and_prek_does_not() {
   hooks_repo "$TMP/repo"

@@ -937,18 +937,22 @@ config_replace_words() {
 # JSON spell it), "stdin" when it has both but lefthook's pre-push command would get no stdin, so
 # the gate would judge the checked-out branch whatever git pushes, "old" when it runs an older
 # pre-push command (the gate without --pre-push), which is replaced, not added to, else
-# "missing". The check is on the file, not on the command: a use_stdin on another command
-# satisfies it (a ceiling). doctor and install-hooks both ask this, so a config is done or not by
-# one rule.
+# "missing". A line whose first non-blank character is "#" is a comment in YAML and TOML and holds
+# nothing: not a command, not a use_stdin. use_stdin is a key: at the start of a line (after blanks
+# and a "- "), or after "{" or ",", with its value true and nothing glued to it, so a trailing
+# comment is fine and the words of a block scalar are not the key. The check is on the file, not
+# on the command: a use_stdin on another command satisfies it (a ceiling). doctor and
+# install-hooks both ask this, so a config is done or not by one rule.
 config_state() {
-  local staged=0 ci=0 needle=0
-  if grep -Fq -- "$GAUNTLET_CMD_STAGED" "$1" 2> /dev/null; then staged=1; fi
-  if grep -Fq -- "$GAUNTLET_CMD_CI" "$1" 2> /dev/null; then ci=1; fi
-  if grep -Fq -- "$HOOK_NEEDLE_CI" "$1" 2> /dev/null; then needle=1; fi
+  local text staged=0 ci=0 needle=0
+  text=$(grep -v '^[[:space:]]*#' "$1" 2> /dev/null)
+  if printf '%s\n' "$text" | grep -Fq -- "$GAUNTLET_CMD_STAGED"; then staged=1; fi
+  if printf '%s\n' "$text" | grep -Fq -- "$GAUNTLET_CMD_CI"; then ci=1; fi
+  if printf '%s\n' "$text" | grep -Fq -- "$HOOK_NEEDLE_CI"; then needle=1; fi
   if [ "$ci" -eq 0 ] && [ "$needle" -eq 1 ]; then
     printf 'old\n'
   elif [ "$ci" -eq 1 ] && [ "$staged" -eq 1 ]; then
-    if config_is_lefthook "$1" && ! grep -Eq 'use_stdin"?[[:space:]]*[:=][[:space:]]*true' "$1" 2> /dev/null; then
+    if config_is_lefthook "$1" && ! printf '%s\n' "$text" | grep -Eq "(^|[{,])[[:space:]]*(-[[:space:]]+)?[\"']?use_stdin[\"']?[[:space:]]*[:=][[:space:]]*true([[:space:],}#]|\$)"; then
       printf 'stdin\n'
     else
       printf 'ok\n'
