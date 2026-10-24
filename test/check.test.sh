@@ -1182,10 +1182,12 @@ test_whole_program_rows_skip_untracked_and_ignored_files() {
   assert_eq 0 "$STATUS" "check --ci in a fresh clone: $OUT"
 }
 
-# The rule tests of the gate read the cases git tracks: untracked case files exist
-# only on this machine, so a rule committed without them fails in a clone and here.
+# The rule tests of the gate read the cases git tracks: case files that exist only on this machine
+# (here ignored by .git/info/exclude; an untracked file that is not ignored is refused, R64) are not
+# there in a clone, so a rule committed without them fails in a clone and here.
 test_ci_rule_tests_read_tracked_case_files_only() {
   gate_setup 'ok'
+  printf '.gauntlet/rules/*.txt\n' >> .git/info/exclude
   rule newrule paths='**/*.ts'
   cases_of newrule 'TODO y'
   must git add .gauntlet/rules/newrule.md
@@ -1895,4 +1897,119 @@ test_pre_push_flag_is_not_accepted_by_the_commit_gate() {
   run "$G" check --staged --pre-push
   assert_eq 2 "$STATUS" "status: $OUT"
   assert_contains "$OUT" "usage: gauntlet check --staged"
+}
+
+# R64: check --ci refuses while a file under .gauntlet is untracked and not ignored. A clone has no
+# such file, so a run that read it would judge differently from CI: the case that showed it was an
+# untracked exceptions.tsv whose `loosen` row let a lowered severity pass locally and fail in CI.
+
+# untracked_gate_setup <path under .gauntlet>: gate_setup, then <path> exists under .gauntlet and git
+# does not track it: a tracked file leaves the index and the commit, any other is created.
+untracked_gate_setup() {
+  gate_setup 'ok'
+  if git ls-files --error-unmatch ".gauntlet/$1" > /dev/null 2>&1; then
+    must git rm -q --cached ".gauntlet/$1"
+    must git commit -q -m "untrack $1"
+  else
+    must mkdir -p ".gauntlet/$(dirname "$1")"
+    printf 'x\n' > ".gauntlet/$1"
+  fi
+}
+
+# untracked_refused <what>: the gate exits 2 with the dirty-tree sentence and a line that names <what>.
+untracked_refused() {
+  gate
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "gauntlet checks what you push; commit or stash first"
+  assert_contains "$OUT" "gauntlet: untracked files under .gauntlet, which a clone does not have: $1; commit or ignore them"
+}
+
+test_an_untracked_exceptions_file_with_a_loosening_row_is_refused() {
+  gate_setup 'ok'
+  must git checkout -q main
+  must git rm -q --cached .gauntlet/exceptions.tsv
+  must git commit -q -m "untrack exceptions"
+  must git checkout -q -b feat2
+  rule todo paths='**/*.ts' severity=shadow
+  must git add .gauntlet/rules
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  must git add .gauntlet/baseline.tsv
+  must git commit -q -m "lower the severity"
+  run "$G" loosen todo "severity to shadow" "generated code"
+  assert_eq 0 "$STATUS" "loosen: $OUT"
+  assert_contains "$(git status --short)" "?? .gauntlet/exceptions.tsv"
+  untracked_refused ".gauntlet/exceptions.tsv"
+}
+
+test_an_untracked_baseline_is_refused() {
+  untracked_gate_setup baseline.tsv
+  untracked_refused ".gauntlet/baseline.tsv"
+}
+
+test_an_untracked_config_is_refused() {
+  untracked_gate_setup config
+  untracked_refused ".gauntlet/config"
+}
+
+test_an_untracked_format_is_refused() {
+  untracked_gate_setup formats/x.md
+  untracked_refused ".gauntlet/formats/x.md"
+}
+
+test_an_untracked_file_under_the_vendored_bin_is_refused() {
+  untracked_gate_setup bin/gauntlet
+  untracked_refused ".gauntlet/bin/gauntlet"
+}
+
+# What .gauntlet/.gitignore ignores (STATUS.md, the install lock) is not a missing file, and a file
+# outside .gauntlet that git does not track is not this check's business.
+test_ignored_files_under_gauntlet_and_untracked_files_elsewhere_do_not_refuse() {
+  gate_setup 'ok'
+  printf 'STATUS.md\n.install.lock\n' > .gauntlet/.gitignore
+  commit_all ignore
+  printf 'status\n' > .gauntlet/STATUS.md
+  must mkdir .gauntlet/.install.lock
+  printf 'pid\n' > .gauntlet/.install.lock/pid
+  printf 'notes\n' > notes.txt
+  gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "untracked"
+}
+
+test_a_clean_tree_with_everything_committed_still_passes() {
+  gate_setup 'ok'
+  gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+}
+
+# Five names are listed; the rest are counted.
+test_untracked_files_are_listed_up_to_five_and_the_rest_counted() {
+  local i
+  gate_setup 'ok'
+  must mkdir .gauntlet/formats
+  for i in 1 2 3 4 5; do printf 'x\n' > ".gauntlet/formats/f$i.md"; done
+  untracked_refused ".gauntlet/formats/f1.md, .gauntlet/formats/f2.md, .gauntlet/formats/f3.md, .gauntlet/formats/f4.md, .gauntlet/formats/f5.md"
+  assert_not_contains "$OUT" " more"
+  printf 'x\n' > .gauntlet/formats/f6.md
+  printf 'x\n' > .gauntlet/formats/f7.md
+  gate
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "does not have: .gauntlet/formats/f1.md, .gauntlet/formats/f2.md, .gauntlet/formats/f3.md, .gauntlet/formats/f4.md, .gauntlet/formats/f5.md, and 2 more; commit or ignore them"
+  assert_not_contains "$OUT" "f6.md"
+}
+
+# A name is somebody else's text: a space stays, a control byte is written out.
+test_the_names_of_untracked_files_are_spelled() {
+  gate_setup 'ok'
+  must mkdir .gauntlet/formats
+  printf 'x\n' > ".gauntlet/formats/a b.md"
+  printf 'x\n' > ".gauntlet/formats/e"$'\033'"x.md"
+  printf 'x\n' > ".gauntlet/formats/t"$'\t'"b.md"
+  gate
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" '.gauntlet/formats/a b.md'
+  assert_contains "$OUT" '.gauntlet/formats/e\x1bx.md'
+  assert_contains "$OUT" '.gauntlet/formats/t\tb.md'
+  case "$OUT" in *$'\033'*) fail "a raw escape byte reached the output" ;; esac
 }

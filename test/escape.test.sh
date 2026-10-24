@@ -747,6 +747,8 @@ test_the_base_that_does_not_resolve_is_printed_escaped() {
   local ref
   mkrepo
   must cp -R "$ROOT/bin" "$ROOT/lib" .gauntlet/
+  must git add -A
+  must git commit -q -m "vendor the runner"
   ref=$(printf 'x\033[2Jy')
   must git config branch.main.gauntletBase "$ref"
   run "$G" doctor

@@ -37,10 +37,37 @@ check_ci() {
     printf 'gauntlet checks what you push; commit or stash first\n' >&2
     return 2
   fi
+  untracked_gauntlet_refuse || return $?
   scratch=$(tmp_new -d) || return 2
   check_run "$scratch" "$base_ref" "$start" || status=$?
   rm -rf "$scratch"
   return "$status"
+}
+
+# untracked_gauntlet_refuse: return 2 when git lists a file under .gauntlet that it neither tracks
+# nor ignores (R64). A clone does not have it, so a run that read it (an exceptions.tsv row, a
+# baseline, a config, a format, the vendored runner) would judge differently from CI. The same
+# sentence as the dirty-tree refusal, then one line with the first five names (path_spell: a name
+# is somebody else's text) and a count of the rest. .gauntlet/.gitignore ignores STATUS.md and the
+# lock, which are not listed.
+untracked_gauntlet_refuse() {
+  local tmp name n=0 list='' more='' rc=0
+  tmp=$(tmp_new) || return 2
+  git -c core.quotepath=off ls-files -o --exclude-standard -z -- .gauntlet > "$tmp" || rc=2
+  if [ "$rc" -eq 0 ]; then
+    while IFS= read -r -d '' name; do
+      n=$((n + 1))
+      if [ "$n" -le 5 ]; then list=$list${list:+, }$(path_spell "$name"); fi
+    done < "$tmp"
+    if [ "$n" -gt 5 ]; then more=", and $((n - 5)) more"; fi
+    if [ "$n" -gt 0 ]; then
+      printf 'gauntlet checks what you push; commit or stash first\n' >&2
+      printf 'gauntlet: untracked files under .gauntlet, which a clone does not have: %s%s; commit or ignore them\n' "$list" "$more" >&2
+      rc=2
+    fi
+  fi
+  rm -f "$tmp"
+  return "$rc"
 }
 
 # pre_push_refs: read the lines git gives a pre-push hook on stdin, "<local ref> <local sha>
