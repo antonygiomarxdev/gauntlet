@@ -2503,6 +2503,40 @@ SHIM
   assert_eq "gauntlet: cannot create $TMP/repo/.git/gauntlet-install.lock" "$OUT"
 }
 
+# The count of "freed between the two calls" is of consecutive ones: a lock that is held in between
+# resets it. Under real contention mkdir can lose, find the lock gone, lose again, and find it held;
+# three such polls that are not in a row are not a directory that cannot be written. The mkdir shim
+# answers the lock by call: absent, held, absent, held, absent, then free. "Absent" is mkdir failing
+# with nothing there, "held" is mkdir failing with the directory there.
+test_the_absent_count_of_the_lock_wait_is_of_consecutive_polls() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must mkdir "$TMP/shim"
+  local real_mkdir
+  real_mkdir=$(command -v mkdir)
+  cat > "$TMP/shim/mkdir" <<SHIM
+#!/bin/sh
+case "\$*" in
+  *gauntlet-install.lock)
+    n=\$(cat "$TMP/calls" 2> /dev/null || echo 0)
+    n=\$((n + 1))
+    echo "\$n" > "$TMP/calls"
+    case \$n in
+      1|3|5) rmdir "\$1" 2> /dev/null; exit 1 ;;
+      2|4) "$real_mkdir" "\$1" 2> /dev/null; exit 1 ;;
+    esac
+    ;;
+esac
+exec "$real_mkdir" "\$@"
+SHIM
+  must chmod +x "$TMP/shim/mkdir"
+  run env PATH="$TMP/shim:$PATH" "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_eq 6 "$(cat "$TMP/calls")" "the lock was asked for six times"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "the hook was written"
+  [ ! -e .git/gauntlet-install.lock ] || fail "the lock is still there after the run ended"
+}
+
 # A linked worktree shares the common git dir, so the lock must be there and not in the
 # worktree's own git dir: two worktrees edit the same hooks.
 test_the_lock_is_in_the_common_git_dir_of_a_linked_worktree() {
