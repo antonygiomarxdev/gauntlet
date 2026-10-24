@@ -15,12 +15,17 @@ concurrency:
 
 jobs:
   test:
+    name: test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # One run of the suite takes a quarter of an hour on a loaded machine; each clock gets its own job.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - { name: ubuntu, os: ubuntu-latest, bsd_date: "0" }
+          - { name: ubuntu-bsd-date, os: ubuntu-latest, bsd_date: "1" }
+          - { name: macos, os: macos-latest, bsd_date: "0" }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,13 +46,13 @@ jobs:
         run: shellcheck -x bin/gauntlet lib/*.sh test/*.sh
 
       - name: Test (Ubuntu)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.bsd_date == '0'
         run: bash test/run.sh
 
       # macOS's date has no %N, so now_ms falls back to whole seconds there. This
       # runs the suite with test/bsd-date first on PATH, so Ubuntu covers that clock.
       - name: Test (Ubuntu, BSD date clock)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.bsd_date == '1'
         run: GAUNTLET_TEST_BSD_DATE=1 bash test/run.sh
 
       # Homebrew bash 5 sits first on PATH, and bin/gauntlet and the tests use
