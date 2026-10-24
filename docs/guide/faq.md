@@ -4,7 +4,7 @@
 No. Existing debt is measured and accepted as the floor. Write new rules as `shadow` first: a shadow rule reports what it would have failed and never blocks. The touched-file gate starts off. Only new violations of `block` rules fail, and only once you have promoted their rule.
 
 **Will it touch my existing hooks?**
-It adds one line to each existing shell hook, placed first, right after the shebang, so the gate runs before anything else in the hook. It never replaces your hooks, never deletes a line from them and never writes `core.hooksPath`. For lefthook and prek, it prints a snippet for you to paste. See [Gates](gates.md#hooks-coexist-never-take-over).
+It adds one line to each existing shell hook, placed first, right after the shebang, so the gate runs before anything else in the hook. It never replaces your hooks, never deletes a line from them and never writes `core.hooksPath`. For lefthook and prek configs, it edits nothing and prints what to add: a snippet to paste for YAML, the two commands to write in the config's own syntax for JSON and TOML. See [Gates](gates.md#hooks-coexist-never-take-over).
 
 **My formatter just rewrote every file. Did I just add 2,000 violations?**
 Not if it only changes whitespace. A violation is identified by fingerprint (rule + file + normalized line text), not by line number, and only runs of spaces and tabs, line endings and the ends of the line are normalized. Re-indenting, tabs for spaces and CRLF keep every fingerprint; gauntlet's own test suite checks that. A formatter that changes the text of a flagged line (splits it, or changes quotes or punctuation) gives it a new fingerprint, and the gate reports it as new. So does moving a flagged line to another file.

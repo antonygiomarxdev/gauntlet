@@ -172,7 +172,7 @@ slow: todo 51 ms (consider stage: push)
    - `FAIL <stage> gate in <file> is an older gauntlet line (it differs from the current one): run gauntlet install-hooks`, or `replace the line ending in "# gauntlet" in <file> with: <line>` when it would only print.
    - `FAIL <file> has N lines ending in "# gauntlet" (lines a, b, ...); keep one, the current form, and remove the others`
    - `FAIL <stage> hook <file> is not executable: chmod +x '<file>'`
-   - `FAIL gate missing from <config>: run gauntlet install-hooks and add the snippet it prints`
+   - `FAIL gate missing from <config>: run gauntlet install-hooks and add what it prints`
    - `FAIL lefthook pre-push gate in <file> has no use_stdin: true, so it judges the checked-out branch whatever git pushes: add use_stdin: true`
    - `FAIL <stage> gate in <file>: shared hooks directory: the gate must use the guarded form; run gauntlet install-hooks to see it`
 5. **Ignored files.** No file of gauntlet's may be hidden from git. It lists every untracked file under `.gauntlet/` that git ignores, apart from `STATUS.md`, the lock and editor junk, and names the rule that hides it. It does not judge intent: a file you hide on purpose is listed too.

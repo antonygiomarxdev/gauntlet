@@ -98,7 +98,7 @@ It fails closed. No temp file: `gauntlet: cannot create a temp file; check TMPDI
 
 Limits:
 - **prek** runs hooks with stdin on `/dev/null`, so a branch that is not checked out cannot be refused there. The gate judges the checked-out branch, as it would without `--pre-push`.
-- **lefthook** passes stdin to a command only with `use_stdin: true`. `doctor` fails a lefthook pre-push command without it, and the snippet `install-hooks` prints has it. Any other hook runner has to pass git's stdin to the pre-push command, or the gate judges the checked-out branch whatever git pushes.
+- **lefthook** passes stdin to a command only with `use_stdin: true`. `doctor` fails a lefthook pre-push command without it, and what `install-hooks` prints for lefthook has it: in the YAML snippet, or as a line asking you to set it in a JSON or TOML config. Any other hook runner has to pass git's stdin to the pre-push command, or the gate judges the checked-out branch whatever git pushes.
 - A hook run by hand from a pipe that never closes blocks on it, waiting for the end of the input. From a terminal it does not; from a script, use `< /dev/null`.
 - A push interrupted during the gate (Ctrl-C), or a process killed between `mktemp` and the end of the line, can leave the temp file (`mktemp` names it `tmp.` and random characters) in `$TMPDIR`. It holds only git's ref lines.
 - An old vendored runner under this hook line does not know `--pre-push` and prints its own old usage, `gauntlet: usage: gauntlet check --ci [--base <ref>]`, with exit 2. Run `gauntlet install` from a current checkout, which re-vendors the runner.
@@ -152,7 +152,7 @@ Pre-push runs every declared check in scope. CI runs the `ci=on` ones.
 | Your repo has | gauntlet does |
 |---|---|
 | husky (`core.hooksPath` is `.husky` or `.husky/_`) | puts the gate first in `.husky/pre-commit` and `.husky/pre-push`, creating either file if it is missing |
-| lefthook or prek config (`lefthook.*`, `.pre-commit-config.yaml`, `prek.toml`) | prints a snippet for you to paste. It does not edit the config, and `doctor` fails until the snippet is there. For lefthook the pre-push command also needs `use_stdin: true` |
+| lefthook or prek config (`lefthook.*`, `.lefthook.*` or `.config/lefthook.*`, each as `.yml`, `.yaml`, `.json` or `.toml`; `.pre-commit-config.yaml`; `prek.toml`) | prints what to add and does not edit the config. For a YAML config it is a snippet to paste. For lefthook JSON or TOML it is the two commands to write in the config's own syntax, plus a line asking you to set `use_stdin: true` on the pre-push command; for `prek.toml`, the two commands only. `doctor` fails until both commands are there. For lefthook the pre-push command also needs `use_stdin: true` |
 | an existing shell hook, in `.git/hooks` or in a `core.hooksPath` inside the repo | puts the gate first in it, right after the shebang line |
 | one script linked as both `pre-commit` and `pre-push` | prints two guarded blocks to add by hand: one line cannot be right for both hooks |
 | a `core.hooksPath` shared outside the repo | prints the guarded lines, `if [ -d .gauntlet ]; then <gate>; fi`. The directory is not yours to change |
