@@ -543,6 +543,29 @@ YAML
   assert_not_contains "$OUT" "already configured"
 }
 
+# lefthook's `jobs` are a list, and use_stdin may be the first key of an item, on the line of its "- ":
+# that is the switch too (and its value must still be true).
+test_install_hooks_takes_use_stdin_as_the_first_key_of_a_list_item() {
+  hooks_repo "$TMP/repo"
+  cat > lefthook.yml <<YAML
+pre-commit:
+  jobs:
+    - run: .gauntlet/bin/gauntlet check --staged
+pre-push:
+  jobs:
+    - use_stdin: true
+      run: $HOOK_TEST_CMD_CI
+YAML
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "already configured in lefthook.yml"
+  assert_not_contains "$OUT" "ACTION NEEDED"
+  sed 's/use_stdin: true/use_stdin: false/' lefthook.yml > lefthook.new
+  mv lefthook.new lefthook.yml
+  run "$G" install-hooks
+  assert_contains "$OUT" "ACTION NEEDED: add use_stdin: true to the pre-push gauntlet command in lefthook.yml"
+}
+
 # The generic snippet is what lefthook.toml and lefthook.json get; it names the switch there.
 test_the_generic_snippet_for_lefthook_names_use_stdin_and_prek_does_not() {
   hooks_repo "$TMP/repo"
@@ -2041,10 +2064,20 @@ hooks_full_mktemp() {
 }
 
 hooks_case_a_full_temp_file_blocks() {
-  local rc=0
-  if [ "$1" = busybox ]; then return 0; fi
+  local rc=0 made
   hooks_line_dir
   hooks_full_mktemp
+  if [ "$1" = busybox ]; then
+    # busybox sh has no mktemp on PATH to shim, so its temp file cannot be made full this way; the
+    # message is the same code in every shell and the directory-on-stdin case below reaches it in
+    # busybox. This says so with an assertion instead of a silent pass: a busybox that does look
+    # mktemp up on PATH fails here, and then this case must run for it.
+    made=$(PATH="$TMP/mkshim:$PATH" TMPDIR="$TMP/line-tmp" busybox sh -c mktemp) || fail "busybox sh could not run mktemp"
+    rm -f "$made"
+    if [ "$made" = "$TMP/full" ]; then fail "busybox sh takes mktemp from PATH: run the full-file case for it"; fi
+    rm -rf "$TMP/mkshim" "$TMP/full"
+    return 0
+  fi
   PATH="$TMP/mkshim:$PATH" hooks_line_run "$@" || rc=$?
   assert_eq 2 "$rc" "[$*] the hook exits 2 when the temp file is full: $(cat "$TMP/line.out")"
   assert_contains "$(cat "$TMP/line.out")" "gauntlet: cannot buffer git's stdin; check TMPDIR"
@@ -2078,6 +2111,33 @@ hooks_case_cat_failing_blocks() {
 
 test_stdin_that_cannot_be_buffered_blocks_the_push_with_exit_2_and_cleans_up() {
   hooks_each_shell hooks_case_cat_failing_blocks
+}
+
+# hooks_line_run_split <shell words...>: hooks_line_run with stdout and stderr kept apart, in
+# $TMP/line.stdout and $TMP/line.stderr.
+hooks_line_run_split() {
+  (cd "$TMP/line" && TMPDIR="${LINE_TMPDIR:-$TMP/line-tmp}" "$@" ./hook < "${LINE_INPUT:-$TMP/line.in}") > "$TMP/line.stdout" 2> "$TMP/line.stderr"
+}
+
+# What failed is said on stderr, the stream of an error: the two failures the line names (no temp
+# file, no copy of stdin) print nothing on stdout. The other cases read both streams together.
+hooks_case_the_failure_words_go_to_stderr() {
+  local rc=0
+  hooks_line_dir
+  LINE_TMPDIR="$TMP/no-such-dir" hooks_line_run_split "$@" || rc=$?
+  assert_eq 2 "$rc" "[$*] no temp file: exit"
+  assert_contains "$(cat "$TMP/line.stderr")" "gauntlet: cannot create a temp file; check TMPDIR"
+  assert_eq "" "$(cat "$TMP/line.stdout")" "[$*] no temp file: nothing on stdout"
+  rc=0
+  hooks_line_dir
+  LINE_INPUT="$TMP/line-tmp/.." hooks_line_run_split "$@" || rc=$?
+  assert_eq 2 "$rc" "[$*] no copy of stdin: exit"
+  assert_contains "$(cat "$TMP/line.stderr")" "gauntlet: cannot buffer git's stdin; check TMPDIR"
+  assert_eq "" "$(cat "$TMP/line.stdout")" "[$*] no copy of stdin: nothing on stdout"
+}
+
+test_the_pre_push_line_says_what_failed_on_stderr_and_prints_nothing_on_stdout() {
+  hooks_each_shell hooks_case_the_failure_words_go_to_stderr
 }
 
 # The buffer is gone before stdin is handed back (here the runner erases it). A shell exits on its

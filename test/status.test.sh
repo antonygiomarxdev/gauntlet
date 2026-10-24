@@ -477,6 +477,19 @@ test_doctor_takes_use_stdin_with_a_trailing_comment() {
   assert_contains "$OUT" "ok gate in lefthook.yml"
 }
 
+# lefthook's `jobs` are a list: use_stdin may be the first key of an item, on the line of its "- ".
+# That is the switch, with the value it needs.
+test_doctor_takes_use_stdin_as_the_first_key_of_a_list_item() {
+  mkrepo
+  printf 'pre-commit:\n  jobs:\n    - run: .gauntlet/bin/gauntlet check --staged\npre-push:\n  jobs:\n    - use_stdin: true\n      run: %s\n' "$STATUS_TEST_CMD_CI" > lefthook.yml
+  doctor_install
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "ok gate in lefthook.yml"
+  printf 'pre-commit:\n  jobs:\n    - run: .gauntlet/bin/gauntlet check --staged\npre-push:\n  jobs:\n    - use_stdin: false\n      run: %s\n' "$STATUS_TEST_CMD_CI" > lefthook.yml
+  doctor_one_fail "FAIL lefthook pre-push gate in lefthook.yml has no use_stdin: true"
+}
+
 # Text inside a block scalar that reads like the setting is not the setting.
 test_doctor_does_not_take_use_stdin_inside_a_block_scalar_for_the_switch() {
   status_lefthook "      run: $STATUS_TEST_CMD_CI" '      description: |
@@ -504,6 +517,10 @@ test_doctor_reads_use_stdin_in_every_lefthook_format_and_asks_none_of_prek() {
   printf '%s\nuse_stdin = true\n' "$cmds" > lefthook.toml
   run "$G" doctor
   assert_eq 0 "$STATUS" "toml with use_stdin = true: $OUT"
+  # A TOML comment may follow the value with no blank between.
+  printf '%s\nuse_stdin = true# why\n' "$cmds" > lefthook.toml
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "toml with use_stdin = true# why: $OUT"
   rm lefthook.toml
   printf '{"run": "%s", "x": ".gauntlet/bin/gauntlet check --staged", "use_stdin": true}\n' "$STATUS_TEST_CMD_CI" > .lefthook.json
   run "$G" doctor
