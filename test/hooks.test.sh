@@ -720,6 +720,18 @@ test_hooks_dir_outside_repo_is_print_only() {
   assert_contains "$OUT" "$TMP/shared hooks is a hooks directory shared with other repositories (core.hooksPath)"
 }
 
+# R58: the advice says what the guard really does (the R53 test above runs the lines): nothing where
+# the repository has no .gauntlet/, a loud failure where it has one and the runner cannot run.
+test_the_shared_directory_advice_says_what_the_guard_does_and_what_it_does_not() {
+  hooks_repo "$TMP/repo"
+  must mkdir "$TMP/shared"
+  must git config core.hooksPath "$TMP/shared"
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "$TMP/shared is a hooks directory shared with other repositories (core.hooksPath), so the lines below are guarded: they do nothing where there is no .gauntlet/ directory, and fail where .gauntlet/ exists and .gauntlet/bin/gauntlet is missing or not executable."
+  assert_not_contains "$OUT" "where .gauntlet/bin/gauntlet is absent"
+}
+
 # A global core.hooksPath shared by every repo is printed, and nothing is written.
 test_global_hooks_path_outside_repo_is_print_only() {
   hooks_repo "$TMP/repo"
@@ -2526,6 +2538,24 @@ test_an_unwritable_git_dir_with_the_default_hooks_says_why_it_cannot_lock() {
   [ ! -e .gauntlet/config ] || fail "install wrote the state files without a lock"
   assert_eq 2 "$STATUS" "install-hooks: $OUT"
   assert_eq "gauntlet: cannot lock: $TMP/repo/.git is not writable; fix the permissions" "$OUT"
+}
+
+# R58: .gauntlet exists as a file (or a dangling link) in a layout whose lock lives in .gauntlet/:
+# the root is writable, so the message names .gauntlet and not the permissions. Nothing is touched.
+test_a_gauntlet_file_in_a_husky_layout_is_named_by_the_lock_message() {
+  hooks_repo "$TMP/repo"
+  must git config core.hooksPath .husky
+  printf 'not a directory\n' > .gauntlet
+  run "$G" install
+  assert_eq 2 "$STATUS" "install: $OUT"
+  assert_eq "gauntlet: cannot lock: .gauntlet is not a directory; remove or rename it" "$OUT"
+  assert_eq "not a directory" "$(cat .gauntlet)" ".gauntlet is untouched"
+  [ ! -e .husky ] || fail "a hook directory was made without a lock"
+  rm .gauntlet
+  must ln -s "$TMP/nowhere" .gauntlet
+  run "$G" install
+  assert_eq 2 "$STATUS" "install with a dangling link: $OUT"
+  assert_eq "gauntlet: cannot lock: .gauntlet is not a directory; remove or rename it" "$OUT"
 }
 
 # The layouts that never write under the git dir keep working when it is read-only (a container, a

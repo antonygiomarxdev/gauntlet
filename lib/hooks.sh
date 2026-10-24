@@ -144,6 +144,8 @@ install_lock() {
       dir="$HOOKS_ROOT/.gauntlet"
       if [ ! -d "$dir" ]; then
         if [ "${2:-}" != create ]; then return 0; fi
+        # A file (or a link to nowhere) named .gauntlet is why mkdir fails, not the permissions.
+        if [ -e "$dir" ] || [ -L "$dir" ]; then die "cannot lock: .gauntlet is not a directory; remove or rename it"; fi
         mkdir -p "$dir" 2> /dev/null || die "cannot lock: $HOOKS_ROOT is not writable; fix the permissions"
       fi
       lock="$dir/.install.lock"
@@ -605,7 +607,7 @@ hooks_one_script() {
 # repositories (core.hooksPath outside this repo), which is not ours to edit. A plain gate line
 # would fail in every repository that has no .gauntlet/, so the lines are the guarded forms.
 print_hook_pair() {
-  printf '%s is a hooks directory shared with other repositories (core.hooksPath), so the lines below are guarded: they do nothing where .gauntlet/bin/gauntlet is absent.\n' "$(path_spell "$1")"
+  printf '%s is a hooks directory shared with other repositories (core.hooksPath), so the lines below are guarded: they do nothing where there is no .gauntlet/ directory, and fail where .gauntlet/ exists and .gauntlet/bin/gauntlet is missing or not executable.\n' "$(path_spell "$1")"
   if [ "$1/pre-commit" -ef "$1/pre-push" ]; then
     hooks_one_script "$1/pre-commit" "$1/pre-push" shared
     return 0
