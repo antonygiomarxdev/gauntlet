@@ -990,14 +990,14 @@ loosen_changes() {
 # dropped; a quote left open takes the rest of the line. A word that starts with "-" and
 # holds "=" (--pre=tools/pre.sh) is printed whole and then as the text after the first "=".
 # A leading "./" is dropped. A word that cannot name a file is not printed: an option (it
-# starts with "-" and holds no "="), and a word with a "{" (the {files} placeholder, a brace
-# expansion, which is not expanded). No $variable, ` command, glob or ~ is interpreted: the
-# command is judged as text.
+# starts with "-" as written, before the "./" is dropped, and holds no "="; ./-x.sh is a path),
+# and a word with a "{" (the {files} placeholder, a brace expansion, which is not expanded). No
+# $variable, ` command, glob or ~ is interpreted: the command is judged as text.
 detector_words() {
   GL_CMD=$1 LC_ALL=C awk '
     function keep(x) {
-      sub(/^\.\//, "", x)
       if (substr(x, 1, 1) == "-" && index(x, "=") == 0) return
+      sub(/^\.\//, "", x)
       if (index(x, "{") > 0) return
       print x
     }

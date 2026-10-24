@@ -2053,6 +2053,65 @@ b')" "a newline ends the word before the option's value is read"
 y' "$(detector_words 'x --empty= y')" "an empty value is no word"
 }
 
+# A script whose name starts with "-" is a file when it is written with a path: the word is
+# judged as written, before the leading "./" goes, so ./-x.sh is not taken for the option -x.sh.
+# exc_dash_scripts <detector>: main holds -x.sh and tools/-x.sh (a script that finds TODO), files
+# named -x and --line-number, and the todo rule over it with that detector, then a feat branch.
+exc_dash_scripts() {
+  mkrepo
+  must mkdir -p tools
+  printf '#!/bin/sh\nrg --with-filename --line-number --no-heading TODO "$@"\n' > ./-x.sh
+  cp ./-x.sh tools/-x.sh
+  printf 'o\n' > ./-x
+  printf 'o\n' > ./--line-number
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script "detector=$1"
+  script_row todo
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+}
+
+test_a_dash_script_run_with_a_dot_slash_is_a_detector_file() {
+  exc_dash_scripts 'bash ./-x.sh {files}'
+  exc_change_tool ./-x.sh
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  detector file -x.sh changed"
+}
+
+test_a_dash_after_a_slash_is_part_of_a_detector_file() {
+  exc_dash_scripts 'bash ./tools/-x.sh {files}'
+  exc_change_tool tools/-x.sh
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/-x.sh changed"
+}
+
+test_an_option_word_is_not_a_detector_file_even_when_a_file_has_its_name() {
+  exc_dash_scripts 'bash -x tools/-x.sh --line-number {files}'
+  exc_change_tool ./-x
+  assert_eq 0 "$STATUS" "-x: $OUT"
+  assert_not_contains "$OUT" "detector file"
+  exc_change_tool ./--line-number
+  assert_eq 0 "$STATUS" "--line-number: $OUT"
+  assert_not_contains "$OUT" "detector file"
+}
+
+test_detector_words_judge_the_dash_as_written() {
+  # shellcheck source=lib/check.sh
+  . "$ROOT/lib/check.sh"
+  assert_eq 'bash
+tools/find.sh' "$(detector_words 'bash -x tools/find.sh --opt')" "an option alone is no file"
+  assert_eq 'bash
+-x.sh' "$(detector_words 'bash ./-x.sh')" "./ makes it a path"
+  assert_eq 'bash
+-x' "$(detector_words 'bash ./-x')" "even a word that is only -x"
+  assert_eq 'x
+--pre=./-y.sh
+-y.sh' "$(detector_words 'x --pre=./-y.sh')" "the value of an option is judged as written too"
+  assert_eq 'x
+--pre=-y' "$(detector_words 'x --pre=-y')" "an option value that is an option is not a file"
+}
+
 # An option that takes its file after "=" names that file.
 test_an_option_value_after_an_equals_sign_is_a_detector_file() {
   mkrepo
