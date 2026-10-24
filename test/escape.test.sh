@@ -597,6 +597,23 @@ test_status_and_promote_print_a_rule_id_escaped() {
   assert_clean "$OUT" "promote"
 }
 
+# The path of a rule file gauntlet cannot write is somebody's text in the message. (The shell
+# prints its own "Permission denied" line with the raw path before this one; only gauntlet's line
+# is judged here.)
+test_promote_prints_the_path_it_cannot_write_escaped() {
+  local id msg
+  [ "$(id -u)" -ne 0 ] || { skip "root writes any file"; return 77; }
+  mkrepo
+  id=$(printf 'a\033[2Jb')
+  rule "$id" severity=shadow paths='**/*.ts'
+  must chmod 444 ".gauntlet/rules/$id.md"
+  run "$G" promote "$id"
+  assert_eq 2 "$STATUS" "promote: $OUT"
+  msg=$(printf '%s\n' "$OUT" | grep -a '^gauntlet: cannot write ')
+  assert_contains "$msg" 'a\x1b[2Jb.md'
+  assert_clean "$msg" "the cannot write line"
+}
+
 # A symlink detector file whose blob git cannot read: the message names the path. The other git
 # commands of a gate stop on the same damaged object first, so the function is called directly.
 test_an_unreadable_link_blob_prints_its_path_escaped() {

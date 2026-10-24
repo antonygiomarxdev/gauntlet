@@ -2470,3 +2470,175 @@ test_removing_a_markdown_case_file_is_not_a_loosening() {
   assert_not_contains "$OUT" "[loosened]"
   assert_not_contains "$OUT" "todo.bad"
 }
+
+# --- gaps the W3a reviews found ---
+
+# R32: a listing of the config at the base that git cannot answer is exit 2, not "no config".
+# (The first listing is the one the runner makes to decide whether to compare at all.)
+test_a_failed_listing_of_the_config_at_the_base_is_exit_2() {
+  exc_cfg_steps
+  git_fails ls-tree .gauntlet/config "$(git rev-parse main)"
+  exc_gate
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "simulated failure"
+  assert_not_contains "$OUT" "PASS"
+}
+
+# A config the tree lists but git cannot read, at either side, is exit 2 with the path and the
+# sha in the message; read as empty it would pass the removal of a check.
+test_a_config_that_lists_but_cannot_be_read_at_the_base_is_exit_2() {
+  exc_cfg_steps
+  unreadable_object main:.gauntlet/config
+  exc_gate
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot read .gauntlet/config at "
+}
+
+test_a_config_that_lists_but_cannot_be_read_at_head_is_exit_2() {
+  exc_cfg_steps
+  unreadable_object HEAD:.gauntlet/config
+  exc_gate
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot read .gauntlet/config at "
+}
+
+# A repo with no commit has no rule at HEAD or at a base: the answer is "no rule", not a git error.
+test_loosen_in_a_repo_with_no_commit_says_no_rule() {
+  must mkdir -p "$TMP/unborn"
+  must cd "$TMP/unborn"
+  must git init -q .
+  must git symbolic-ref HEAD refs/heads/main
+  must mkdir .gauntlet
+  run "$G" loosen todo "severity to shadow" "why"
+  assert_eq 2 "$STATUS" "loosen: $OUT"
+  assert_eq "gauntlet: no rule todo" "$OUT" "message"
+  run "$G" remove todo "why"
+  assert_eq 2 "$STATUS" "remove: $OUT"
+  assert_eq "gauntlet: no rule todo" "$OUT" "message"
+}
+
+# .gauntlet must be a directory: a file of that name is not an install.
+test_a_gauntlet_file_is_not_a_gauntlet_directory() {
+  must mkdir -p "$TMP/plain"
+  must cd "$TMP/plain"
+  must git init -q .
+  must git symbolic-ref HEAD refs/heads/main
+  printf 'x\n' > .gauntlet
+  run "$G" waive a.ts why
+  assert_eq 2 "$STATUS" "waive: $OUT"
+  assert_eq "gauntlet: no .gauntlet/ directory; run gauntlet install" "$OUT" "message"
+}
+
+# Inside double quotes a backslash makes " \ $ and a backtick literal and is itself kept before
+# anything else; outside quotes a tab ends a word like a space.
+# shellcheck disable=SC2016,SC1003 # the words are literal text with $, backticks and backslashes
+test_detector_words_unescape_inside_double_quotes_and_split_at_a_tab() {
+  # shellcheck source=lib/check.sh
+  . "$ROOT/lib/check.sh"
+  assert_eq 'a$b' "$(detector_words '"a\$b"')" "an escaped dollar sign"
+  assert_eq 'a`b' "$(detector_words '"a\`b"')" "an escaped backtick"
+  assert_eq 'a"b' "$(detector_words '"a\"b"')" "an escaped double quote"
+  assert_eq 'a\b' "$(detector_words '"a\\b"')" "an escaped backslash"
+  assert_eq 'a\nb' "$(detector_words '"a\nb"')" "any other backslash is kept"
+  assert_eq 'a\' "$(detector_words '"a\\"')" "an escaped backslash before the closing quote"
+  assert_eq 'a$b' "$(detector_words "'a\$b'")" "single quotes keep everything"
+  assert_eq 'a
+b' "$(detector_words "$(printf 'a\tb')")" "a tab between words"
+  assert_eq 'a	b' "$(detector_words "'$(printf 'a\tb')'")" "a quoted tab stays"
+}
+
+# A word that climbs above the root names no file of the tree, however many parts come before the
+# "..": a file of that name at the root is not the one the shell would find.
+test_a_word_that_climbs_above_the_root_names_no_file() {
+  mkrepo
+  must mkdir -p tools
+  printf '#!/bin/sh\nexit 1\n' > tools/quiet.sh
+  printf 'one\n' > x
+  printf 'one\n' > y
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script 'detector=bash tools/quiet.sh {files} ../x sub/../../y'
+  script_row todo
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf 'two\n' > x
+  printf 'two\n' > y
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "detector file"
+}
+
+# A link that leads above the root leaves the tree: the file it would reach at the root of the
+# repository is not what the shell runs.
+test_a_link_that_leads_above_the_root_is_followed_no_further() {
+  mkrepo
+  must mkdir -p tools
+  printf '#!/bin/sh\nexit 1\n' > tools/quiet.sh
+  printf 'one\n' > x
+  ln -s ../x lnk
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts' engine=script 'detector=bash tools/quiet.sh {files}; : lnk'
+  script_row todo
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf 'two\n' > x
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "detector file"
+}
+
+# "." and empty parts are folded out of a word before the tree is asked, and ".." inside the tree
+# is folded: the same file under another spelling is the same file.
+test_a_word_is_folded_to_the_file_it_names() {
+  local spelling
+  exc_script_rule 'bash tools/find.sh {files}; : tools/./find.sh tools//find.sh ./tools/find.sh tools/sub/../find.sh tools/./sub/./../find.sh'
+  exc_change_tool tools/find.sh
+  assert_eq 1 "$STATUS" "status: $OUT"
+  for spelling in tools/find.sh tools/./find.sh tools//find.sh tools/sub/../find.sh tools/./sub/./../find.sh; do
+    assert_contains "$OUT" "  todo  detector file $spelling changed"
+  done
+}
+
+# A directory that a word names is not a detector file whether it appears, disappears or stays;
+# a file replaced by a directory is a change.
+test_a_directory_word_that_appears_or_disappears_is_not_a_detector_file() {
+  exc_script_rule 'bash tools/find.sh {files}; : docs gone'
+  must git checkout -q main
+  must mkdir -p gone
+  printf 'x\n' > gone/f.txt
+  exc_rebase
+  exc_commit main2
+  must git checkout -q feat
+  must git rebase -q main
+  must mkdir -p docs
+  printf 'x\n' > docs/f.txt
+  must git rm -q -r gone
+  exc_rebase
+  exc_commit feat2
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "detector file"
+}
+
+test_a_file_replaced_by_a_directory_is_a_detector_file_change() {
+  exc_script_rule 'bash tools/find.sh {files}; : tools/gen'
+  must git checkout -q main
+  printf 'x\n' > tools/gen
+  exc_rebase
+  exc_commit main2
+  must git checkout -q feat
+  must git rebase -q main
+  must git rm -q tools/gen
+  must mkdir tools/gen
+  printf 'x\n' > tools/gen/f.txt
+  exc_rebase
+  exc_commit feat2
+  exc_gate
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "  todo  detector file tools/gen changed"
+}

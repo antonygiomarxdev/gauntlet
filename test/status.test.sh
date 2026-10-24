@@ -306,6 +306,21 @@ test_promote_flips_shadow() {
   assert_eq 640 "$(file_mode .gauntlet/rules/x.md)" "mode"
 }
 
+# A rule file that cannot be written is exit 2 with its path, and is left as it was.
+test_promote_cannot_write_the_rule_file() {
+  [ "$(id -u)" -ne 0 ] || { skip "root writes any file"; return 77; }
+  mkrepo
+  rule x severity=shadow
+  must chmod 444 .gauntlet/rules/x.md
+  cp .gauntlet/rules/x.md "$TMP/before"
+  run "$G" promote x
+  assert_eq 2 "$STATUS" "promote: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot write "
+  assert_contains "$OUT" ".gauntlet/rules/x.md"
+  assert_not_contains "$OUT" "promoted"
+  same_file "$TMP/before" .gauntlet/rules/x.md
+}
+
 test_promote_due_after_7_days_then_promoted_is_not_due() {
   mkrepo
   rule x severity=shadow since=2026-10-22

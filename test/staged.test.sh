@@ -889,6 +889,33 @@ test_rename_onto_a_stale_push_stage_row_replaces_it() {
   assert_eq 0 "$STATUS" "check --ci: $OUT"
 }
 
+# The drop is per rule: another rule's row on the path a rename lands on stays, since only a rule
+# whose own row moved there knows that file's old content is gone.
+test_rename_onto_another_rules_push_stage_row_keeps_it() {
+  mkrepo
+  printf 'FIXME one\n' > a.ts
+  printf 'HACK two\n' > c.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  rule pushy paths='**/*.ts' stage=push detector="rg --with-filename --line-number --no-heading 'FIXME' {files}"
+  cases_of pushy 'FIXME x'
+  rule other paths='**/*.ts' stage=push detector="rg --with-filename --line-number --no-heading 'HACK' {files}"
+  cases_of other 'HACK x'
+  staged_baseline
+  must git add -A
+  must git commit -q -m main
+  staged_hook
+  must git checkout -q -b feat
+  must git rm -q c.ts
+  run git commit -q -m "chore: drop c.ts"
+  assert_eq 0 "$STATUS" "drop commit status"
+  must git mv a.ts c.ts
+  run git commit -q -m "refactor: rename onto c.ts"
+  assert_eq 0 "$STATUS" "rename commit status"
+  assert_eq "$(printf 'other\tc.ts\tHACK two\t1\npushy\tc.ts\tFIXME one\t1')" \
+    "$(staged_committed_baseline | grep -E '^(other|pushy)'"$(printf '\t')")" "each rule keeps its row on c.ts"
+}
+
 # The baseline already regenerated after the rename (the advice every note gives) has its rows
 # at the new path and none at the old one. Carrying must not drop them.
 test_a_baseline_regenerated_after_a_rename_keeps_its_push_stage_rows() {
