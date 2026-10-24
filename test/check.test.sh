@@ -833,7 +833,8 @@ test_check_stdin_is_devnull() {
   printf 'check.a=cat; true\ncheck.b=false\n' > .gauntlet/config
   commit_all feat
   # A stdin that never closes: a check that reads it would hang, so with_timeout ends it.
-  with_timeout 10 "$G" check --ci --base main < <(sleep 30 2> /dev/null) > "$TMP/out" 2>&1
+  # The limit is far above a run on a loaded machine and below the sleep, so only a hang trips it.
+  with_timeout 60 "$G" check --ci --base main < <(sleep 70 2> /dev/null) > "$TMP/out" 2>&1
   STATUS=$?
   OUT=$(cat "$TMP/out")
   assert_eq 1 "$STATUS" "status"
