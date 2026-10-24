@@ -1811,6 +1811,64 @@ test_doctor_fails_when_a_root_ignore_hides_the_runner() {
   assert_eq 0 "$STATUS" "doctor after the fix: $OUT"
 }
 
+# doctor_git_fails <flag>: put a git first on PATH that fails `git check-ignore <flag> ...` with an
+# error, as a damaged repository would, and runs every other call through the real git.
+doctor_git_fails() {
+  local real
+  real=$(command -v git) || fail "no git on PATH"
+  must mkdir -p "$TMP/shim"
+  cat > "$TMP/shim/git" <<SHIM
+#!/bin/sh
+if [ "\$1" = check-ignore ] && [ "\${2:-}" = "$1" ]; then
+  echo "fatal: simulated failure of check-ignore" >&2
+  exit 128
+fi
+exec "$real" "\$@"
+SHIM
+  must chmod +x "$TMP/shim/git"
+  PATH="$TMP/shim:$PATH"
+  export PATH
+}
+
+# A git that cannot answer check-ignore does not make the runner "not ignored": doctor stops, exit 2,
+# with git's message, and prints no ok line for it.
+test_doctor_stops_when_git_cannot_say_whether_the_runner_is_ignored() {
+  mkrepo
+  doctor_install
+  doctor_git_fails -q
+  run "$G" doctor
+  assert_eq 2 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "fatal: simulated failure of check-ignore"
+  assert_not_contains "$OUT" "runner files are not ignored by git"
+}
+
+# The same when the ignore is real and only the question of which pattern fails: no FAIL line with an
+# empty pattern in place of the answer.
+test_doctor_stops_when_git_cannot_name_the_pattern_that_ignores_the_runner() {
+  mkrepo
+  doctor_install
+  printf 'bin/\nlib/\n' > .gitignore
+  must rm .gauntlet/.gitignore
+  doctor_git_fails -v
+  run "$G" doctor
+  assert_eq 2 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "fatal: simulated failure of check-ignore"
+  assert_not_contains "$OUT" "runner files are ignored by git"
+}
+
+# lefthook keeps its config under .config/ too; use_stdin is read there as in the root.
+test_doctor_reads_a_lefthook_config_in_dot_config() {
+  mkrepo
+  doctor_install
+  must mkdir .config
+  printf 'pre-commit:\n  commands:\n    gauntlet:\n      run: .gauntlet/bin/gauntlet check --staged\npre-push:\n  commands:\n    gauntlet:\n      run: %s\n' "$STATUS_TEST_CMD_CI" > .config/lefthook.yml
+  doctor_one_fail "FAIL lefthook pre-push gate in .config/lefthook.yml has no use_stdin: true"
+  printf '      use_stdin: true\n' >> .config/lefthook.yml
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "ok gate in .config/lefthook.yml"
+}
+
 # A file pattern of the root ignore (*.sh) is not undone by !lib/: the file is named.
 test_doctor_names_the_file_pattern_that_hides_a_lib_file() {
   mkrepo

@@ -517,6 +517,20 @@ test_the_generic_snippet_for_lefthook_names_use_stdin_and_prek_does_not() {
   assert_eq 1 "$(printf '%s\n' "$OUT" | grep -c 'use_stdin to true')" "only the lefthook snippet names use_stdin"
 }
 
+# lefthook also keeps its config under .config/.
+test_a_lefthook_config_in_dot_config_is_read() {
+  hooks_repo "$TMP/repo"
+  must mkdir .config
+  printf 'pre-commit:\n  parallel: true\n' > .config/lefthook.yml
+  local config
+  config=$(hooks_sum .config/lefthook.yml)
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks"
+  assert_contains "$OUT" "ACTION NEEDED: add to .config/lefthook.yml:"
+  assert_eq "$config" "$(hooks_sum .config/lefthook.yml)" "the config is unchanged"
+  if [ -e .git/hooks/pre-commit ]; then fail "a hook was written although a config owns them"; fi
+}
+
 test_hookspath_never_set() {
   hooks_repo "$TMP/plain"
   local config
@@ -1261,6 +1275,40 @@ test_print_only_hook_warns_when_not_executable() {
   "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed"
   assert_eq "$before" "$(hooks_sum .git/hooks/pre-commit)" "the CRLF hook is not edited"
   assert_contains "$(cat "$TMP/err")" "warning: .git/hooks/pre-commit is not executable; git will ignore it"
+}
+
+# The same warning follows an in-place upgrade of an older gauntlet line: the hook is rewritten,
+# its mode is kept (not executable), and git would still ignore it.
+test_upgrading_an_old_line_warns_when_the_hook_is_not_executable() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  printf '#!/bin/sh\necho one\n%s\necho two\n' "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-push
+  chmod 644 .git/hooks/pre-push
+  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed: $(cat "$TMP/err")"
+  assert_contains "$(cat "$TMP/out")" "updated gauntlet line in .git/hooks/pre-push"
+  assert_contains "$(cat "$TMP/err")" "warning: .git/hooks/pre-push is not executable; git will ignore it"
+  if [ -x .git/hooks/pre-push ]; then fail "the upgrade changed the mode of the hook"; fi
+}
+
+# Git ignores a hook without the exec bit, so every answer install-hooks gives for such a hook carries
+# the warning: the line was already there, the hook was empty, the line was put in.
+test_every_answer_for_a_hook_that_is_not_executable_carries_the_warning() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  local body phrase
+  while IFS='|' read -r phrase body; do
+    # shellcheck disable=SC2059 # the bodies are printf formats on purpose
+    printf "$body" "$HOOK_TEST_GATE_CI" > .git/hooks/pre-push
+    chmod 644 .git/hooks/pre-push
+    "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed for [$phrase]: $(cat "$TMP/err")"
+    assert_contains "$(cat "$TMP/out")" "$phrase .git/hooks/pre-push"
+    assert_contains "$(cat "$TMP/err")" "warning: .git/hooks/pre-push is not executable; git will ignore it"
+    if [ -x .git/hooks/pre-push ]; then fail "install-hooks changed the mode of the hook for [$phrase]"; fi
+  done <<'CASES'
+already present in|#!/bin/sh\n%s\n
+added gauntlet line to|
+added gauntlet line to|#!/bin/sh\necho x\n
+CASES
 }
 
 # The gate goes first in an editable hook: on the line after the shebang, before
@@ -2206,6 +2254,26 @@ test_a_shared_script_missing_one_guard_still_gets_the_advice() {
   printf '#!/bin/sh\n%s\n%s\n%s\nfi\n' "$HOOK_TEST_GATE_STAGED" "$HOOK_TEST_GUARD_CI" "$HOOK_TEST_GATE_CI" > .git/hooks/pre-commit
   run "$G" install-hooks
   assert_contains "$OUT" "ACTION NEEDED"
+}
+
+# Git ignores a hook without the exec bit, so the warning follows every answer install-hooks gives
+# for the one script that serves both hooks: the lines to add, a pre-push line to replace, and
+# "already present".
+test_a_shared_script_that_is_not_executable_gets_the_warning_whatever_the_answer() {
+  one_script_repo symlink
+  chmod 644 .git/hooks/pre-commit
+  local want="warning: .git/hooks/pre-commit is not executable; git will ignore it"
+  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed: $(cat "$TMP/err")"
+  assert_contains "$(cat "$TMP/out")" "Add to .git/hooks/pre-commit"
+  assert_contains "$(cat "$TMP/err")" "$want"
+  printf '#!/bin/sh\n%s\n%s\nfi\n%s\n%s\nfi\n' "$HOOK_TEST_GUARD_STAGED" "$HOOK_TEST_GATE_STAGED" "$HOOK_TEST_GUARD_CI" "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-commit
+  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed: $(cat "$TMP/err")"
+  assert_contains "$(cat "$TMP/out")" "replace the line ending in"
+  assert_contains "$(cat "$TMP/err")" "$want"
+  printf '#!/bin/sh\n%s\n%s\nfi\n%s\n%s\nfi\n' "$HOOK_TEST_GUARD_STAGED" "$HOOK_TEST_GATE_STAGED" "$HOOK_TEST_GUARD_CI" "$HOOK_TEST_GATE_CI" > .git/hooks/pre-commit
+  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed: $(cat "$TMP/err")"
+  assert_contains "$(cat "$TMP/out")" "already present in .git/hooks/pre-commit"
+  assert_contains "$(cat "$TMP/err")" "$want"
 }
 
 # --- item 5: a hook that cannot be written, one exec-bit rule, a hooksPath git cannot read ---
