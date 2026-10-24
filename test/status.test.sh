@@ -1997,11 +1997,12 @@ test_doctor_fails_a_hook_with_several_gauntlet_lines_and_install_hooks_leaves_it
   done
 }
 
-# R61: the same state in a shared hooks directory is a FAIL with the guarded-form sentence, as for a
-# plain line alone; the guarded line alone is ok.
+# R61, R67: the guarded line plus a plain line of ours in a shared hooks directory is a FAIL that says
+# what install-hooks says (remove the line ending in "# gauntlet"), whether the plain line is the
+# current one or an older one; the guarded line alone is ok.
 # shellcheck disable=SC2016 # the hook line holds $? that must not expand here
 test_doctor_fails_a_shared_hook_that_has_the_guarded_line_and_a_marked_plain_line() {
-  local staged_line='.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet'
+  local staged_line='.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet' plain said failed
   mkrepo
   must mkdir "$TMP/shared"
   must git config core.hooksPath "$TMP/shared"
@@ -2012,11 +2013,52 @@ test_doctor_fails_a_shared_hook_that_has_the_guarded_line_and_a_marked_plain_lin
   run "$G" doctor
   assert_eq 0 "$STATUS" "the guarded lines alone: $OUT"
   assert_contains "$OUT" "ok pre-push gate in $TMP/shared/pre-push"
-  printf '#!/bin/sh\n%s\n%s\n' "$STATUS_TEST_SHARED_CI" "$STATUS_TEST_GATE_CI" > "$TMP/shared/pre-push"
-  doctor_one_fail "FAIL pre-push gate in $TMP/shared/pre-push: shared hooks directory: the gate must use the guarded form; run gauntlet install-hooks to see it"
+  for plain in "$STATUS_TEST_GATE_CI" '.gauntlet/bin/gauntlet check --ci  # gauntlet'; do
+    printf '#!/bin/sh\n%s\n%s\n' "$STATUS_TEST_SHARED_CI" "$plain" > "$TMP/shared/pre-push"
+    doctor_one_fail "FAIL $TMP/shared/pre-push already runs the gate with its guarded line; remove the line ending in \"# gauntlet\" from it, which fails in a repository without .gauntlet/"
+    assert_not_contains "$OUT" "replace the line"
+    # install-hooks says the same, word for word.
+    failed=$(printf '%s\n' "$OUT" | grep '^FAIL ')
+    run "$G" install-hooks
+    said=$(printf '%s\n' "$OUT" | grep '^ACTION NEEDED: .*pre-push already runs')
+    said=${said%:}
+    assert_eq "$failed" "FAIL ${said#ACTION NEEDED: }" "doctor and install-hooks"
+  done
   printf '#!/bin/sh\n%s\n' "$STATUS_TEST_SHARED_CI" > "$TMP/shared/pre-push"
   printf '#!/bin/sh\n%s\n%s\n' "$STATUS_TEST_SHARED_STAGED" "$staged_line" > "$TMP/shared/pre-commit"
-  doctor_one_fail "FAIL pre-commit gate in $TMP/shared/pre-commit: shared hooks directory: the gate must use the guarded form; run gauntlet install-hooks to see it"
+  doctor_one_fail "FAIL $TMP/shared/pre-commit already runs the gate with its guarded line; remove the line ending in \"# gauntlet\" from it, which fails in a repository without .gauntlet/"
+}
+
+# R67 (b): a shared hooks directory whose two hooks are one script gets the same words.
+# shellcheck disable=SC2016 # the hook text holds ${0##*/}, which must not expand here
+test_doctor_fails_a_shared_script_serving_both_hooks_with_the_guarded_gates_and_a_plain_line() {
+  local plain said failed staged_extra
+  mkrepo
+  must mkdir "$TMP/shared"
+  must git config core.hooksPath "$TMP/shared"
+  doctor_install
+  # A plain line under the push gate (current, older), and one under the staged gate.
+  for plain in "$STATUS_TEST_GATE_CI" '.gauntlet/bin/gauntlet check --ci  # gauntlet' 'STAGED'; do
+    staged_extra=''
+    if [ "$plain" = STAGED ]; then
+      plain=''
+      staged_extra='.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet'
+    fi
+    printf '#!/bin/sh\nif [ "${0##*/}" = pre-commit ]; then\n%s\n%s\nfi\nif [ "${0##*/}" = pre-push ]; then\n%s\n%s\nfi\n' "$STATUS_TEST_SHARED_STAGED" "$staged_extra" "$STATUS_TEST_SHARED_CI" "$plain" > "$TMP/shared/pre-commit"
+    must chmod 755 "$TMP/shared/pre-commit"
+    rm -f "$TMP/shared/pre-push"
+    must ln -s pre-commit "$TMP/shared/pre-push"
+    doctor_one_fail "FAIL $TMP/shared/pre-commit already runs the gate with its guarded line; remove the line ending in \"# gauntlet\" from it, which fails in a repository without .gauntlet/"
+    failed=$(printf '%s\n' "$OUT" | grep '^FAIL ')
+    run "$G" install-hooks
+    said=$(printf '%s\n' "$OUT" | grep '^ACTION NEEDED: .*already runs')
+    said=${said%:}
+    assert_eq "$failed" "FAIL ${said#ACTION NEEDED: }" "doctor and install-hooks"
+  done
+  # The guarded gates alone: ok.
+  printf '#!/bin/sh\nif [ "${0##*/}" = pre-commit ]; then\n%s\nfi\nif [ "${0##*/}" = pre-push ]; then\n%s\nfi\n' "$STATUS_TEST_SHARED_STAGED" "$STATUS_TEST_SHARED_CI" > "$TMP/shared/pre-commit"
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor with the guarded gates: $OUT"
 }
 
 test_doctor_fails_a_pre_commit_hook_with_several_gauntlet_lines() {

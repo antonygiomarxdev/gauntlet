@@ -524,6 +524,9 @@ doctor_one_script() {
     if [ "$state" = multiple ]; then
       doctor_fail "$(hook_crowded_words "$shown" "$1" "$HOOK_NEEDLE_CI")"
     fi
+  elif [ -n "${4:-}" ] && hooks_one_script_done "$1" shared && { [ "$state" = old ] || [ "$(hook_gate_state "$1" "$GAUNTLET_CMD_STAGED" "$HOOK_SHARED_STAGED")" = old ]; }; then
+    # The guarded gates and a plain line of ours next to them in a shared directory (R61, R67).
+    doctor_fail "$(hook_drop_plain_words "$shown")"
   elif hooks_one_script_done "$1" ${4:+shared}; then
     doctor_ok "pre-commit gate in $shown"
     doctor_ok "pre-push gate in $shown"
@@ -557,6 +560,12 @@ doctor_hook_file() {
   fi
   if [ "$state" = present ]; then
     doctor_ok "$stage gate in $shown"
+    return 0
+  fi
+  # A shared hooks directory that has the guarded line and a plain line of ours next to it (R61,
+  # R67): install-hooks says the same, and the plain line is the one to remove, current or older.
+  if [ -n "$plain" ] && [ "$state" = old ] && hook_has_line "$file" "$advice"; then
+    doctor_fail "$(hook_drop_plain_words "$shown")"
     return 0
   fi
   if [ -n "$plain" ] && [ "$(hook_gate_state "$file" "$needle" "$plain")" = present ]; then

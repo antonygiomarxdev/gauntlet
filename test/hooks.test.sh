@@ -2446,8 +2446,8 @@ test_a_shared_hook_with_the_guarded_line_and_a_marked_plain_line_is_told_to_drop
   for pass in 1 2; do
     run "$G" install-hooks
     assert_eq 0 "$STATUS" "install-hooks $pass: $OUT"
-    assert_contains "$OUT" "ACTION NEEDED: $TMP/shared/pre-commit already runs the gate with the guarded line below; remove the line ending in \"# gauntlet\" from it, which fails in a repository without .gauntlet/:"$'\n'"$HOOK_TEST_SHARED_STAGED"
-    assert_contains "$OUT" "ACTION NEEDED: $TMP/shared/pre-push already runs the gate with the guarded line below; remove the line ending in \"# gauntlet\" from it, which fails in a repository without .gauntlet/:"$'\n'"$HOOK_TEST_SHARED_CI"
+    assert_contains "$OUT" "ACTION NEEDED: $TMP/shared/pre-commit already runs the gate with its guarded line; remove the line ending in \"# gauntlet\" from it, which fails in a repository without .gauntlet/:"$'\n'"$HOOK_TEST_SHARED_STAGED"
+    assert_contains "$OUT" "ACTION NEEDED: $TMP/shared/pre-push already runs the gate with its guarded line; remove the line ending in \"# gauntlet\" from it, which fails in a repository without .gauntlet/:"$'\n'"$HOOK_TEST_SHARED_CI"
     assert_not_contains "$OUT" "already present"
     assert_not_contains "$OUT" "ACTION NEEDED: add to"
     assert_eq "$before_commit" "$(hooks_sum "$TMP/shared/pre-commit")" "the shared pre-commit is not edited"
@@ -2459,6 +2459,73 @@ test_a_shared_hook_with_the_guarded_line_and_a_marked_plain_line_is_told_to_drop
   run "$G" install-hooks
   assert_contains "$OUT" "ACTION NEEDED: replace the line ending in \"# gauntlet\" in $TMP/shared/pre-push with:"$'\n'"$HOOK_TEST_SHARED_CI"
   assert_not_contains "$OUT" "already runs the gate"
+}
+
+# R67: the advice for the guarded line plus a marked plain line is the same whichever plain line it
+# is (the current one or an older one) and whichever layout the shared directory has, and nothing is
+# edited. Two layouts: one file per hook, and one script for both hooks.
+shared_drop_words() {
+  printf '%s already runs the gate with its guarded line; remove the line ending in "# gauntlet" from it, which fails in a repository without .gauntlet/' "$1"
+}
+
+test_a_shared_hook_with_the_guarded_line_and_an_older_marked_line_gets_the_same_advice() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must mkdir "$TMP/shared"
+  must git config core.hooksPath "$TMP/shared"
+  printf '#!/bin/sh\n%s\n%s\n' "$HOOK_TEST_SHARED_STAGED" "$HOOK_TEST_STAGED" > "$TMP/shared/pre-commit"
+  printf '#!/bin/sh\n%s\n%s\n' "$HOOK_TEST_SHARED_CI" "$HOOK_TEST_OLD_CI" > "$TMP/shared/pre-push"
+  chmod 755 "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
+  local before
+  before=$(hooks_sum "$TMP/shared")
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "ACTION NEEDED: $(shared_drop_words "$TMP/shared/pre-commit"):"$'\n'"$HOOK_TEST_SHARED_STAGED"
+  assert_contains "$OUT" "ACTION NEEDED: $(shared_drop_words "$TMP/shared/pre-push"):"$'\n'"$HOOK_TEST_SHARED_CI"
+  assert_not_contains "$OUT" "replace the line"
+  assert_eq "$before" "$(hooks_sum "$TMP/shared")" "nothing is edited"
+}
+
+# shared_one_script <extra pre-push line> [<extra pre-commit line>]: a shared hooks directory whose
+# pre-push is a link to pre-commit, which holds the guarded gate of each hook, and the extra line
+# under the gate of its hook (an empty one is a blank line).
+shared_one_script() {
+  must cd "$TMP"
+  rm -rf "$TMP/repo" "$TMP/shared"
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must mkdir "$TMP/shared"
+  printf '#!/bin/sh\n%s\n%s\n%s\nfi\n%s\n%s\n%s\nfi\n' "$HOOK_TEST_GUARD_STAGED" "$HOOK_TEST_SHARED_STAGED" "${2:-}" "$HOOK_TEST_GUARD_CI" "$HOOK_TEST_SHARED_CI" "$1" > "$TMP/shared/pre-commit"
+  chmod 755 "$TMP/shared/pre-commit"
+  must ln -s pre-commit "$TMP/shared/pre-push"
+  must git config core.hooksPath "$TMP/shared"
+}
+
+test_a_shared_script_serving_both_hooks_with_the_guarded_gates_and_a_plain_line_gets_the_advice() {
+  local line staged
+  # A plain line under the push gate (current, older), and one under the staged gate.
+  for line in "$HOOK_TEST_GATE_CI" "$HOOK_TEST_OLD_CI" ''; do
+    staged=''
+    if [ -z "$line" ]; then staged=$HOOK_TEST_GATE_STAGED; fi
+    shared_one_script "$line" "$staged"
+    local before
+    before=$(hooks_sum "$TMP/shared")
+    run "$G" install-hooks
+    assert_eq 0 "$STATUS" "install-hooks: $OUT"
+    assert_contains "$OUT" "ACTION NEEDED: $(shared_drop_words "$TMP/shared/pre-commit"):"$'\n'"$HOOK_TEST_GUARD_STAGED"$'\n'"$HOOK_TEST_SHARED_STAGED"$'\nfi\n'"$HOOK_TEST_GUARD_CI"$'\n'"$HOOK_TEST_SHARED_CI"$'\nfi'
+    assert_not_contains "$OUT" "already present"
+    assert_not_contains "$OUT" "replace the line"
+    assert_eq "$before" "$(hooks_sum "$TMP/shared")" "nothing is edited"
+  done
+}
+
+# The guarded gates alone are done, in the same layout.
+test_a_shared_script_serving_both_hooks_with_the_guarded_gates_alone_is_done() {
+  shared_one_script ''
+  printf '#!/bin/sh\n%s\n%s\nfi\n%s\n%s\nfi\n' "$HOOK_TEST_GUARD_STAGED" "$HOOK_TEST_SHARED_STAGED" "$HOOK_TEST_GUARD_CI" "$HOOK_TEST_SHARED_CI" > "$TMP/shared/pre-commit"
+  run "$G" install-hooks
+  assert_contains "$OUT" "already present in $TMP/shared/pre-commit"
+  assert_not_contains "$OUT" "ACTION NEEDED"
 }
 
 # A shared hooks directory is only printed for: the same sentence per hook, and the guarded form

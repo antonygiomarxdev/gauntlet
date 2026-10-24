@@ -608,10 +608,20 @@ hooks_one_script() {
   else
     state=$(hook_gate_state "$1" "$HOOK_NEEDLE_CI" "$HOOK_GATE_CI" "$HOOK_SHARED_CI")
   fi
-  staged_state=$(hook_gate_state "$1" "$GAUNTLET_CMD_STAGED")
+  staged_state=$(hook_gate_state "$1" "$GAUNTLET_CMD_STAGED" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED" "$HOOK_SHARED_STAGED")
+  if [ "${3:-}" = shared ]; then
+    staged_state=$(hook_gate_state "$1" "$GAUNTLET_CMD_STAGED" "$HOOK_SHARED_STAGED")
+  fi
   # Both gates in place is done, unless a hook has more than one line of ours (hook_gate_state).
   if [ "$state" != multiple ] && [ "$staged_state" != multiple ] && hooks_one_script_done "$1" "${3:-}"; then
-    printf 'already present in %s\n' "$shown"
+    # In a shared directory the guarded gates are not enough while a plain line of ours is also
+    # there (R61, R67): it fails in every repository without .gauntlet/. Nothing is edited.
+    if [ "${3:-}" = shared ] && { [ "$state" = old ] || [ "$staged_state" = old ]; }; then
+      printf 'ACTION NEEDED: %s:\n' "$(hook_drop_plain_words "$shown")"
+      printf '%s\n%s\nfi\n%s\n%s\nfi\n' "$HOOK_GUARD_STAGED" "$staged" "$HOOK_GUARD_CI" "$ci"
+    else
+      printf 'already present in %s\n' "$shown"
+    fi
     warn_if_not_executable "$1"
     return 0
   fi
@@ -661,7 +671,7 @@ print_shared_only() {
   elif [ "$state" = old ] && hook_has_line "$1" "$2"; then
     # The guarded line is there and a plain one of ours beside it (R61): nothing is edited, since
     # which of the two to keep is the user's to see.
-    printf 'ACTION NEEDED: %s already runs the gate with the guarded line below; remove the line ending in "# gauntlet" from it, which fails in a repository without .gauntlet/:\n%s\n' "$(hook_shown "$1")" "$2"
+    printf 'ACTION NEEDED: %s:\n%s\n' "$(hook_drop_plain_words "$(hook_shown "$1")")" "$2"
     warn_if_not_executable "$1"
   else
     print_only "$1" "$2" "$state"
@@ -913,6 +923,15 @@ resolve_link() {
 # With <command> the line is named by what it runs, for a script that holds the lines of both hooks.
 hook_replace_words() {
   printf 'replace the line ending in "# gauntlet"%s in %s with' "${2:+ that runs $2}" "$1"
+}
+
+# hook_drop_plain_words <file-as-shown>: the words of the fix for a hook of a shared hooks directory
+# that has its guarded gate line and a plain line of ours next to it (R61, R67): the guarded line is
+# the gate, and the plain one fails in every repository without .gauntlet/. install-hooks puts
+# "ACTION NEEDED: " before it and ":" and the guarded lines after it, doctor "FAIL " before it, so
+# both say the same. <file-as-shown> is already spelled.
+hook_drop_plain_words() {
+  printf '%s already runs the gate with its guarded line; remove the line ending in "# gauntlet" from it, which fails in a repository without .gauntlet/' "$1"
 }
 
 # print_crowded <file> <gate> <needle>: a hook with two or more lines of ours (R59), which is not
