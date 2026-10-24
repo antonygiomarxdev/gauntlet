@@ -517,7 +517,13 @@ doctor_one_script() {
     state=$(hook_gate_state "$1" "$HOOK_NEEDLE_CI" "$HOOK_GATE_CI" "$HOOK_SHARED_CI")
   fi
   if [ "$(hook_gate_state "$1" "$GAUNTLET_CMD_STAGED")" = multiple ] || [ "$state" = multiple ]; then
-    doctor_fail "more than one gauntlet line in $shown; run gauntlet install-hooks"
+    # One FAIL for each of the two gates that has more than one line (R59).
+    if [ "$(hook_gate_state "$1" "$GAUNTLET_CMD_STAGED")" = multiple ]; then
+      doctor_fail "$(hook_crowded_words "$shown" "$1" "$GAUNTLET_CMD_STAGED")"
+    fi
+    if [ "$state" = multiple ]; then
+      doctor_fail "$(hook_crowded_words "$shown" "$1" "$HOOK_NEEDLE_CI")"
+    fi
   elif hooks_one_script_done "$1" ${4:+shared}; then
     doctor_ok "pre-commit gate in $shown"
     doctor_ok "pre-push gate in $shown"
@@ -546,7 +552,7 @@ doctor_hook_file() {
   fi
   state=$(hook_gate_state "$file" "$needle" "$@")
   if [ "$state" = multiple ]; then
-    doctor_fail "more than one gauntlet line in $shown; run gauntlet install-hooks"
+    doctor_fail "$(hook_crowded_words "$shown" "$file" "$needle")"
     return 0
   fi
   if [ "$state" = present ]; then

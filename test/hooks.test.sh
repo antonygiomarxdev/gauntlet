@@ -2155,120 +2155,121 @@ test_a_marker_on_a_comment_or_on_another_command_is_not_gauntlets_line() {
   hooks_expect .git/hooks/pre-push $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\n# .gauntlet/bin/gauntlet check --ci  # gauntlet\necho tidy  # gauntlet\n.gauntlet/bin/gauntlet doctor  # gauntlet\n'
 }
 
-# R47, one rule: a line ending in "# gauntlet" that runs the gate is gauntlet's, and after
-# install-hooks a hook has exactly one, the current form, where the first of them stood. The first
-# marked line that is not the current form is replaced in place; every other marked line, stale or
-# a copy of the current form, is removed. A stale line next to the current one used to read as done
-# ("a hook that holds the current line is done whatever else it holds"): if it came first it drained
-# git's stdin, and the project's own command was back to an empty stdin; a second one ran the gate
-# twice.
+# R47 and R59: a line ending in "# gauntlet" that runs the gate is gauntlet's. A hook with one such
+# line that is not the current form gets the current form where it stands (the tests above). A hook
+# with two or more is not edited: deleting a line is blind to the shell around it (a line that is the
+# only command of an `if` or of a function body leaves a hook that does not parse; a project command
+# that mentions the gate and ends in the marker is not ours to delete). install-hooks says which
+# lines, in file lines counted from 1, and prints the current line; doctor fails with the same
+# words. A stale line next to the current one used to read as done: if it came first it drained
+# git's stdin, and the project's own command was back to an empty stdin.
 
-# hooks_dedupe <hook content> <expected content> <output needle>...: write the hook, run
-# install-hooks, and expect the bytes, one line of output per needle, and nothing to do the
-# second time.
-# shellcheck disable=SC2034 # HOOKS_FIRST_OUT is read by the tests that call this
-hooks_dedupe() {
-  local body=$1 want=$2 needle
-  shift 2
-  printf '%s' "$body" > .git/hooks/pre-push
+# hooks_crowded <file> <hook content> <count> <lines> <current line>: write the hook, run
+# install-hooks, and expect the sentence of R59 and the current line, exit 0 like the other
+# print-only cases, no change of a byte, and the same answer the second time.
+hooks_crowded() {
+  local file=$1 body=$2 want="gauntlet: $1 has $3 lines ending in \"# gauntlet\" ($4); keep one, the current form, and remove the others"$'\n'"$5"
+  printf '%s' "$body" > "$file"
+  chmod 755 "$file"
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "$want"
+  assert_not_contains "$OUT" "removed"
+  assert_not_contains "$OUT" "updated gauntlet line in $1"
+  assert_not_contains "$OUT" "already present in $1"
+  hooks_expect "$file" "$body"
+  run "$G" install-hooks
+  assert_contains "$OUT" "$want"
+  hooks_expect "$file" "$body"
+}
+
+test_two_stale_lines_are_not_edited_and_are_named() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  hooks_crowded .git/hooks/pre-push $'#!/bin/sh\necho one\n'"$HOOK_TEST_OLD_GATE_CI"$'\necho two\n'"$HOOK_TEST_OLD_CI"$'\necho three\n' 2 "lines 3, 5" "$HOOK_TEST_GATE_CI"
+}
+
+test_three_marked_lines_are_counted_and_all_named() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  hooks_crowded .git/hooks/pre-push $'#!/bin/sh\n'"$HOOK_TEST_OLD_GATE_CI"$'\n'"$HOOK_TEST_OLD_CI"$'\n'"$HOOK_TEST_OLD_GATE_CI"$'\n' 3 "lines 2, 3, 4" "$HOOK_TEST_GATE_CI"
+}
+
+# The stale line first drained git's stdin before the current line copied it.
+test_a_stale_line_before_the_current_one_is_named_not_edited() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  hooks_crowded .git/hooks/pre-push $'#!/bin/sh\n'"$HOOK_TEST_OLD_GATE_CI"$'\n'"$HOOK_TEST_GATE_CI"$'\ncat > seen\n' 2 "lines 2, 3" "$HOOK_TEST_GATE_CI"
+}
+
+test_a_stale_line_after_the_current_one_is_named_not_edited() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  hooks_crowded .git/hooks/pre-push $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\necho x\n'"$HOOK_TEST_OLD_CI"$'\n' 2 "lines 2, 4" "$HOOK_TEST_GATE_CI"
+}
+
+test_the_current_line_twice_is_named_not_edited() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  hooks_crowded .git/hooks/pre-push $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\necho x\n'"$HOOK_TEST_GATE_CI"$'\n' 2 "lines 2, 4" "$HOOK_TEST_GATE_CI"
+}
+
+# The line that deleting would have broken: the only command of an if block. The hook parses
+# before and after, byte for byte the same.
+test_a_stale_line_that_is_the_only_command_of_an_if_block_is_left_in_place() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  hooks_crowded .git/hooks/pre-push $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\nif [ -n "$CI" ]; then\n  '"$HOOK_TEST_OLD_GATE_CI"$'\nfi\ncat > seen\n' 2 "lines 2, 4" "$HOOK_TEST_GATE_CI"
+  sh -n .git/hooks/pre-push || fail "the hook no longer parses"
+}
+
+# The same for a function body, and for a line the shell continues onto the next.
+test_a_stale_line_in_a_function_body_or_before_a_continuation_is_left_in_place() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  hooks_crowded .git/hooks/pre-push $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\nrun_gate() {\n  '"$HOOK_TEST_OLD_CI"$'\n}\nrun_gate\n' 2 "lines 2, 4" "$HOOK_TEST_GATE_CI"
+  sh -n .git/hooks/pre-push || fail "the hook no longer parses"
+}
+
+# A command of the project's that mentions the gate and ends in the marker is a marked line (R47),
+# and is not deleted: the user is told its line number and decides.
+test_a_project_command_that_holds_the_gate_text_is_not_deleted() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  hooks_crowded .git/hooks/pre-push $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\necho \'.gauntlet/bin/gauntlet check --ci\'  # gauntlet\necho "# gauntlet"\nx=1 # gauntlet\n' 2 "lines 2, 3" "$HOOK_TEST_GATE_CI"
+}
+
+# The end of the file is as it was: a missing final newline stays missing.
+test_a_hook_with_several_marked_lines_and_no_final_newline_keeps_its_bytes() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  hooks_crowded .git/hooks/pre-push $'#!/bin/sh\n'"$HOOK_TEST_OLD_GATE_CI"$'\n'"$HOOK_TEST_GATE_CI"$'\necho end' 2 "lines 2, 3" "$HOOK_TEST_GATE_CI"
+}
+
+# The pre-commit hook has the same rule; its two accepted forms (plain and with `|| exit $?`)
+# are two lines.
+test_the_pre_commit_hook_with_two_marked_lines_is_named_not_edited() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  hooks_crowded .git/hooks/pre-commit $'#!/bin/sh\n'"$HOOK_TEST_STAGED"$'\n'"$HOOK_TEST_GATE_STAGED"$'\necho x\n' 2 "lines 2, 3" "$HOOK_TEST_GATE_STAGED"
+}
+
+# One marked line is still replaced where it stands, and nothing is said about removal.
+test_one_stale_line_is_still_replaced_in_place_and_nothing_is_removed() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  printf '#!/bin/sh\necho one\n%s\necho two\n' "$HOOK_TEST_OLD_GATE_CI" > .git/hooks/pre-push
   chmod 755 .git/hooks/pre-push
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks: $OUT"
-  HOOKS_FIRST_OUT=$OUT
-  for needle in "$@"; do assert_contains "$OUT" "$needle"; done
-  hooks_expect .git/hooks/pre-push "$want"
-  run "$G" install-hooks
-  assert_contains "$OUT" "already present in .git/hooks/pre-push"
+  assert_contains "$OUT" "updated gauntlet line in .git/hooks/pre-push"
   assert_not_contains "$OUT" "removed"
-  hooks_expect .git/hooks/pre-push "$want"
+  assert_not_contains "$OUT" "lines ending in"
+  hooks_expect .git/hooks/pre-push $'#!/bin/sh\necho one\n'"$HOOK_TEST_GATE_CI"$'\necho two\n'
 }
 
-# Two stale lines: the first is replaced and the second is removed. A replace that stops at the
-# first leaves the second, which then runs the gate once more.
-test_two_stale_lines_become_one_current_line() {
-  hooks_repo "$TMP/repo"
-  hooks_vendor
-  hooks_dedupe $'#!/bin/sh\necho one\n'"$HOOK_TEST_OLD_GATE_CI"$'\necho two\n'"$HOOK_TEST_OLD_CI"$'\necho three\n' \
-    $'#!/bin/sh\necho one\n'"$HOOK_TEST_GATE_CI"$'\necho two\necho three\n' \
-    "updated gauntlet line in .git/hooks/pre-push" "removed 1 old gauntlet line from .git/hooks/pre-push"
-}
-
-test_three_stale_lines_are_counted() {
-  hooks_repo "$TMP/repo"
-  hooks_vendor
-  hooks_dedupe $'#!/bin/sh\n'"$HOOK_TEST_OLD_GATE_CI"$'\n'"$HOOK_TEST_OLD_CI"$'\n'"$HOOK_TEST_OLD_GATE_CI"$'\n' \
-    $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\n' \
-    "updated gauntlet line in .git/hooks/pre-push" "removed 2 old gauntlet lines from .git/hooks/pre-push"
-}
-
-# The stale line first: it drained git's stdin before the current line, which got nothing. The
-# current line stays where the stale one stood and the second copy goes.
-test_a_stale_line_before_the_current_one_is_replaced_and_the_current_copy_removed() {
-  hooks_repo "$TMP/repo"
-  hooks_vendor
-  hooks_dedupe $'#!/bin/sh\n'"$HOOK_TEST_OLD_GATE_CI"$'\n'"$HOOK_TEST_GATE_CI"$'\ncat > seen\n' \
-    $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\ncat > seen\n' \
-    "updated gauntlet line in .git/hooks/pre-push" "removed 1 old gauntlet line from .git/hooks/pre-push"
-}
-
-# The current line first and a stale one after it: the current line is kept, the stale one goes.
-# Nothing is said to be updated.
-test_a_stale_line_after_the_current_one_is_removed() {
-  hooks_repo "$TMP/repo"
-  hooks_vendor
-  hooks_dedupe $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\necho x\n'"$HOOK_TEST_OLD_CI"$'\n' \
-    $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\necho x\n' \
-    "removed 1 old gauntlet line from .git/hooks/pre-push"
-  assert_not_contains "$HOOKS_FIRST_OUT" "updated"
-}
-
-# A copy of the current line is one line too many.
-test_the_current_line_twice_becomes_once() {
-  hooks_repo "$TMP/repo"
-  hooks_vendor
-  hooks_dedupe $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\necho x\n'"$HOOK_TEST_GATE_CI"$'\n' \
-    $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\necho x\n' \
-    "removed 1 old gauntlet line from .git/hooks/pre-push"
-}
-
-# The project's own commands before and after, and the lines that only look like ours, stay as they
-# are, byte for byte.
-test_removing_stale_lines_leaves_the_projects_own_commands_alone() {
-  hooks_repo "$TMP/repo"
-  hooks_vendor
-  hooks_dedupe $'#!/bin/sh\necho before  # gauntlet\n'"$HOOK_TEST_OLD_GATE_CI"$'\n# '"$HOOK_TEST_OLD_CI"$'\necho mid\n'"$HOOK_TEST_OLD_CI"$'\necho after\n' \
-    $'#!/bin/sh\necho before  # gauntlet\n'"$HOOK_TEST_GATE_CI"$'\n# '"$HOOK_TEST_OLD_CI"$'\necho mid\necho after\n' \
-    "updated gauntlet line in .git/hooks/pre-push" "removed 1 old gauntlet line from .git/hooks/pre-push"
-}
-
-# A missing final newline stays missing when the last line stays, and is not invented when the last
-# line is the one that goes.
-test_removing_stale_lines_keeps_the_end_of_the_file_as_it_was() {
-  hooks_repo "$TMP/repo"
-  hooks_vendor
-  hooks_dedupe $'#!/bin/sh\n'"$HOOK_TEST_OLD_GATE_CI"$'\n'"$HOOK_TEST_GATE_CI"$'\necho end' \
-    $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\necho end' \
-    "removed 1 old gauntlet line from .git/hooks/pre-push"
-  hooks_dedupe $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\necho x\n'"$HOOK_TEST_OLD_CI" \
-    $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\necho x\n' \
-    "removed 1 old gauntlet line from .git/hooks/pre-push"
-}
-
-# The pre-commit hook is cleaned by the same rule; its two accepted forms (plain and with
-# `|| exit $?`) count as one line each.
-test_the_pre_commit_hook_is_cleaned_by_the_same_rule() {
-  hooks_repo "$TMP/repo"
-  hooks_vendor
-  printf '#!/bin/sh\n%s\n%s\necho x\n' "$HOOK_TEST_STAGED" "$HOOK_TEST_GATE_STAGED" > .git/hooks/pre-commit
-  chmod 755 .git/hooks/pre-commit
-  run "$G" install-hooks
-  assert_contains "$OUT" "removed 1 old gauntlet line from .git/hooks/pre-commit"
-  hooks_expect .git/hooks/pre-commit $'#!/bin/sh\n'"$HOOK_TEST_STAGED"$'\necho x\n'
-}
-
-# A hook install-hooks does not edit (CRLF) that holds two of our lines keeps both, and is told to
-# keep one.
-test_a_crlf_hook_with_two_gauntlet_lines_is_told_to_keep_one() {
+# A hook install-hooks would not edit anyway (CRLF) gets the same words.
+test_a_crlf_hook_with_two_gauntlet_lines_gets_the_same_words() {
   hooks_repo "$TMP/repo"
   hooks_vendor
   printf '#!/bin/sh\r\n%s\r\n%s\r\necho x\r\n' "$HOOK_TEST_OLD_GATE_CI" "$HOOK_TEST_GATE_CI" > .git/hooks/pre-push
@@ -2277,24 +2278,46 @@ test_a_crlf_hook_with_two_gauntlet_lines_is_told_to_keep_one() {
   before=$(hooks_sum .git/hooks/pre-push)
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks: $OUT"
-  assert_contains "$OUT" "ACTION NEEDED: leave exactly one gauntlet line in .git/hooks/pre-push, the line below, and delete every other line ending in \"# gauntlet\":"$'\n'"$HOOK_TEST_GATE_CI"
+  assert_contains "$OUT" "gauntlet: .git/hooks/pre-push has 2 lines ending in \"# gauntlet\" (lines 2, 3); keep one, the current form, and remove the others"$'\n'"$HOOK_TEST_GATE_CI"
   assert_not_contains "$OUT" "add to .git/hooks/pre-push"
   assert_eq "$before" "$(hooks_sum .git/hooks/pre-push)" "the CRLF hook is not edited"
 }
 
-# A shared hooks directory is only printed for. The guarded form is the gate there, so a marked
-# line next to it is one too many, and the advice says replace.
-test_a_shared_hook_with_the_guarded_form_and_a_marked_line_is_told_to_replace() {
+# The name of the file is the project's text: it is spelled.
+test_the_file_name_in_the_several_lines_sentence_is_spelled() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  local dir=$'hk\033d'
+  must mkdir "$dir"
+  must git config core.hooksPath "$dir"
+  printf '#!/bin/sh\n%s\n%s\n' "$HOOK_TEST_OLD_GATE_CI" "$HOOK_TEST_GATE_CI" > "$dir/pre-push"
+  chmod 755 "$dir/pre-push"
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" 'hk\x1bd/pre-push has 2 lines ending in'
+  case "$OUT" in *$'\033'*) fail "a raw escape byte reached the output" ;; esac
+}
+
+# A shared hooks directory is only printed for: the same sentence per hook, and the guarded form
+# as the current line. Nothing in the directory is touched.
+test_a_shared_hooks_dir_with_two_marked_lines_is_named_and_the_guarded_line_printed() {
   hooks_repo "$TMP/repo"
   hooks_vendor
   must mkdir "$TMP/shared"
   must git config core.hooksPath "$TMP/shared"
-  printf '#!/bin/sh\n%s\n%s\n' "$HOOK_TEST_SHARED_CI" "$HOOK_TEST_OLD_GATE_CI" > "$TMP/shared/pre-push"
-  chmod 755 "$TMP/shared/pre-push"
+  printf '#!/bin/sh\n%s\n%s\n' "$HOOK_TEST_STAGED" "$HOOK_TEST_GATE_STAGED" > "$TMP/shared/pre-commit"
+  printf '#!/bin/sh\n%s\n%s\n' "$HOOK_TEST_OLD_GATE_CI" "$HOOK_TEST_GATE_CI" > "$TMP/shared/pre-push"
+  chmod 755 "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
+  local before_commit before_push
+  before_commit=$(hooks_sum "$TMP/shared/pre-commit")
+  before_push=$(hooks_sum "$TMP/shared/pre-push")
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks: $OUT"
-  assert_contains "$OUT" "ACTION NEEDED: leave exactly one gauntlet line in $TMP/shared/pre-push, the line below, and delete every other line ending in \"# gauntlet\":"$'\n'"$HOOK_TEST_SHARED_CI"
-  assert_not_contains "$OUT" "add to $TMP/shared/pre-push"
+  assert_contains "$OUT" "gauntlet: $TMP/shared/pre-commit has 2 lines ending in \"# gauntlet\" (lines 2, 3); keep one, the current form, and remove the others"$'\n'"$HOOK_TEST_SHARED_STAGED"
+  assert_contains "$OUT" "gauntlet: $TMP/shared/pre-push has 2 lines ending in \"# gauntlet\" (lines 2, 3); keep one, the current form, and remove the others"$'\n'"$HOOK_TEST_SHARED_CI"
+  assert_not_contains "$OUT" "ACTION NEEDED: add to"
+  assert_eq "$before_commit" "$(hooks_sum "$TMP/shared/pre-commit")" "the shared pre-commit is not edited"
+  assert_eq "$before_push" "$(hooks_sum "$TMP/shared/pre-push")" "the shared pre-push is not edited"
 }
 
 # C4 (final review B): monorepo `prepare` scripts run install and install-hooks at the same

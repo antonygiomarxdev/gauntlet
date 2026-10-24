@@ -1859,10 +1859,10 @@ test_an_older_gauntlet_line_in_an_editable_hook_is_replaced_by_install_hooks() {
   assert_eq 0 "$STATUS" "doctor after install-hooks: $OUT"
 }
 
-# One rule: a hook has exactly one gauntlet line. A stale line next to the current one, or a copy of
-# the current one, is a FAIL, whichever comes first (a stale line first drains git's stdin; a second
-# line runs the gate twice), and install-hooks makes it right.
-test_doctor_fails_a_hook_with_more_than_one_gauntlet_line() {
+# R59: a hook with two or more lines of ours is a FAIL, whichever comes first (a stale line first
+# drains git's stdin; a second line runs the gate twice), with the words install-hooks prints. Neither
+# command edits the hook: the user keeps one line, the current form, and removes the others.
+test_doctor_fails_a_hook_with_several_gauntlet_lines_and_install_hooks_leaves_it() {
   mkrepo
   doctor_install
   local body old='.gauntlet/bin/gauntlet check --ci  # gauntlet'
@@ -1872,38 +1872,37 @@ test_doctor_fails_a_hook_with_more_than_one_gauntlet_line() {
     "$STATUS_TEST_GATE_CI"$'\n'"$STATUS_TEST_GATE_CI" \
     "$old"$'\n'"$STATUS_TEST_OLD_CI"; do
     printf '#!/bin/sh\n%s\necho x\n' "$body" > .git/hooks/pre-push
-    doctor_one_fail "FAIL more than one gauntlet line in .git/hooks/pre-push; run gauntlet install-hooks"
+    cp .git/hooks/pre-push "$TMP/before"
+    doctor_one_fail "FAIL .git/hooks/pre-push has 2 lines ending in \"# gauntlet\" (lines 2, 3); keep one, the current form, and remove the others"
     run "$G" install-hooks
+    assert_eq 0 "$STATUS" "install-hooks: $OUT"
+    assert_contains "$OUT" "gauntlet: .git/hooks/pre-push has 2 lines ending in \"# gauntlet\" (lines 2, 3); keep one, the current form, and remove the others"$'\n'"$STATUS_TEST_GATE_CI"
+    same_file "$TMP/before" .git/hooks/pre-push
+    printf '#!/bin/sh\n%s\necho x\n' "$STATUS_TEST_GATE_CI" > .git/hooks/pre-push
     run "$G" doctor
-    assert_eq 0 "$STATUS" "doctor after install-hooks: $OUT"
+    assert_eq 0 "$STATUS" "doctor after the hand edit: $OUT"
     assert_contains "$OUT" "ok pre-push gate in .git/hooks/pre-push"
   done
 }
 
-test_doctor_fails_a_pre_commit_hook_with_more_than_one_gauntlet_line() {
+test_doctor_fails_a_pre_commit_hook_with_several_gauntlet_lines() {
   mkrepo
   doctor_install
   local staged='.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet'
   printf '#!/bin/sh\n%s\n%s\n' "$staged" "$staged" > .git/hooks/pre-commit
-  doctor_one_fail "FAIL more than one gauntlet line in .git/hooks/pre-commit; run gauntlet install-hooks"
+  doctor_one_fail "FAIL .git/hooks/pre-commit has 2 lines ending in \"# gauntlet\" (lines 2, 3); keep one, the current form, and remove the others"
 }
 
-# The lines are counted in a hook install-hooks does not edit too, and in a shared hooks directory,
-# where the guarded form is a gauntlet line though it carries no marker.
-test_doctor_counts_gauntlet_lines_in_a_hook_that_install_hooks_does_not_edit() {
+# The lines are counted in a hook install-hooks would not edit anyway, and the count names every
+# line.
+test_doctor_counts_the_gauntlet_lines_of_a_crlf_hook() {
   mkrepo
   doctor_install
-  printf '#!/bin/sh\r\n%s\r\n%s\r\necho x\r\n' "$STATUS_TEST_OLD_CI" "$STATUS_TEST_GATE_CI" > .git/hooks/pre-push
-  doctor_one_fail "FAIL more than one gauntlet line in .git/hooks/pre-push; run gauntlet install-hooks"
-  must mkdir "$TMP/shared"
-  must git config core.hooksPath "$TMP/shared"
-  printf '%s\n' "$STATUS_TEST_SHARED_STAGED" > "$TMP/shared/pre-commit"
-  printf '#!/bin/sh\n%s\n%s\n' "$STATUS_TEST_SHARED_CI" "$STATUS_TEST_OLD_CI" > "$TMP/shared/pre-push"
-  must chmod +x "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
-  doctor_one_fail "FAIL more than one gauntlet line in $TMP/shared/pre-push; run gauntlet install-hooks"
+  printf '#!/bin/sh\r\n%s\r\n%s\r\necho x\r\n%s\r\n' "$STATUS_TEST_OLD_CI" "$STATUS_TEST_GATE_CI" "$STATUS_TEST_OLD_CI" > .git/hooks/pre-push
+  doctor_one_fail "FAIL .git/hooks/pre-push has 3 lines ending in \"# gauntlet\" (lines 2, 3, 5); keep one, the current form, and remove the others"
 }
 
-# One script for both hooks: each stage's line is counted by itself.
+# One script for both hooks: each stage's lines are counted by themselves.
 # shellcheck disable=SC2016 # the hook text holds ${0##*/} and $? that must not expand here
 test_doctor_counts_gauntlet_lines_in_a_script_that_serves_both_hooks() {
   mkrepo
@@ -1912,9 +1911,21 @@ test_doctor_counts_gauntlet_lines_in_a_script_that_serves_both_hooks() {
   must chmod 755 .git/hooks/pre-commit
   must rm .git/hooks/pre-push
   must ln .git/hooks/pre-commit .git/hooks/pre-push
-  doctor_one_fail "FAIL more than one gauntlet line in .git/hooks/pre-commit; run gauntlet install-hooks"
+  doctor_one_fail "FAIL .git/hooks/pre-commit has 2 lines ending in \"# gauntlet\" (lines 6, 7); keep one, the current form, and remove the others"
   printf '#!/bin/sh\nif [ "${0##*/}" = pre-commit ]; then\n.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet\n.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet\nfi\nif [ "${0##*/}" = pre-push ]; then\n%s\nfi\n' "$STATUS_TEST_GATE_CI" > .git/hooks/pre-commit
-  doctor_one_fail "FAIL more than one gauntlet line in .git/hooks/pre-commit; run gauntlet install-hooks"
+  doctor_one_fail "FAIL .git/hooks/pre-commit has 2 lines ending in \"# gauntlet\" (lines 3, 4); keep one, the current form, and remove the others"
+}
+
+# A shared hooks directory is only printed for: the same words, with the file name spelled.
+test_doctor_names_the_several_gauntlet_lines_of_a_shared_hook() {
+  mkrepo
+  must mkdir "$TMP/shared"
+  must git config core.hooksPath "$TMP/shared"
+  doctor_install
+  printf '%s\n' "$STATUS_TEST_SHARED_STAGED" > "$TMP/shared/pre-commit"
+  printf '#!/bin/sh\n%s\n%s\n' "$STATUS_TEST_OLD_CI" "$STATUS_TEST_GATE_CI" > "$TMP/shared/pre-push"
+  must chmod +x "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
+  doctor_one_fail "FAIL $TMP/shared/pre-push has 2 lines ending in \"# gauntlet\" (lines 2, 3); keep one, the current form, and remove the others"
 }
 
 test_a_lefthook_config_with_an_older_gauntlet_command_is_told_to_replace_it() {
