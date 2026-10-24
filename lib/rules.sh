@@ -30,8 +30,17 @@ rule_get() {
   ' "$1"
 }
 
-# rule_ids: print the stems of .gauntlet/rules/*.md, sorted. A Markdown case
-# file (<id>.bad.md, <id>.good.md) is not a rule and is skipped.
+# rule_is_case_file <stem>: succeed when <stem>, a file in .gauntlet/rules without its .md,
+# names a Markdown case file (<id>.bad.md, <id>.good.md, <id>.bad.<n>.md) and not a rule.
+# The one place that says so: rule_ids, judged_id and exc_rule_known all ask it.
+rule_is_case_file() {
+  case "$1" in
+    *.bad|*.bad.*|*.good|*.good.*) return 0 ;;
+  esac
+  return 1
+}
+
+# rule_ids: print the stems of .gauntlet/rules/*.md, sorted, without the case files.
 rule_ids() {
   local root f stem
   root=$(repo_root) || exit 2
@@ -39,9 +48,7 @@ rule_ids() {
     [ -f "$f" ] || continue
     f=${f##*/}
     stem=${f%.md}
-    case "$stem" in
-      *.bad|*.bad.*|*.good|*.good.*) continue ;;
-    esac
+    if rule_is_case_file "$stem"; then continue; fi
     printf '%s\n' "$stem"
   done | LC_ALL=C sort
 }

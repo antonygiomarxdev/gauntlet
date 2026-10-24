@@ -801,7 +801,7 @@ cmp_loosened_in() {
 # src/api/ becoming src/ is not narrowing and src/ becoming src/api/ is, and an empty list
 # becoming a prefix is.
 cmp_config() {
-  local mb=$1 scratch=$2 dbase=${3:-} bt ht
+  local mb=$1 scratch=$2 dbase=${3:-} bt ht side
   at_base "$mb" .gauntlet/config > "$scratch/cfg.base" || return 2
   at_base HEAD .gauntlet/config > "$scratch/cfg.head" || return 2
   cmp_base "$scratch/cfg.base" "$scratch/cfg.head" "$dbase" || return 2
@@ -810,8 +810,13 @@ cmp_config() {
   if [ "$bt" = on ] && [ "$ht" != on ]; then printf 'touched on → off\n'; fi
   # The declared checks of each side: name, ci, paths, command (check_key_rows leaves out
   # the "#" rows that mark keys it refuses), sorted so the lines come out in one order.
-  check_key_rows "$scratch/cfg.base" | awk 'substr($0, 1, 1) != "#"' | LC_ALL=C sort > "$scratch/cfg.base.checks" || return 2
-  check_key_rows "$scratch/cfg.head" | awk 'substr($0, 1, 1) != "#"' | LC_ALL=C sort > "$scratch/cfg.head.checks" || return 2
+  # Each step writes a file and is checked on its own: in a pipeline only the last status is seen,
+  # and a base side that failed to parse would read as no checks, so a removed check would pass.
+  for side in base head; do
+    check_key_rows "$scratch/cfg.$side" > "$scratch/cfg.$side.rows" || return 2
+    awk 'substr($0, 1, 1) != "#"' "$scratch/cfg.$side.rows" > "$scratch/cfg.$side.declared" || return 2
+    LC_ALL=C sort "$scratch/cfg.$side.declared" > "$scratch/cfg.$side.checks" || return 2
+  done
   GL_BASE="$scratch/cfg.base.checks" GL_HEAD="$scratch/cfg.head.checks" awk '
     # The row is name, ci, paths, command split at the first three tabs, as the runner
     # splits it (run_declared_checks); the command may hold a tab.
@@ -1019,14 +1024,14 @@ detector_words() {
 
 # judged_id <name>: succeed when <name>, a path listed under .gauntlet/rules at the merge-base,
 # is a rule the loosening check judges (.gauntlet/rules/<id>.md directly in that directory, not
-# a case file: the ones rule_ids skips), and set JUDGED_ID to its id.
+# a case file: rule_is_case_file), and set JUDGED_ID to its id.
 judged_id() {
   local rest
   case "$1" in .gauntlet/rules/*.md) ;; *) return 1 ;; esac
   rest=${1#.gauntlet/rules/}
   case "$rest" in */*) return 1 ;; esac
   JUDGED_ID=${rest%.md}
-  case "$JUDGED_ID" in *.bad|*.bad.*|*.good|*.good.*) return 1 ;; esac
+  if rule_is_case_file "$JUDGED_ID"; then return 1; fi
   return 0
 }
 

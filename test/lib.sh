@@ -224,6 +224,33 @@ SHIM
   export PATH
 }
 
+# tool_fails <tool> <needle> <file>: put a <tool> first on PATH that fails the call whose last
+# argument is a path ending in /<file> and one of whose arguments contains <needle> (an awk
+# program names itself that way; an empty needle matches any call), with a message and status 2,
+# and runs every other call through the real tool. It reaches one step of a pipeline of steps
+# that share a tool, and the status of that step, which a pipe would hide.
+tool_fails() {
+  local real dir=$TMP/shim-tool-$1
+  real=$(command -v "$1") || fail "tool_fails: no $1 on PATH"
+  must mkdir -p "$dir"
+  cat > "$dir/$1" <<'SHIM'
+#!/bin/sh
+last= ; hit=0
+for a in "$@"; do
+  last=$a
+  case "$a" in *"$SHIM_NEEDLE"*) hit=1 ;; esac
+done
+case "$last" in
+  */"$SHIM_FILE") if [ "$hit" = 1 ]; then echo "$SHIM_TOOL: simulated failure reading $SHIM_FILE" >&2; exit 2; fi ;;
+esac
+exec "$SHIM_REAL_TOOL" "$@"
+SHIM
+  must chmod +x "$dir/$1"
+  export SHIM_REAL_TOOL=$real SHIM_TOOL=$1 SHIM_NEEDLE=$2 SHIM_FILE=$3
+  PATH="$dir:$PATH"
+  export PATH
+}
+
 # run <cmd...>: run a command, capturing combined output in $OUT and status in $STATUS.
 run() {
   # shellcheck disable=SC2034 # read by test files

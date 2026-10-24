@@ -2371,3 +2371,102 @@ test_an_unreadable_symlink_target_at_head_is_exit_2() {
   assert_eq 2 "$STATUS" "status: $OUT"
   assert_contains "$OUT" "simulated failure"
 }
+
+# R32: each step that reads the declared checks of a side is checked on its own. A failed parse
+# of the base config used to leave an empty file, and a check the branch removed passed.
+# exc_cfg_steps: main declares check.lint, feat drops it; the run is not made.
+exc_cfg_steps() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  printf 'check.lint=true\n' > .gauntlet/config
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf 'touched=off\n' > .gauntlet/config
+  exc_rebase
+  exc_commit feat
+}
+
+test_a_failed_step_reading_the_declared_checks_is_exit_2() {
+  local side step needle file
+  exc_cfg_steps
+  exc_gate
+  assert_eq 1 "$STATUS" "without a failure the removed check is reported: $OUT"
+  assert_contains "$OUT" "  @config  check lint removed"
+  for side in base head; do
+    # shellcheck disable=SC2016 # the needle is awk program text
+    for step in 'awk|#MALFORMED|cfg.SIDE' 'awk|substr($0, 1, 1)|cfg.SIDE.rows' 'sort||cfg.SIDE.declared'; do
+      step=${step//SIDE/$side}
+      needle=${step#*|}
+      needle=${needle%%|*}
+      file=${step##*|}
+      (
+        tool_fails "${step%%|*}" "$needle" "$file"
+        run "$G" check --ci --base main
+        assert_eq 2 "$STATUS" "$side, $step: $OUT"
+        assert_contains "$OUT" "simulated failure reading $file"
+        assert_not_contains "$OUT" "PASS"
+      ) || exit 1
+    done
+  done
+}
+
+# A Markdown case file (<id>.bad.md, <id>.good.md) is not a rule: loosen and remove refuse it as
+# they refuse a name that matches no file, whichever of the working tree, HEAD or the merge-base
+# holds it, and the loosening check does not read its removal as a rule being removed.
+test_a_markdown_case_file_is_not_a_rule_for_loosen_and_remove() {
+  local id
+  exc_setup 'ok'
+  for id in todo.bad todo.good todo.bad.2 todo.good.x; do
+    printf 'TODO\n' > ".gauntlet/rules/$id.md"
+  done
+  for id in todo.bad todo.good todo.bad.2 todo.good.x; do
+    run "$G" loosen "$id" "severity to shadow" "why"
+    assert_eq 2 "$STATUS" "loosen $id: $OUT"
+    assert_eq "gauntlet: no rule $id" "$OUT" "loosen $id"
+    run "$G" remove "$id" "why"
+    assert_eq 2 "$STATUS" "remove $id: $OUT"
+    assert_eq "gauntlet: no rule $id" "$OUT" "remove $id"
+  done
+  exc_commit "case files in HEAD"
+  must rm .gauntlet/rules/todo.bad.md
+  run "$G" loosen todo.bad "severity to shadow" "why"
+  assert_eq 2 "$STATUS" "a case file only in HEAD: $OUT"
+  assert_eq "gauntlet: no rule todo.bad" "$OUT" "message for HEAD"
+  assert_eq "" "$(cat .gauntlet/exceptions.tsv)" "no row was written"
+}
+
+test_a_markdown_case_file_only_at_the_merge_base_is_not_a_rule() {
+  exc_setup 'ok'
+  must git checkout -q main
+  printf 'TODO\n' > .gauntlet/rules/todo.good.md
+  exc_commit "case file on main"
+  must git checkout -q feat
+  must git rebase -q main
+  must git rm -q .gauntlet/rules/todo.good.md
+  exc_commit "drop the case file"
+  run "$G" remove todo.good "why"
+  assert_eq 2 "$STATUS" "remove: $OUT"
+  assert_eq "gauntlet: no rule todo.good" "$OUT" "message"
+}
+
+test_removing_a_markdown_case_file_is_not_a_loosening() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  printf 'TODO y\n' > .gauntlet/rules/todo.bad.md
+  printf 'ok\n' > .gauntlet/rules/todo.good.md
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  must git rm -q .gauntlet/rules/todo.bad.md .gauntlet/rules/todo.good.md
+  exc_rebase
+  exc_commit feat
+  exc_gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "[loosened]"
+  assert_not_contains "$OUT" "todo.bad"
+}

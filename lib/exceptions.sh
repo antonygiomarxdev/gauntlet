@@ -31,7 +31,8 @@ exc_require_dir() {
   [ -d "$root/.gauntlet" ] || die "no .gauntlet/ directory; run gauntlet install"
 }
 
-# exc_rule_known <id>: succeed (0) when .gauntlet/rules/<id>.md exists in the working tree,
+# exc_rule_known <id>: succeed (0) when .gauntlet/rules/<id>.md, a rule and not a case file
+# (rule_is_case_file), exists in the working tree,
 # in HEAD, or at the merge-base of HEAD and the base ref; 1 when it exists nowhere; 2 when
 # git cannot tell (R32). A human may delete the file before running remove, or commit the
 # deletion first, so the working tree alone is not enough. The base is the local ref, never
@@ -41,6 +42,7 @@ exc_rule_known() {
   local id=$1 root path rc ref mb
   root=$(repo_root) || return 2
   case "$id" in */*) return 1 ;; esac
+  if rule_is_case_file "$id"; then return 1; fi
   path=.gauntlet/rules/$id.md
   if [ -f "$root/$path" ]; then return 0; fi
   git rev-parse -q --verify 'HEAD^{commit}' > /dev/null 2>&1 || return 1
