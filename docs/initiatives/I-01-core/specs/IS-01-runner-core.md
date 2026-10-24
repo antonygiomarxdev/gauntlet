@@ -351,7 +351,7 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
     There is no fail-fast: every check runs before the exit. Everything printed goes through `report_spell`, so control bytes in a path or a message are written `\xNN`.
   - **Dirty tree:** tracked files that differ from `HEAD` make it exit 2 (decision 2).
   - **`--pre-push`** is the flag the pre-push hook passes. It reads the ref lines git sends on stdin before anything else and exits 1 when a pushed branch tip (`refs/heads/*`, or a Gerrit `refs/for/*`) is not `HEAD`: `gauntlet checks the checked-out branch; check out <branch> and push again` (R35 as revised, R43), or, when the local ref is not a branch, `gauntlet checks the checked-out commit; check out the commit you are pushing and push again`. A delete (a zero local sha) and a ref in any other namespace (a tag, a note) are skipped. A stdin that is a terminal or empty judges `HEAD`, as a run by hand does. A line with fewer than four fields is exit 2, `gauntlet: unexpected pre-push input`. A manual run and CI never read stdin.
-  - **New:** a `(rule,path,fingerprint)` of a `block` rule whose current count is higher than at base is reported. The rule must exist at base (decision 7), and the path must not be waived (waivers arrive in Task 10; stub `is_waived` to return false).
+  - **New:** a `(rule,path,fingerprint)` of a `block` rule whose current count is higher than at base is reported. The rule must exist at base (decision 7), and the path must not be waived (waivers arrive in Task 10; Task 8 ships a stub that waives nothing).
   - **Global:** a `block` rule whose current total is higher than at base is reported as `  <rule>  <base> → <now>`.
   - **Exact:** `.gauntlet/baseline.tsv` must be byte-equal to `measure.tsv`. Otherwise the check prints `  baseline differs from the code; run gauntlet baseline and commit it`, followed by a unified diff of at most 20 lines.
   - **Shadow:** new fingerprints of shadow rules are listed under `[shadow]` and never fail.
@@ -369,7 +369,7 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
   - `test_new_rule_exempt`: a rule added in the branch, with existing debt and an exact baseline, gives status 0.
   - `test_dirty_tree_refuses`: status 2 and `commit or stash first`.
 - [ ] **Step 2:** Run `test/run.sh check`. Expected: FAIL.
-- [ ] **Step 3:** Implement. Each comparison is one awk program that joins two TSVs; keep them in `lib/check.sh` as named functions (`cmp_new`, `cmp_global`).
+- [ ] **Step 3:** Implement. Each comparison is one awk program that joins two TSVs; keep them in `lib/check.sh` as named functions (`new_rows`, `global_rows`).
 - [ ] **Step 4:** Run `test/run.sh check`. Expected: PASS.
 - [ ] **Step 5:** Commit: `feat: gate new violations, rising totals and a lying baseline`.
 
@@ -404,7 +404,7 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
 
 **Files:**
 - Create: `lib/exceptions.sh`, `test/exceptions.test.sh`
-- Modify: `lib/check.sh` (replace the `is_waived` stub, add `cmp_loosened`), `bin/gauntlet`
+- Modify: `lib/check.sh` (use `waived_paths` in place of the Task 8 stub, add `cmp_loosened`), `bin/gauntlet`
 
 **Interfaces:**
 - Produces:
@@ -413,7 +413,7 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
   - `gauntlet loosen <rule> <what> <reason>` appends `loosen	<rule>: <what>	<reason>	<today>	-`. `<rule>` is a rule that exists in the working tree, in `HEAD` or at the merge-base (`gauntlet: no rule <id>` otherwise; a Markdown case file is not a rule), or `@config` (R34).
   - `gauntlet remove <rule> <reason>` appends `remove	<rule>	<reason>	<today>	-`, for a rule that exists in the same places.
   - An empty reason exits 2, and so does a missing `.gauntlet/` (`gauntlet: no .gauntlet/ directory; run gauntlet install`). No command writes a `script` row: `doctor` prints the row to add by hand.
-  - `waived_paths` prints the paths the current branch waives (decision 5). It replaces the `is_waived` stub of Task 8.
+  - `waived_paths` prints the paths the current branch waives (decision 5). It replaces the waiver stub of Task 8.
   - `cmp_loosened <mb> [<covered-file> [<default-base> [<hint-file>]]]`: for each rule file at base, any of the following without a new row (decision 6) is reported as `  <rule>  <what changed>`:
     - **removed** (`rule file removed`) needs a `remove` row;
     - **severity lowered** (a lower `severity_rank`) needs a `loosen` row whose target starts with `<rule>:`;
