@@ -642,6 +642,11 @@ print_shared_only() {
   state=$(hook_gate_state "$1" "$3" "$2")
   if [ "$state" = multiple ]; then
     print_crowded "$1" "$2" "$3"
+  elif [ "$state" = old ] && hook_has_line "$1" "$2"; then
+    # The guarded line is there and a plain one of ours beside it (R61): nothing is edited, since
+    # which of the two to keep is the user's to see.
+    printf 'ACTION NEEDED: %s already runs the gate with the guarded line below; remove the line ending in "# gauntlet" from it, which fails in a repository without .gauntlet/:\n%s\n' "$(hook_shown "$1")" "$2"
+    warn_if_not_executable "$1"
   else
     print_only "$1" "$2" "$state"
   fi
@@ -765,10 +770,12 @@ upgrade_gate_line() {
 # hook_gate_state <file> <needle> <form>...: how <file> stands with the gate line of one stage, on
 # stdout. A line is marked when it ends in the marker and runs the <needle> gate (HOOK_MARKED_AWK):
 # "multiple" when two or more lines are marked, whatever they are (a stale line before or after the
-# current one, a copy of the current one: R59, install-hooks does not edit such a hook); else
-# "present" when a line is one of the <form>s (whole line, a CR before the newline ignored), else
-# "old" when one line is marked and is none of them, else "none". A file that is missing or cannot
-# be read is "none". doctor and install-hooks both ask this, so a hook is done, old, crowded or
+# current one, a copy of the current one: R59, install-hooks does not edit such a hook); else "old"
+# when the one marked line is none of the <form>s, even when another line is a form (R61: in a shared
+# hooks directory the unmarked guarded form is the gate and a marked plain line next to it fails in
+# every repository without .gauntlet/); else "present" when a line is one of the <form>s (whole
+# line, a CR before the newline ignored), else "none". A file that is missing or cannot be read is
+# "none". doctor and install-hooks both ask this, so a hook is done, old, crowded or
 # missing by one rule.
 hook_gate_state() {
   local file=$1 needle=$2 forms='' form
@@ -783,10 +790,12 @@ hook_gate_state() {
     {
       line = $0
       sub(/\r$/, "", line)
-      for (i = 1; i <= n; i++) if (form[i] != "" && line == form[i]) present = 1
-      if (marked($0, needle)) count++
+      isform = 0
+      for (i = 1; i <= n; i++) if (form[i] != "" && line == form[i]) isform = 1
+      if (isform) present = 1
+      if (marked($0, needle)) { count++; if (!isform) stale = 1 }
     }
-    END { print (count > 1 ? "multiple" : (present ? "present" : (count ? "old" : "none"))) }
+    END { print (count > 1 ? "multiple" : (stale ? "old" : (present ? "present" : "none"))) }
   ' "$file" 2> /dev/null || printf 'none\n'
 }
 
@@ -802,6 +811,12 @@ hook_crowded_words() {
     END { print n; print list }
   ' "$2" 2> /dev/null)
   printf '%s has %s lines ending in "# gauntlet" (lines %s); keep one, the current form, and remove the others' "$1" "${info%%$'\n'*}" "${info#*$'\n'}"
+}
+
+# hook_has_line <file> <line>: succeed when <line> is a whole line of <file> (a CR before the
+# newline ignored).
+hook_has_line() {
+  GL_LINE=$2 LC_ALL=C awk '{ sub(/\r$/, ""); if ($0 == ENVIRON["GL_LINE"]) found = 1 } END { exit !found }' "$1" 2> /dev/null
 }
 
 # hook_has_gate <file> <needle> <form>...: succeed when hook_gate_state says "present".

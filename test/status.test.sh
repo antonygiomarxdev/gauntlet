@@ -1942,6 +1942,28 @@ test_doctor_fails_a_hook_with_several_gauntlet_lines_and_install_hooks_leaves_it
   done
 }
 
+# R61: the same state in a shared hooks directory is a FAIL with the guarded-form sentence, as for a
+# plain line alone; the guarded line alone is ok.
+# shellcheck disable=SC2016 # the hook line holds $? that must not expand here
+test_doctor_fails_a_shared_hook_that_has_the_guarded_line_and_a_marked_plain_line() {
+  local staged_line='.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet'
+  mkrepo
+  must mkdir "$TMP/shared"
+  must git config core.hooksPath "$TMP/shared"
+  doctor_install
+  printf '#!/bin/sh\n%s\n' "$STATUS_TEST_SHARED_STAGED" > "$TMP/shared/pre-commit"
+  printf '#!/bin/sh\n%s\n' "$STATUS_TEST_SHARED_CI" > "$TMP/shared/pre-push"
+  must chmod +x "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "the guarded lines alone: $OUT"
+  assert_contains "$OUT" "ok pre-push gate in $TMP/shared/pre-push"
+  printf '#!/bin/sh\n%s\n%s\n' "$STATUS_TEST_SHARED_CI" "$STATUS_TEST_GATE_CI" > "$TMP/shared/pre-push"
+  doctor_one_fail "FAIL pre-push gate in $TMP/shared/pre-push: shared hooks directory: the gate must use the guarded form; run gauntlet install-hooks to see it"
+  printf '#!/bin/sh\n%s\n' "$STATUS_TEST_SHARED_CI" > "$TMP/shared/pre-push"
+  printf '#!/bin/sh\n%s\n%s\n' "$STATUS_TEST_SHARED_STAGED" "$staged_line" > "$TMP/shared/pre-commit"
+  doctor_one_fail "FAIL pre-commit gate in $TMP/shared/pre-commit: shared hooks directory: the gate must use the guarded form; run gauntlet install-hooks to see it"
+}
+
 test_doctor_fails_a_pre_commit_hook_with_several_gauntlet_lines() {
   mkrepo
   doctor_install

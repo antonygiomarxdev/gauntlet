@@ -2375,6 +2375,40 @@ test_the_file_name_in_the_several_lines_sentence_is_spelled() {
   case "$OUT" in *$'\033'*) fail "a raw escape byte reached the output" ;; esac
 }
 
+# R61: in a shared hooks directory the guarded line is the gate, and a marked plain gate line next to
+# it is never "present": it fails in every repository that has no .gauntlet/. install-hooks cannot
+# know the guarded line is the one to keep, so it edits nothing and says that the guarded line already
+# runs the gate and the plain one must go. The plain line alone is still the old-form advice.
+test_a_shared_hook_with_the_guarded_line_and_a_marked_plain_line_is_told_to_drop_the_plain_one() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must mkdir "$TMP/shared"
+  must git config core.hooksPath "$TMP/shared"
+  printf '#!/bin/sh\n%s\n%s\n' "$HOOK_TEST_SHARED_STAGED" "$HOOK_TEST_GATE_STAGED" > "$TMP/shared/pre-commit"
+  printf '#!/bin/sh\n%s\n%s\n' "$HOOK_TEST_SHARED_CI" "$HOOK_TEST_GATE_CI" > "$TMP/shared/pre-push"
+  chmod 755 "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
+  local before_commit before_push
+  before_commit=$(hooks_sum "$TMP/shared/pre-commit")
+  before_push=$(hooks_sum "$TMP/shared/pre-push")
+  local pass
+  for pass in 1 2; do
+    run "$G" install-hooks
+    assert_eq 0 "$STATUS" "install-hooks $pass: $OUT"
+    assert_contains "$OUT" "ACTION NEEDED: $TMP/shared/pre-commit already runs the gate with the guarded line below; remove the line ending in \"# gauntlet\" from it, which fails in a repository without .gauntlet/:"$'\n'"$HOOK_TEST_SHARED_STAGED"
+    assert_contains "$OUT" "ACTION NEEDED: $TMP/shared/pre-push already runs the gate with the guarded line below; remove the line ending in \"# gauntlet\" from it, which fails in a repository without .gauntlet/:"$'\n'"$HOOK_TEST_SHARED_CI"
+    assert_not_contains "$OUT" "already present"
+    assert_not_contains "$OUT" "ACTION NEEDED: add to"
+    assert_eq "$before_commit" "$(hooks_sum "$TMP/shared/pre-commit")" "the shared pre-commit is not edited"
+    assert_eq "$before_push" "$(hooks_sum "$TMP/shared/pre-push")" "the shared pre-push is not edited"
+  done
+  # The plain line alone is the old form: replace it with the guarded one.
+  printf '#!/bin/sh\n%s\n' "$HOOK_TEST_GATE_CI" > "$TMP/shared/pre-push"
+  printf '#!/bin/sh\n%s\n' "$HOOK_TEST_SHARED_STAGED" > "$TMP/shared/pre-commit"
+  run "$G" install-hooks
+  assert_contains "$OUT" "ACTION NEEDED: replace the line ending in \"# gauntlet\" in $TMP/shared/pre-push with:"$'\n'"$HOOK_TEST_SHARED_CI"
+  assert_not_contains "$OUT" "already runs the gate"
+}
+
 # A shared hooks directory is only printed for: the same sentence per hook, and the guarded form
 # as the current line. Nothing in the directory is touched.
 test_a_shared_hooks_dir_with_two_marked_lines_is_named_and_the_guarded_line_printed() {
