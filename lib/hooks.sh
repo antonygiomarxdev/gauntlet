@@ -32,13 +32,15 @@ HOOK_GATE_STAGED="$GAUNTLET_CMD_STAGED || exit \$?  # gauntlet"
 # zsh as sh, and under sh -e in husky v9), and fails closed: no temp file, no copy of stdin, or no
 # way to hand it back is exit 2 (a shell may exit on its own when the hand-back fails: 2 in dash,
 # 1 in the POSIX modes of bash, ash and zsh; the hook stops all the same), and a failing gate is
-# its own status. A terminal on stdin (a hook run by hand) is not read and is kept for the project's
-# commands; the gate then sees an empty file and judges the checked-out branch. A kill between the
-# mktemp and the end can leave a file in TMPDIR. The same one line is the plain form, the gate form
-# and, inside a test for the runner, the form for a shared hooks directory; the config snippets
-# keep the bare command because the hook manager owns stdin.
+# its own status. The first two say what failed, in one line on stderr, since the tool's own
+# message ("mktemp: ...", "cat: write error: ...") names neither gauntlet nor the way out. A
+# terminal on stdin (a hook run by hand) is not read and is kept for the project's commands; the
+# gate then sees an empty file and judges the checked-out branch. A kill between the mktemp and the
+# end can leave a file in TMPDIR. The same one line is the plain form, the gate form and, inside a
+# test for the runner, the form for a shared hooks directory; the config snippets keep the bare
+# command because the hook manager owns stdin.
 # shellcheck disable=SC2016 # shell text for a hook: $(...) and $_gauntlet_in expand when the hook runs
-HOOK_BODY_CI='_gauntlet_in=$(mktemp) || exit 2; [ -t 0 ] || cat >"$_gauntlet_in" || { rm -f "$_gauntlet_in"; exit 2; }; '"$GAUNTLET_CMD_CI"' <"$_gauntlet_in" || { _gauntlet_rc=$?; rm -f "$_gauntlet_in"; exit "$_gauntlet_rc"; }; [ -t 0 ] || exec <"$_gauntlet_in" || { rm -f "$_gauntlet_in"; exit 2; }; rm -f "$_gauntlet_in"'
+HOOK_BODY_CI='_gauntlet_in=$(mktemp) || { echo "gauntlet: cannot create a temp file; check TMPDIR" >&2; exit 2; }; [ -t 0 ] || cat >"$_gauntlet_in" || { rm -f "$_gauntlet_in"; echo "gauntlet: cannot buffer git'"'"'s stdin; check TMPDIR" >&2; exit 2; }; '"$GAUNTLET_CMD_CI"' <"$_gauntlet_in" || { _gauntlet_rc=$?; rm -f "$_gauntlet_in"; exit "$_gauntlet_rc"; }; [ -t 0 ] || exec <"$_gauntlet_in" || { rm -f "$_gauntlet_in"; exit 2; }; rm -f "$_gauntlet_in"'
 HOOK_LINE_CI="$HOOK_BODY_CI  # gauntlet"
 HOOK_GATE_CI=$HOOK_LINE_CI
 

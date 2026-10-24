@@ -638,6 +638,46 @@ test_a_push_is_blocked_when_the_hook_cannot_make_its_temp_file() {
   e2e_own_pre_push_hook "$TMP/seen.txt"
   run env TMPDIR="$TMP/no-such-dir" git push origin feat
   if [ "$STATUS" -eq 0 ]; then fail "the push went through without the gate: $OUT"; fi
+  assert_contains "$OUT" "gauntlet: cannot create a temp file; check TMPDIR"
   if e2e_remote_has refs/heads/feat; then fail "feat reached the remote"; fi
   if [ -e "$TMP/seen.txt" ]; then fail "the project's own command ran"; fi
+}
+
+test_a_push_is_blocked_when_the_temp_directory_is_not_writable() {
+  e2e_push_repo
+  e2e_own_pre_push_hook "$TMP/seen.txt"
+  must mkdir "$TMP/ro-tmp"
+  must chmod 555 "$TMP/ro-tmp"
+  if [ -w "$TMP/ro-tmp" ]; then
+    chmod 755 "$TMP/ro-tmp"
+    skip "a directory without write permission is still writable here (root)"
+    return 77
+  fi
+  run env TMPDIR="$TMP/ro-tmp" git push origin feat
+  chmod 755 "$TMP/ro-tmp"
+  if [ "$STATUS" -eq 0 ]; then fail "the push went through without the gate: $OUT"; fi
+  assert_contains "$OUT" "gauntlet: cannot create a temp file; check TMPDIR"
+  if e2e_remote_has refs/heads/feat; then fail "feat reached the remote"; fi
+  if [ -e "$TMP/seen.txt" ]; then fail "the project's own command ran"; fi
+}
+
+# A temp file git's ref lines cannot be written to (a full TMPDIR): no gate, no push. The mktemp
+# names a symlink to /dev/full, so the hook's rm -f removes the link and never the device.
+test_a_push_is_blocked_when_the_temp_file_cannot_be_written() {
+  if [ ! -c /dev/full ]; then
+    skip "no /dev/full on this system"
+    return 77
+  fi
+  e2e_push_repo
+  e2e_own_pre_push_hook "$TMP/seen.txt"
+  must mkdir "$TMP/mkshim"
+  must ln -s /dev/full "$TMP/full"
+  printf '#!/bin/sh\necho "%s"\n' "$TMP/full" > "$TMP/mkshim/mktemp"
+  must chmod +x "$TMP/mkshim/mktemp"
+  run env PATH="$TMP/mkshim:$PATH" git push origin feat
+  if [ "$STATUS" -eq 0 ]; then fail "the push went through without the gate: $OUT"; fi
+  assert_contains "$OUT" "gauntlet: cannot buffer git's stdin; check TMPDIR"
+  if e2e_remote_has refs/heads/feat; then fail "feat reached the remote"; fi
+  if [ -e "$TMP/seen.txt" ]; then fail "the project's own command ran"; fi
+  if [ -L "$TMP/full" ]; then fail "the temp file was not removed"; fi
 }

@@ -1929,12 +1929,71 @@ hooks_case_mktemp_failing_blocks() {
   hooks_line_dir
   LINE_TMPDIR="$TMP/no-such-dir" hooks_line_run "$@" || rc=$?
   assert_eq 2 "$rc" "[$*] the hook exits 2 when it cannot make its temp file: $(cat "$TMP/line.out")"
+  assert_contains "$(cat "$TMP/line.out")" "gauntlet: cannot create a temp file; check TMPDIR"
   if [ -e "$TMP/line/gate.seen" ]; then fail "[$*] the gate ran without its input"; fi
   if [ -e "$TMP/line/ran" ]; then fail "[$*] the project's own command ran"; fi
 }
 
 test_a_temp_file_that_cannot_be_made_blocks_the_push_with_exit_2() {
   hooks_each_shell hooks_case_mktemp_failing_blocks
+}
+
+# A TMPDIR that exists and cannot be written to: the same refusal, the same words.
+hooks_case_mktemp_unwritable_blocks() {
+  local rc=0
+  hooks_line_dir
+  must chmod 555 "$TMP/line-tmp"
+  hooks_line_run "$@" || rc=$?
+  must chmod 755 "$TMP/line-tmp"
+  assert_eq 2 "$rc" "[$*] the hook exits 2 when TMPDIR is not writable: $(cat "$TMP/line.out")"
+  assert_contains "$(cat "$TMP/line.out")" "gauntlet: cannot create a temp file; check TMPDIR"
+  if [ -e "$TMP/line/gate.seen" ]; then fail "[$*] the gate ran without its input"; fi
+  if [ -e "$TMP/line/ran" ]; then fail "[$*] the project's own command ran"; fi
+}
+
+test_an_unwritable_tmpdir_blocks_the_push_with_exit_2_and_says_so() {
+  must mkdir "$TMP/probe"
+  must chmod 555 "$TMP/probe"
+  if [ -w "$TMP/probe" ]; then
+    chmod 755 "$TMP/probe"
+    skip "a directory without write permission is still writable here (root)"
+    return 77
+  fi
+  must chmod 755 "$TMP/probe"
+  hooks_each_shell hooks_case_mktemp_unwritable_blocks
+}
+
+# hooks_full_mktemp: put a mktemp first on PATH that names a file every write to fails on (a
+# symlink to /dev/full, so the hook's rm -f removes the link and never the device), as a full
+# TMPDIR does. busybox sh runs its own mktemp and never looks at PATH for it.
+hooks_full_mktemp() {
+  must mkdir -p "$TMP/mkshim"
+  must ln -s /dev/full "$TMP/full"
+  printf '#!/bin/sh\necho "%s"\n' "$TMP/full" > "$TMP/mkshim/mktemp"
+  must chmod +x "$TMP/mkshim/mktemp"
+}
+
+hooks_case_a_full_temp_file_blocks() {
+  local rc=0
+  if [ "$1" = busybox ]; then return 0; fi
+  hooks_line_dir
+  hooks_full_mktemp
+  PATH="$TMP/mkshim:$PATH" hooks_line_run "$@" || rc=$?
+  assert_eq 2 "$rc" "[$*] the hook exits 2 when the temp file is full: $(cat "$TMP/line.out")"
+  assert_contains "$(cat "$TMP/line.out")" "gauntlet: cannot buffer git's stdin; check TMPDIR"
+  if [ -e "$TMP/line/gate.seen" ]; then fail "[$*] the gate ran on a partial input"; fi
+  if [ -e "$TMP/line/ran" ]; then fail "[$*] the project's own command ran"; fi
+  if [ -L "$TMP/full" ]; then fail "[$*] the temp file was not removed"; fi
+  [ -c /dev/full ] || fail "[$*] /dev/full is gone"
+  rm -rf "$TMP/mkshim"
+}
+
+test_a_temp_file_that_cannot_be_written_blocks_the_push_with_exit_2_and_says_so() {
+  if [ ! -c /dev/full ]; then
+    skip "no /dev/full on this system"
+    return 77
+  fi
+  hooks_each_shell hooks_case_a_full_temp_file_blocks
 }
 
 # A directory on stdin: the shell opens it, cat cannot read it (busybox runs cat as a built-in, so a
@@ -1944,6 +2003,7 @@ hooks_case_cat_failing_blocks() {
   hooks_line_dir
   LINE_INPUT="$TMP/line-tmp/.." hooks_line_run "$@" || rc=$?
   assert_eq 2 "$rc" "[$*] the hook exits 2 when it cannot buffer stdin: $(cat "$TMP/line.out")"
+  assert_contains "$(cat "$TMP/line.out")" "gauntlet: cannot buffer git's stdin; check TMPDIR"
   if [ -e "$TMP/line/gate.seen" ]; then fail "[$*] the gate ran on a partial input"; fi
   if [ -e "$TMP/line/ran" ]; then fail "[$*] the project's own command ran"; fi
   hooks_line_clean "$@"
