@@ -1810,32 +1810,154 @@ test_a_shared_dir_script_with_an_older_pre_push_line_is_told_the_guarded_line() 
   assert_contains "$OUT" "that runs check --ci in $TMP/shared/pre-commit with: $STATUS_TEST_SHARED_CI"
 }
 
-# I1: doctor sees a runner that git ignores. The demo is a root .gitignore with bin/ and lib/.
-test_doctor_fails_when_a_root_ignore_hides_the_runner() {
-  mkrepo
-  doctor_install
-  printf 'bin/\nlib/\n' > .gitignore
-  must rm .gauntlet/.gitignore
-  run "$G" doctor
-  assert_eq 1 "$STATUS" "doctor: $OUT"
-  assert_eq 1 "$(doctor_fails)" "one FAIL line: $OUT"
-  assert_contains "$OUT" "FAIL runner files are ignored by git (.gauntlet/bin/gauntlet by .gitignore:1:bin/, .gauntlet/lib/core.sh by .gitignore:2:lib/"
-  assert_contains "$OUT" "): add !bin/ and !lib/ to .gauntlet/.gitignore, or remove the root pattern"
-  printf 'STATUS.md\n!bin/\n!lib/\n' > .gauntlet/.gitignore
-  run "$G" doctor
-  assert_eq 0 "$STATUS" "doctor after the fix: $OUT"
+# I1, and review C I-2 and I-3: doctor lists every file under .gauntlet/ that git ignores and does
+# not track, because a clone and CI do not have it, with the pattern that hides it. What it says to
+# do depends on the cause. The demo is a root .gitignore with bin/ and lib/ against the .gauntlet/.gitignore
+# of the version before: it lacks the lines that bring the runner back.
+STATUS_TEST_OLD_GITIGNORE=$'STATUS.md\n!bin/\n!lib/\n!bin/**\n!lib/**\n'
+
+# doctor_untrack: leave .gauntlet/ in the working tree but out of the index and the last commit, the
+# state of a project that has installed gauntlet and not committed it yet.
+doctor_untrack() {
+  must git rm -r -q --cached .gauntlet
+  must git commit -q --no-verify -m "untrack .gauntlet"
 }
 
-# doctor_git_fails <flag>: put a git first on PATH that fails `git check-ignore <flag> ...` with an
-# error, as a damaged repository would, and runs every other call through the real git.
+test_doctor_fails_when_a_root_ignore_hides_the_runner_and_the_lines_are_missing() {
+  mkrepo
+  doctor_install
+  doctor_untrack
+  printf 'bin/\nlib/\n' > .gitignore
+  printf 'STATUS.md\n' > .gauntlet/.gitignore
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_eq 2 "$(doctor_fails)" "one FAIL per rule that hides files: $OUT"
+  assert_contains "$OUT" "FAIL required lines are missing from .gauntlet/.gitignore, so a root ignore rule hides .gauntlet/bin/gauntlet (.gitignore:1:bin/): run gauntlet install to add them"
+  assert_contains "$OUT" "FAIL required lines are missing from .gauntlet/.gitignore, so a root ignore rule hides .gauntlet/lib/base.sh, .gauntlet/lib/cases.sh, "
+  assert_contains "$OUT" ".gauntlet/lib/formats/tsc.md, "
+  assert_contains "$OUT" "(.gitignore:2:lib/): run gauntlet install to add them"
+  run "$G" install
+  assert_eq 0 "$STATUS" "install: $OUT"
+  assert_contains "$OUT" "updated .gauntlet/.gitignore: added "
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor after install: $OUT"
+  assert_contains "$OUT" "ok .gauntlet files are not ignored by git"
+}
+
+# The end-to-end case of review C: the .gauntlet/.gitignore of the version before (five lines) and a
+# root *.tsv. doctor fails, install repairs the file, and then the state files are tracked.
+test_install_repairs_the_old_gauntlet_gitignore_that_a_root_tsv_ignore_defeats() {
+  mkrepo
+  doctor_install
+  doctor_untrack
+  printf '*.tsv\n' > .gitignore
+  printf '%s' "$STATUS_TEST_OLD_GITIGNORE" > .gauntlet/.gitignore
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_eq 1 "$(doctor_fails)" "one FAIL: $OUT"
+  assert_contains "$OUT" "FAIL required lines are missing from .gauntlet/.gitignore, so a root ignore rule hides .gauntlet/baseline.tsv, .gauntlet/exceptions.tsv (.gitignore:1:*.tsv): run gauntlet install to add them"
+  run "$G" install
+  assert_eq 0 "$STATUS" "install: $OUT"
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor after install: $OUT"
+  must git add -A
+  must git commit -q -m "adopt gauntlet"
+  assert_contains "$(git ls-files -- .gauntlet)" ".gauntlet/baseline.tsv"
+  assert_contains "$(git ls-files -- .gauntlet)" ".gauntlet/exceptions.tsv"
+}
+
+# Root patterns for the project's own files: every ignored untracked file is listed, a rule at a
+# time with the files it hides, and the fix is the rule's, because the lines are all there.
+test_doctor_lists_every_ignored_file_and_names_the_rule_that_hides_it() {
+  mkrepo
+  doctor_install
+  doctor_untrack
+  printf '*.txt\n*.log\n' > .gitignore
+  printf 'x\n' > .gauntlet/rules/a.bad.txt
+  printf 'x\n' > .gauntlet/rules/a.good.txt
+  printf 'x\n' > .gauntlet/rules/notes.log
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_eq 2 "$(doctor_fails)" "one FAIL per rule: $OUT"
+  assert_contains "$OUT" "FAIL a root ignore rule hides .gauntlet/rules/a.bad.txt, .gauntlet/rules/a.good.txt (.gitignore:1:*.txt); remove or narrow that rule"
+  assert_contains "$OUT" "FAIL a root ignore rule hides .gauntlet/rules/notes.log (.gitignore:2:*.log); remove or narrow that rule"
+}
+
+# With lines missing, only the files they would bring back get the advice to run install; a file
+# they do not cover (a case file of a rule) is hidden by the root rule, whatever install adds.
+test_doctor_does_not_ask_for_install_for_a_file_the_lines_do_not_cover() {
+  mkrepo
+  doctor_install
+  doctor_untrack
+  printf '*.tsv\n*.txt\n' > .gitignore
+  printf '%s' "$STATUS_TEST_OLD_GITIGNORE" > .gauntlet/.gitignore
+  printf 'x\n' > .gauntlet/rules/a.bad.txt
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_eq 2 "$(doctor_fails)" "one FAIL per cause: $OUT"
+  assert_contains "$OUT" "FAIL required lines are missing from .gauntlet/.gitignore, so a root ignore rule hides .gauntlet/baseline.tsv, .gauntlet/exceptions.tsv (.gitignore:1:*.tsv): run gauntlet install to add them"
+  assert_contains "$OUT" "FAIL a root ignore rule hides .gauntlet/rules/a.bad.txt (.gitignore:2:*.txt); remove or narrow that rule"
+}
+
+# A rule that wins over the re-include lines (here a line the user added after them) is named, and
+# install is not the advice: the lines are there.
+test_doctor_names_the_rule_that_hides_a_lib_file_when_the_lines_are_there() {
+  mkrepo
+  doctor_install
+  doctor_untrack
+  printf '*.sh\n' >> .gauntlet/.gitignore
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_eq 1 "$(doctor_fails)" "one FAIL: $OUT"
+  assert_contains "$OUT" "FAIL a root ignore rule hides .gauntlet/lib/base.sh, "
+  assert_contains "$OUT" "(.gauntlet/.gitignore:17:*.sh); remove or narrow that rule"
+  assert_not_contains "$OUT" "run gauntlet install"
+}
+
+# A root pattern that ignores .gauntlet/ itself cannot be undone from inside it: one FAIL says so.
+test_doctor_says_when_gauntlet_itself_is_ignored() {
+  mkrepo
+  doctor_install
+  doctor_untrack
+  local pat
+  for pat in '.gauntlet/' '/.gauntlet' '*'; do
+    printf '%s\n' "$pat" > .gitignore
+    run "$G" doctor
+    assert_eq 1 "$STATUS" "doctor with the root pattern [$pat]: $OUT"
+    assert_eq 1 "$(doctor_fails)" "one FAIL with the root pattern [$pat]: $OUT"
+    assert_contains "$OUT" "FAIL .gauntlet/ is ignored by git (.gitignore:1:$pat): nothing in it can be committed; remove or narrow that rule"
+  done
+}
+
+# Not subject to the check: the derived file, the lock, and editor and OS junk (which the lines of
+# .gauntlet/.gitignore leave ignored on purpose).
+test_doctor_does_not_list_status_md_the_lock_or_editor_junk() {
+  mkrepo
+  doctor_install
+  doctor_untrack
+  printf '.DS_Store\n*.swp\n*.orig\n' > .gitignore
+  printf 'x\n' > .gauntlet/STATUS.md
+  must mkdir -p .gauntlet/.install.lock
+  printf 'x\n' > .gauntlet/.install.lock/owner
+  printf 'x\n' > .gauntlet/.DS_Store
+  printf 'x\n' > .gauntlet/lib/.DS_Store
+  printf 'x\n' > .gauntlet/lib/core.sh.swp
+  printf 'x\n' > .gauntlet/rules/a.md.orig
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "ok .gauntlet files are not ignored by git"
+}
+
+# doctor_git_fails <git command> <flag>: put a git first on PATH that fails `git <command> <flag> ...`
+# with an error, as a damaged repository would, and runs every other call through the real git.
 doctor_git_fails() {
   local real
   real=$(command -v git) || fail "no git on PATH"
   must mkdir -p "$TMP/shim"
   cat > "$TMP/shim/git" <<SHIM
 #!/bin/sh
-if [ "\$1" = check-ignore ] && [ "\${2:-}" = "$1" ]; then
-  echo "fatal: simulated failure of check-ignore" >&2
+if [ "\$1" = $1 ] && [ "\${2:-}" = "$2" ]; then
+  echo "fatal: simulated failure of $1" >&2
   exit 128
 fi
 exec "$real" "\$@"
@@ -1845,30 +1967,46 @@ SHIM
   export PATH
 }
 
-# A git that cannot answer check-ignore does not make the runner "not ignored": doctor stops, exit 2,
-# with git's message, and prints no ok line for it.
-test_doctor_stops_when_git_cannot_say_whether_the_runner_is_ignored() {
+# A git that cannot list the ignored files, or cannot answer check-ignore, does not make the files
+# "not ignored": doctor stops, exit 2, with git's message, and prints no ok line for it.
+test_doctor_stops_when_git_cannot_list_the_ignored_files() {
   mkrepo
   doctor_install
-  doctor_git_fails -q
+  doctor_git_fails ls-files -z
+  run "$G" doctor
+  assert_eq 2 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "fatal: simulated failure of ls-files"
+  assert_not_contains "$OUT" "files are not ignored by git"
+}
+
+test_doctor_stops_when_git_cannot_say_whether_gauntlet_is_ignored() {
+  mkrepo
+  doctor_install
+  doctor_untrack
+  printf '*.txt\n' > .gitignore
+  printf 'x\n' > .gauntlet/rules/a.bad.txt
+  doctor_git_fails check-ignore -q
   run "$G" doctor
   assert_eq 2 "$STATUS" "doctor: $OUT"
   assert_contains "$OUT" "fatal: simulated failure of check-ignore"
-  assert_not_contains "$OUT" "runner files are not ignored by git"
+  assert_not_contains "$OUT" "files are not ignored by git"
+  assert_not_contains "$OUT" "FAIL a root ignore rule"
 }
 
 # The same when the ignore is real and only the question of which pattern fails: no FAIL line with an
 # empty pattern in place of the answer.
-test_doctor_stops_when_git_cannot_name_the_pattern_that_ignores_the_runner() {
+test_doctor_stops_when_git_cannot_name_the_pattern_that_ignores_a_file() {
   mkrepo
   doctor_install
-  printf 'bin/\nlib/\n' > .gitignore
-  must rm .gauntlet/.gitignore
-  doctor_git_fails -v
+  doctor_untrack
+  printf '*.txt\n' > .gitignore
+  printf 'x\n' > .gauntlet/rules/a.bad.txt
+  doctor_git_fails check-ignore -v
   run "$G" doctor
   assert_eq 2 "$STATUS" "doctor: $OUT"
   assert_contains "$OUT" "fatal: simulated failure of check-ignore"
-  assert_not_contains "$OUT" "runner files are ignored by git"
+  assert_not_contains "$OUT" "files are not ignored by git"
+  assert_not_contains "$OUT" "FAIL a root ignore rule"
 }
 
 # lefthook keeps its config under .config/ too; use_stdin is read there as in the root.
@@ -1884,22 +2022,6 @@ test_doctor_reads_a_lefthook_config_in_dot_config() {
   assert_contains "$OUT" "ok gate in .config/lefthook.yml"
 }
 
-# A file pattern of the root ignore (*.sh) is not undone by !lib/: the file is named.
-test_doctor_names_the_file_pattern_that_hides_a_lib_file() {
-  mkrepo
-  doctor_install
-  printf '*.sh\n' > .gitignore
-  printf 'STATUS.md\n!bin/\n!lib/\n' > .gauntlet/.gitignore
-  run "$G" doctor
-  assert_eq 1 "$STATUS" "doctor: $OUT"
-  assert_contains "$OUT" ".gauntlet/lib/core.sh by .gitignore:1:*.sh"
-  printf '*.md\n' > .gitignore
-  run "$G" doctor
-  assert_eq 1 "$STATUS" "doctor with *.md ignored: $OUT"
-  assert_contains "$OUT" ".gauntlet/lib/formats/path-line.md by .gitignore:1:*.md"
-  assert_not_contains "$OUT" "lib/core.sh by"
-}
-
 # A runner that is tracked is not subject to ignore rules, so it is not a FAIL.
 test_doctor_accepts_a_tracked_runner_under_a_root_ignore() {
   mkrepo
@@ -1909,7 +2031,7 @@ test_doctor_accepts_a_tracked_runner_under_a_root_ignore() {
   must rm .gauntlet/.gitignore
   run "$G" doctor
   assert_eq 0 "$STATUS" "doctor: $OUT"
-  assert_contains "$OUT" "ok runner files are not ignored by git"
+  assert_contains "$OUT" "ok .gauntlet files are not ignored by git"
 }
 
 # I1 (c): the base must resolve, by the resolution the gates use.

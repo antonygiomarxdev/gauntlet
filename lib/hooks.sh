@@ -169,11 +169,82 @@ install_lock() {
   done
 }
 
-# GAUNTLET_GITIGNORE: what install writes to .gauntlet/.gitignore. STATUS.md is derived text and
-# stays out of git. bin/ and lib/ are the vendored runner and must be committed: a root .gitignore
-# with bin/ or lib/ would hide them, and !bin/ undoes that for the directory. A root pattern for
-# files (*.sh, *.md) still matches the files inside, so !bin/** and !lib/** bring those back too.
-GAUNTLET_GITIGNORE=$'STATUS.md\n.install.lock/\n!bin/\n!lib/\n!bin/**\n!lib/**\n'
+# GAUNTLET_KEEP: the files install creates under .gauntlet/ that the runner reads from the working
+# tree and that a clone and CI must therefore have: one gitignore pattern per line, relative to
+# .gauntlet/ (a leading / anchors a file of its own directory). The source of truth for
+# .gauntlet/.gitignore (gitignore_text) and for doctor, which tells these files from the rest. The
+# project's rules and formats are in it for the same reason as its runner: a rule the working tree
+# has and the commit does not is judged by the local gate and not by CI.
+GAUNTLET_KEEP=$'bin/gauntlet\nlib/*.sh\nlib/formats/*.md\nrules/*.md\nformats/*.md\n/config\n/baseline.tsv\n/exceptions.tsv\n/.gitignore'
+
+# gitignore_text: the lines of .gauntlet/.gitignore, one per line. STATUS.md is derived text and the
+# lock is a directory that exists while an install runs: both stay out of git. A root .gitignore
+# can hide any file here (bin/ and lib/ hide the runner, *.sh and *.md the files in it, *.tsv the
+# state files), so each GAUNTLET_KEEP pattern is brought back by a line of its own, preceded by the
+# directories above it (a file cannot be re-included under an ignored directory). Narrow on
+# purpose: !bin/** would bring back .DS_Store and *.swp too.
+gitignore_text() {
+  printf 'STATUS.md\n.install.lock/\n'
+  GL_KEEP=$GAUNTLET_KEEP awk 'BEGIN {
+    n = split(ENVIRON["GL_KEEP"], keep, "\n")
+    for (i = 1; i <= n; i++) {
+      rest = keep[i]
+      sub(/^\//, "", rest)
+      dir = ""
+      while ((k = index(rest, "/")) > 0) {
+        dir = dir substr(rest, 1, k)
+        rest = substr(rest, k + 1)
+        if (!(dir in seen)) { seen[dir] = 1; print "!" dir }
+      }
+      print "!" keep[i]
+    }
+  }'
+}
+
+# gitignore_missing <file>: the lines of gitignore_text that <file> lacks, whole lines (a CR before
+# the newline is ignored), one per line. All of them when <file> does not exist. Fails when <file>
+# cannot be read.
+gitignore_missing() {
+  if [ ! -e "$1" ]; then
+    gitignore_text
+    return 0
+  fi
+  GL_WANT=$(gitignore_text) awk 'BEGIN { n = split(ENVIRON["GL_WANT"], want, "\n") }
+    { sub(/\r$/, ""); have[$0] = 1 }
+    END { for (i = 1; i <= n; i++) if (!(want[i] in have)) print want[i] }
+  ' "$1"
+}
+
+# gauntlet_keeps <path>: succeed when <path>, relative to .gauntlet/, is one of GAUNTLET_KEEP.
+gauntlet_keeps() {
+  local pat
+  while IFS= read -r pat; do
+    pat=${pat#/}
+    # shellcheck disable=SC2254 # the pattern is a glob on purpose
+    case "$1" in $pat) return 0 ;; esac
+  done <<KEEP
+$GAUNTLET_KEEP
+KEEP
+  return 1
+}
+
+# install_gitignore: write .gauntlet/.gitignore, or add the lines of gitignore_text that an existing
+# one lacks. The user's own lines stay, where they are, and what is added follows them.
+install_gitignore() {
+  local file=.gauntlet/.gitignore missing added
+  if [ ! -e "$file" ]; then
+    gitignore_text 2> /dev/null > "$file" || die "cannot create $file"
+    printf 'created %s\n' "$file"
+    return 0
+  fi
+  missing=$(gitignore_missing "$file" 2> /dev/null) || die "cannot read $file"
+  if [ -z "$missing" ]; then return 0; fi
+  added=$(plural "$(printf '%s\n' "$missing" | awk 'END { print NR }')" line lines)
+  # A file that does not end in a newline gets one first, so the first added line is a line of its own.
+  if [ -n "$(tail -c 1 "$file")" ]; then missing=$'\n'$missing; fi
+  printf '%s\n' "$missing" 2> /dev/null >> "$file" || die "cannot update $file"
+  printf 'updated %s: added %s\n' "$file" "$added"
+}
 
 # install: vendor the runner, create the state files that are missing, then
 # install the hooks. The source is the checkout that holds the running script. The
@@ -193,7 +264,7 @@ install_runner() {
   create_missing .gauntlet/baseline.tsv ''
   create_missing .gauntlet/exceptions.tsv $'type\ttarget\treason\tdate\tbranch\n'
   create_missing .gauntlet/config $'touched=off\n'
-  create_missing .gauntlet/.gitignore "$GAUNTLET_GITIGNORE"
+  install_gitignore
   if [ ! -d .gauntlet/rules ]; then
     mkdir -p .gauntlet/rules || die "cannot create .gauntlet/rules"
     printf 'created .gauntlet/rules/\n'

@@ -309,7 +309,7 @@ doctor_checks() {
   doctor_runner "$root"
   doctor_formats "$root" "$scratch" || return 2
   doctor_hooks "$root" "$scratch" || return 2
-  doctor_ignored || return 2
+  doctor_ignored "$scratch" || return 2
   doctor_base || return 2
   doctor_baseline "$root" "$scratch" || return 2
   doctor_config "$root" "$scratch" || return 2
@@ -555,31 +555,65 @@ doctor_hook_file() {
   return 0
 }
 
-# doctor_ignored: the vendored runner is committed so that a clone and CI have the one the
-# hooks call, and git must not ignore it: a root .gitignore with bin/ or lib/ is the usual
-# cause. One path of bin/, one of lib/ and one of lib/formats/ stand for the three directories
-# (a file pattern such as *.sh hides single files). A tracked file is not subject to ignore
-# rules, so check-ignore says nothing for a runner that was committed. The FAIL names each
-# path with the pattern git matched (check-ignore -v: <source>:<line>:<pattern> <tab> <path>).
+# doctor_ignored <scratch>: every file under .gauntlet/ must be one a clone and CI have. A file that
+# git ignores and does not track (git ls-files --others --ignored) is not committed by `git add -A`:
+# the runner under a root bin/ or lib/, the baseline under *.tsv, a rule under *.md. A tracked file
+# is not subject to ignore rules, so one that was committed is not listed. The derived STATUS.md,
+# the install lock and editor and OS junk are ignored on purpose and left out. The FAIL says what to
+# do by cause, and names the pattern git matched (check-ignore -v: <source>:<line>:<pattern>), one
+# FAIL for the files one rule hides: .gauntlet/ itself ignored (nothing inside can be fixed), the
+# lines of .gauntlet/.gitignore that bring the file back missing (gauntlet install adds them), or a
+# rule that still hides the file with the lines in place.
 doctor_ignored() {
-  local path rc hit list=''
-  for path in .gauntlet/bin/gauntlet .gauntlet/lib/core.sh .gauntlet/lib/formats/path-line.md; do
-    rc=0
-    git check-ignore -q -- "$path" || rc=$?
-    case "$rc" in
-      0) ;;
-      1) continue ;;
-      *) return 2 ;;
+  local scratch=$1 path rc=0 hit missing src ln pat cause paths
+  git ls-files -z --others --ignored --exclude-standard -- .gauntlet > "$scratch/ignored.all" || return 2
+  : > "$scratch/ignored.keep" || return 2
+  while IFS= read -r -d '' path; do
+    case "${path#.gauntlet/}" in
+      STATUS.md|.install.lock|.install.lock/*|.DS_Store|*/.DS_Store|*.swp|*.orig) continue ;;
     esac
-    hit=$(git check-ignore -v -- "$path") || return 2
-    hit=${hit%%"$DETECT_TAB"*}
-    list="$list${list:+, }$path by $hit"
-  done
-  if [ -n "$list" ]; then
-    doctor_fail "runner files are ignored by git ($list): add !bin/ and !lib/ to .gauntlet/.gitignore, or remove the root pattern"
-  else
-    doctor_ok "runner files are not ignored by git"
+    printf '%s\0' "$path" >> "$scratch/ignored.keep" || return 2
+  done < "$scratch/ignored.all"
+  if [ ! -s "$scratch/ignored.keep" ]; then
+    doctor_ok ".gauntlet files are not ignored by git"
+    return 0
   fi
+  git check-ignore -q -- .gauntlet || rc=$?
+  case "$rc" in
+    0)
+      hit=$(git check-ignore -v -- .gauntlet) || return 2
+      doctor_fail ".gauntlet/ is ignored by git (${hit%%"$DETECT_TAB"*}): nothing in it can be committed; remove or narrow that rule"
+      return 0
+      ;;
+    1) ;;
+    *) return 2 ;;
+  esac
+  missing=$(gitignore_missing .gauntlet/.gitignore) || return 2
+  rc=0
+  git check-ignore -v -z --stdin < "$scratch/ignored.keep" > "$scratch/ignored.hits" || rc=$?
+  [ "$rc" -le 1 ] || return 2
+  : > "$scratch/ignored.rows" || return 2
+  while IFS= read -r -d '' src && IFS= read -r -d '' ln && IFS= read -r -d '' pat && IFS= read -r -d '' path; do
+    cause=hidden
+    if [ -n "$missing" ] && gauntlet_keeps "${path#.gauntlet/}"; then cause=lines; fi
+    printf '%s\t%s:%s:%s\t%s\n' "$cause" "$src" "$ln" "$pat" "$path" >> "$scratch/ignored.rows" || return 2
+  done < "$scratch/ignored.hits"
+  # One line per cause and rule: "<cause> TAB <hit> TAB <path>, <path>...".
+  awk -F "$DETECT_TAB" '
+    {
+      key = $1 "\t" $2
+      path = substr($0, length(key) + 2)
+      if (!(key in list)) { order[++n] = key; list[key] = path } else list[key] = list[key] ", " path
+    }
+    END { for (i = 1; i <= n; i++) print order[i] "\t" list[order[i]] }
+  ' "$scratch/ignored.rows" > "$scratch/ignored.grouped" || return 2
+  while IFS="$DETECT_TAB" read -r cause hit paths; do
+    if [ "$cause" = lines ]; then
+      doctor_fail "required lines are missing from .gauntlet/.gitignore, so a root ignore rule hides $paths ($hit): run gauntlet install to add them"
+    else
+      doctor_fail "a root ignore rule hides $paths ($hit); remove or narrow that rule"
+    fi
+  done < "$scratch/ignored.grouped"
   return 0
 }
 

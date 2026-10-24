@@ -738,7 +738,23 @@ test_the_ignore_pattern_is_printed_escaped() {
   printf '[b\033]in/\n' > .gitignore
   run "$G" doctor
   assert_eq 1 "$STATUS" "doctor: $OUT"
-  assert_contains "$OUT" 'FAIL runner files are ignored by git (.gauntlet/bin/gauntlet by .gitignore:1:[b\x1b]in/)'
+  assert_contains "$OUT" 'FAIL required lines are missing from .gauntlet/.gitignore, so a root ignore rule hides .gauntlet/bin/gauntlet (.gitignore:1:[b\x1b]in/): run gauntlet install to add them'
+  assert_clean "$OUT" "doctor"
+}
+
+# A path under .gauntlet/ is the project's text too: the file that is hidden is printed spelled, and
+# so is the pattern.
+test_the_ignored_file_and_its_rule_are_printed_escaped() {
+  mkrepo
+  must cp -R "$ROOT/bin" "$ROOT/lib" .gauntlet/
+  run "$G" install
+  printf '*.txt\n' > .gitignore
+  printf 'x\n' > ".gauntlet/rules/a$(printf '\033')b.txt"
+  printf 'x\n' > ".gauntlet/rules/::c.txt"
+  printf 'x\n' > ".gauntlet/rules/d$(printf '\t')e.txt"
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" 'FAIL a root ignore rule hides .gauntlet/rules/::c.txt, .gauntlet/rules/a\x1bb.txt, .gauntlet/rules/d\te.txt (.gitignore:1:*.txt)'
   assert_clean "$OUT" "doctor"
 }
 

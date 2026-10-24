@@ -2225,37 +2225,172 @@ MIX
   [ ! -e .gauntlet/.install.lock ] || fail "the lock is still there after every run ended"
 }
 
-# I1 (final review B): a root .gitignore with bin/ or lib/ hid the vendored runner, so a clone
-# had hooks that called a runner it did not have. install writes .gauntlet/.gitignore: STATUS.md
-# (the derived file) is ignored, and bin/ and lib/ are brought back whatever a shallower
-# ignore says, down to the files in them (a root *.sh would otherwise still hide lib/*.sh).
-HOOK_TEST_GITIGNORE=$'STATUS.md\n.install.lock/\n!bin/\n!lib/\n!bin/**\n!lib/**\n'
+# I1 (final review B), I-2 and I-3 (W3b review C): a root .gitignore can hide a file gauntlet
+# creates under .gauntlet/ (bin/ or lib/ hid the runner; *.sh and *.md hid the files in them;
+# *.tsv hid baseline.tsv and exceptions.tsv, so the committed tree had no baseline and the gate
+# passed in onboarding mode). install writes .gauntlet/.gitignore: STATUS.md (the derived file)
+# and the lock are ignored, and every file install creates is brought back, by the narrowest
+# pattern that does it, whatever a root pattern says. Editor junk in those directories is not.
+HOOK_TEST_GITIGNORE=$'STATUS.md\n.install.lock/\n!bin/\n!bin/gauntlet\n!lib/\n!lib/*.sh\n!lib/formats/\n!lib/formats/*.md\n!rules/\n!rules/*.md\n!formats/\n!formats/*.md\n!/config\n!/baseline.tsv\n!/exceptions.tsv\n!/.gitignore\n'
 
-test_install_writes_the_gauntlet_gitignore_and_keeps_an_existing_one() {
+# hooks_gitignore_rest <line>...: the lines of HOOK_TEST_GITIGNORE that are none of the given ones.
+hooks_gitignore_rest() {
+  local args=() line
+  for line in "$@"; do args+=(-e "$line"); done
+  printf '%s' "$HOOK_TEST_GITIGNORE" | grep -vxF "${args[@]}"
+}
+
+test_install_writes_the_gauntlet_gitignore_and_adds_only_what_is_missing_to_an_existing_one() {
   hooks_repo "$TMP/repo"
   run "$G" install
   assert_eq 0 "$STATUS" "install: $OUT"
   assert_contains "$OUT" "created .gauntlet/.gitignore"
   hooks_expect .gauntlet/.gitignore "$HOOK_TEST_GITIGNORE"
-  printf 'STATUS.md\nmine\n' > .gauntlet/.gitignore
   run "$G" install
   assert_eq 0 "$STATUS" "second install: $OUT"
   assert_not_contains "$OUT" ".gauntlet/.gitignore"
-  hooks_expect .gauntlet/.gitignore $'STATUS.md\nmine\n'
+  hooks_expect .gauntlet/.gitignore "$HOOK_TEST_GITIGNORE"
+  # The user's own lines stay where they are; the lines that are missing follow them.
+  printf 'mine\nSTATUS.md\n!lib/\n' > .gauntlet/.gitignore
+  run "$G" install
+  assert_eq 0 "$STATUS" "install over a file with some of the lines: $OUT"
+  assert_contains "$OUT" "updated .gauntlet/.gitignore: added 14 lines"
+  hooks_expect .gauntlet/.gitignore $'mine\nSTATUS.md\n!lib/\n'"$(hooks_gitignore_rest 'STATUS.md' '!lib/')"$'\n'
+  run "$G" install
+  assert_not_contains "$OUT" ".gauntlet/.gitignore"
 }
 
-test_a_root_ignore_of_bin_lib_and_shell_files_does_not_hide_the_runner() {
+# A file without a final newline, and one with CRLF line ends, are read as lines: the last line is
+# not glued to the first added one, and STATUS.md with a CR is the line STATUS.md.
+test_install_adds_to_a_gitignore_without_a_final_newline_or_with_crlf_lines() {
   hooks_repo "$TMP/repo"
-  printf 'bin/\nlib/\n*.sh\n*.md\n' > .gitignore
+  must mkdir .gauntlet
+  printf 'mine\nSTATUS.md' > .gauntlet/.gitignore
   run "$G" install
   assert_eq 0 "$STATUS" "install: $OUT"
-  run git status --porcelain --untracked-files=all
-  assert_contains "$OUT" "?? .gauntlet/bin/gauntlet"
-  assert_contains "$OUT" "?? .gauntlet/lib/core.sh"
-  assert_contains "$OUT" "?? .gauntlet/lib/formats/path-line.md"
+  assert_contains "$OUT" "updated .gauntlet/.gitignore: added 15 lines"
+  hooks_expect .gauntlet/.gitignore $'mine\nSTATUS.md\n'"$(hooks_gitignore_rest 'STATUS.md')"$'\n'
+  printf 'STATUS.md\r\n.install.lock/\r\n' > .gauntlet/.gitignore
+  run "$G" install
+  assert_contains "$OUT" "updated .gauntlet/.gitignore: added 14 lines"
+  hooks_expect .gauntlet/.gitignore $'STATUS.md\r\n.install.lock/\r\n'"$(hooks_gitignore_rest 'STATUS.md' '.install.lock/')"$'\n'
+}
+
+# One line added is "1 line".
+test_install_says_one_line_for_one_line() {
+  hooks_repo "$TMP/repo"
+  run "$G" install
+  printf '%s' "$HOOK_TEST_GITIGNORE" | grep -vxF '!/exceptions.tsv' > .gauntlet/.gitignore
+  run "$G" install
+  assert_eq 0 "$STATUS" "install: $OUT"
+  assert_contains "$OUT" "updated .gauntlet/.gitignore: added 1 line"
+  assert_not_contains "$OUT" "added 1 lines"
+  hooks_expect .gauntlet/.gitignore "$(hooks_gitignore_rest '!/exceptions.tsv')"$'\n!/exceptions.tsv\n'
+}
+
+test_install_stops_when_it_cannot_update_the_gitignore() {
+  hooks_repo "$TMP/repo"
+  if hooks_as_root; then
+    skip "running as root: a file is writable here whatever its mode"
+    return 77
+  fi
+  must mkdir .gauntlet
+  printf 'STATUS.md\n' > .gauntlet/.gitignore
+  must chmod 444 .gauntlet/.gitignore
+  run "$G" install
+  chmod 644 .gauntlet/.gitignore
+  assert_eq 2 "$STATUS" "install: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot update .gauntlet/.gitignore"
+  assert_not_contains "$OUT" ": line "
+}
+
+# A .gauntlet/.gitignore that cannot be created (a dangling link) or read (a directory) ends the
+# command with the file's name, not with the shell's own line.
+test_install_stops_when_the_gitignore_cannot_be_created_or_read() {
+  hooks_repo "$TMP/repo"
+  must mkdir .gauntlet
+  must ln -s "$TMP/no/such/dir/gitignore" .gauntlet/.gitignore
+  run "$G" install
+  assert_eq 2 "$STATUS" "install with a dangling .gauntlet/.gitignore: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot create .gauntlet/.gitignore"
+  assert_not_contains "$OUT" ": line "
+  must rm .gauntlet/.gitignore
+  must mkdir .gauntlet/.gitignore
+  run "$G" install
+  assert_eq 2 "$STATUS" "install with a directory for .gauntlet/.gitignore: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot "
+  assert_contains "$OUT" " .gauntlet/.gitignore"
+  assert_not_contains "$OUT" ": line "
+}
+
+# The matrix of review C: a root ignore pattern of every shape that has hidden a file, against every
+# kind of file install creates (and the rule and format files of a project). Nothing that gauntlet
+# needs tracked is ignored; STATUS.md is.
+test_no_root_ignore_pattern_hides_a_file_gauntlet_needs_tracked() {
+  hooks_repo "$TMP/repo"
+  run "$G" install
+  assert_eq 0 "$STATUS" "install: $OUT"
+  must mkdir -p .gauntlet/formats
+  printf 'x\n' > .gauntlet/rules/r.md
+  printf 'x\n' > .gauntlet/formats/f.md
   printf 'x\n' > .gauntlet/STATUS.md
-  run git check-ignore -q .gauntlet/STATUS.md
-  assert_eq 0 "$STATUS" "STATUS.md is ignored by .gauntlet/.gitignore"
+  local pat
+  for pat in 'bin/' 'lib/' '*.sh' '*.md' '*.tsv' 'formats/' 'lib/*' 'bin/*' '**/lib/' '**/bin/' 'rules/' 'config' 'baseline*' \
+    '.gauntlet/lib/' '.gauntlet/bin/' '.gauntlet/*' 'gauntlet' 'core.*' '.gitignore' '*.sh
+*.md
+*.tsv'; do
+    printf '%s\n' "$pat" > .gitignore
+    run git ls-files --others --ignored --exclude-standard -- .gauntlet
+    assert_eq ".gauntlet/STATUS.md" "$OUT" "files under .gauntlet/ that git ignores with the root pattern [$pat]"
+  done
+}
+
+# Editor and OS junk in the directories that were re-included is still ignored: the lines are
+# patterns for the files install creates, not for everything under bin/ and lib/.
+test_the_gauntlet_gitignore_does_not_bring_back_editor_junk() {
+  hooks_repo "$TMP/repo"
+  run "$G" install
+  assert_eq 0 "$STATUS" "install: $OUT"
+  printf '.DS_Store\n*.swp\n*.orig\n' > .gitignore
+  local f
+  for f in .gauntlet/bin/.DS_Store .gauntlet/lib/.DS_Store .gauntlet/lib/formats/.DS_Store .gauntlet/lib/core.sh.swp \
+    .gauntlet/lib/formats/path-line.md.orig .gauntlet/rules/r.md.swp; do
+    printf 'x\n' > "$f"
+    run git check-ignore -q -- "$f"
+    assert_eq 0 "$STATUS" "$f is ignored"
+  done
+}
+
+# The lock is a directory that exists while an install runs; STATUS.md is derived.
+test_the_lock_and_status_md_are_ignored() {
+  hooks_repo "$TMP/repo"
+  run "$G" install
+  must mkdir .gauntlet/.install.lock
+  printf 'x\n' > .gauntlet/STATUS.md
+  printf 'x\n' > .gauntlet/.install.lock/pid
+  run git status --porcelain --untracked-files=all
+  assert_not_contains "$OUT" "STATUS.md"
+  assert_not_contains "$OUT" ".install.lock"
+}
+
+# The end-to-end case of review C: a root *.tsv, install, add everything, commit. The baseline and
+# the exceptions are in the commit, and so is every other file install made.
+test_a_root_tsv_ignore_does_not_leave_the_state_files_out_of_the_commit() {
+  hooks_repo "$TMP/repo"
+  printf '*.tsv\n' > .gitignore
+  run "$G" install
+  assert_eq 0 "$STATUS" "install: $OUT"
+  must git add -A
+  must git commit -q -m "adopt gauntlet"
+  local tracked
+  tracked=$(git ls-files -- .gauntlet)
+  assert_contains "$tracked" ".gauntlet/baseline.tsv"
+  assert_contains "$tracked" ".gauntlet/exceptions.tsv"
+  assert_contains "$tracked" ".gauntlet/config"
+  assert_contains "$tracked" ".gauntlet/.gitignore"
+  assert_contains "$tracked" ".gauntlet/bin/gauntlet"
+  assert_contains "$tracked" ".gauntlet/lib/core.sh"
+  assert_contains "$tracked" ".gauntlet/lib/formats/path-line.md"
 }
 
 # R36: one script that serves both hooks (a symlink, a hard link) would get two gate lines, or the
