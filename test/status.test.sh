@@ -1384,6 +1384,45 @@ test_doctor_chmod_advice_for_a_shared_script_has_no_paste_form_for_a_path_with_a
   done
 }
 
+# R68: a path that starts with a dash has no paste form either: chmod would read it as options.
+# "run chmod +x on it" is all there is to say (the same words as for a control byte); no "--" form.
+# A dash further in (sub/-x) is an ordinary path, quoted as before.
+test_doctor_chmod_advice_for_a_hook_has_no_paste_form_for_a_path_that_starts_with_a_dash() {
+  mkrepo
+  must git config core.hooksPath -x
+  doctor_install
+  must chmod 644 -- -x/pre-commit
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "FAIL pre-commit hook -x/pre-commit is not executable: run chmod +x on it"
+  assert_not_contains "$OUT" "chmod +x '"
+  assert_not_contains "$OUT" "chmod +x --"
+}
+
+test_doctor_chmod_advice_for_a_shared_script_has_no_paste_form_for_a_path_that_starts_with_a_dash() {
+  mkrepo
+  must mkdir -- -x
+  printf '#!/bin/sh\necho shared\n' > ./-x/pre-commit
+  must chmod 644 -- -x/pre-commit
+  must ln -s pre-commit ./-x/pre-push
+  must git config core.hooksPath -x
+  doctor_install
+  run "$G" doctor
+  assert_contains "$OUT" "FAIL hook -x/pre-commit is not executable: run chmod +x on it"
+  assert_not_contains "$OUT" "chmod +x '"
+  assert_not_contains "$OUT" "chmod +x --"
+}
+
+test_doctor_chmod_advice_keeps_the_paste_form_for_a_path_with_a_dash_further_in() {
+  mkrepo
+  must git config core.hooksPath sub/-x
+  doctor_install
+  must chmod 644 sub/-x/pre-commit
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "FAIL pre-commit hook sub/-x/pre-commit is not executable: chmod +x 'sub/-x/pre-commit'"
+}
+
 test_doctor_fail_lines_name_the_fix() {
   mkrepo
   doctor_install

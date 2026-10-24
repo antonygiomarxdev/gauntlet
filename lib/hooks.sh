@@ -321,8 +321,12 @@ runner_not_executable_words() {
 # chmod_words <path> <lead>: the command that gives <path> its exec bit, for the user to paste
 # (R60): <lead>, "chmod +x" and the path single-quoted. When path_spell would change the path (a
 # control byte in it) the printed path is not the file, so no paste form is given: "run chmod +x
-# on it" (R63). The path is the caller's, not yet spelled.
+# on it" (R63). The same for a path that starts with a dash (R68): chmod would read it as options,
+# and a "--" form is one more thing to get wrong. The path is the caller's, not yet spelled.
 chmod_words() {
+  case "$1" in
+    -*) printf 'run chmod +x on it\n'; return 0 ;;
+  esac
   if [ "$(path_spell "$1")" = "$1" ]; then
     printf '%schmod +x %s\n' "$2" "$(sh_quote "$1")"
   else
