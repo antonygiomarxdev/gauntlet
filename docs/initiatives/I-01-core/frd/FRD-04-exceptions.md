@@ -42,9 +42,10 @@ An exception must be explicit, reviewable and written only by a human. An agent 
    - narrowing `paths`;
    - widening `exclude`;
    - changing its engine, its detector, or its detector file;
-   - changing its `format`, or changing or adding a project format file (`.gauntlet/formats/`) that a `block` rule reads through, since a format decides which output lines count.
+   - changing its `format`, or changing or adding a project format file (`.gauntlet/formats/`) that a `block` rule reads through, since a format decides which output lines count;
+   - changing `.gauntlet/config` so that a gate relaxes: a different `base=` (judged against the base the branch selects and against the default base); `touched` going from on to off, where deleting the line of an enabled gate counts; a declared check removed, its CI opt-in turned off, its path scope narrowed, or its command changed. One row for the pseudo-rule `@config` covers them: `gauntlet loosen @config "<what changes>" "<reason>"`.
 
-   Widening `paths` or raising a severity is not loosening.
+   Widening `paths`, raising a severity or changing a rule's `stage` is not loosening: a rule moved to `push` is still enforced at push and in CI.
 9. **When the Agent is blocked**, it proposes the exact command with its reason, stops, and notifies the human. It never routes around the gate.
 10. **CI comments every new exception on the PR.**
 
@@ -93,6 +94,7 @@ An exception must be explicit, reviewable and written only by a human. An agent 
 |---|---|---|---|
 | `waive` | one path | the branch it was created on | that branch only |
 | `loosen` | `<rule>: <what changed>` | `-` | permanent, recorded |
+| `loosen` | `@config: <what changed>` | `-` | permanent, recorded |
 | `remove` | a rule id | `-` | permanent, recorded |
 | `script` | a rule id with a custom detector | `-` | permanent, recorded |
 
@@ -110,6 +112,7 @@ An exception must be explicit, reviewable and written only by a human. An agent 
 - **EXC-AC10:** Given a commit message that contains a waiver-like trailer, when the gate runs, then nothing is waived.
 - **EXC-AC11:** Given a waive row whose branch is not the current one, when `doctor` runs, then the row is listed as stale.
 - **EXC-AC12:** Given a PR that adds an exception row, when CI runs, then it comments the new row on the PR.
+- **EXC-AC13:** Given `.gauntlet/config` changed so that a gate relaxes (for example `touched` from on to off, or a declared check removed) with no new `loosen @config` row, when `check --ci` runs, then it fails and names the change; and given that change plus a new `gauntlet loosen @config "<what changes>" "<reason>"` row, then it passes.
 
 ## 10. Out of scope
 
