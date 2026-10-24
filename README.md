@@ -1,6 +1,6 @@
 # gauntlet
 
-**A code-quality ratchet your agent can't argue with.**
+**A code-quality ratchet for repositories where agents write the code.**
 
 gauntlet studies your repository, agrees a set of rules with you, measures every existing violation, and from then on lets that number only go down. A new violation is caught when it is committed, when it is pushed, and in CI, whichever agent or human wrote it.
 
@@ -23,7 +23,7 @@ A **ratchet** does neither. It accepts today's debt as the floor and refuses to 
 
 - **It onboards itself** (planned). An agent will infer your stack, research each technology's own guidance, and propose rules one at a time for you to accept or reject. It never imposes a standard.
 - **Every rule has a detector.** A rule that cannot be counted is not admitted. Detectors are declarative: a linter rule, an `ast-grep` rule or an `rg` pattern. No one writes a bespoke script "their own way".
-- **Loosening fails the gate.** The baseline is derived: the runner writes it, and a hand edit that does not match the measurement fails CI. A loosened rule fails `check --ci` unless an exception row exists for it. The runner cannot tell who wrote a row. Keeping agents from writing rows is the job of the agent skill and the Claude Code adapter, both planned.
+- **Loosening fails the gate.** The baseline is derived: the runner writes it, and a hand edit that does not match the measurement fails CI. A loosened rule, or a loosened `.gauntlet/config`, fails `check --ci` unless an exception row exists for it. The runner cannot tell who wrote a row, and CI runs the runner the branch carries, so a branch that edits the runner is flagged for review, not stopped ([who CI trusts](docs/guide/gates.md#who-ci-trusts)). Keeping agents from writing rows is the job of the agent skill and the Claude Code adapter, both planned.
 - **It coexists.** gauntlet adds one line to each shell hook you already have, placed first, and never takes them over.
 - **It is agnostic** to language, agent harness and model. The runner is bash + awk + git.
 
@@ -31,18 +31,18 @@ A **ratchet** does neither. It accepts today's debt as the floor and refuses to 
 
 ```console
 $ git commit -m "feat: add invoice export"
-gauntlet  commit · 1 rules · 0.1 s
+gauntlet  commit · 1 rule · 0.1 s
 [new]
   src/export/invoice.ts:42  todo  // TODO handle partial exports
       fix: Remove the TODO or ticket it.
 [time]
   todo  50 ms
-gauntlet: FAIL (1 problems)
+gauntlet: FAIL (1 problem)
 ```
 
 ```console
 $ git commit -m "refactor: remove a TODO"
-gauntlet  commit · 1 rules · 0.1 s
+gauntlet  commit · 1 rule · 0.1 s
   todo  2 → 1   baseline updated and staged into this commit
 [time]
   todo  59 ms
@@ -120,7 +120,7 @@ Then write your rules in `.gauntlet/rules/` (the [getting started](docs/guide/ge
 ```sh
 .gauntlet/bin/gauntlet baseline      # measure the existing debt, then commit .gauntlet/baseline.tsv
 .gauntlet/bin/gauntlet status        # debt per rule, worst files, shadow rules due for promotion
-.gauntlet/bin/gauntlet check --ci    # exactly what CI runs
+.gauntlet/bin/gauntlet check --ci    # the gate CI runs
 .gauntlet/bin/gauntlet doctor        # tools present, hooks wired, baseline exact
 ```
 
@@ -130,7 +130,7 @@ Onboarding by an agent (`ask your agent to onboard this repository`) is planned.
 
 | | Rules from | Baseline | Language-agnostic | New-violation check | Touched-file check | Agent onboarding | Loosening guard |
 |---|---|---|---|---|---|---|---|
-| **gauntlet** | owner-approved | fingerprints, in repo | ✅ | ✅ fingerprint | ✅ | planned | ✅ exception row needed |
+| **gauntlet** | owner-approved | fingerprints, in repo | ✅ | ✅ fingerprint | ✅ | planned | exception row needed; a changed runner is flagged for review |
 | [pawl](https://github.com/tiangong-dev/pawl) | any command | counts, in repo | ✅ | ✅ added lines | — | — | trailer + guard |
 | [cleat](https://github.com/svetdev/cleat) | built-in gates | findings, in repo | ✅ | partial | — | partial | hook-enforced |
 | [betterer](https://github.com/phenomnomnominal/betterer) | JS test files | results file | JS/TS | — | — | — | — |

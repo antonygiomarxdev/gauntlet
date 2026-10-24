@@ -38,7 +38,7 @@ The gate checks two of these in CI, whatever harness wrote the code:
 - a baseline that does not equal the measurement fails;
 - loosening without an exception fails.
 
-The runner does not check the others. A commit made with `--no-verify` is caught by the push gate and by CI, once the CI job is set up.
+The runner does not check the others. A commit made with `--no-verify` is caught by the push gate and by CI, once the CI job is set up. An agent that edits the runner itself in the same branch is only flagged: `check --ci` prints a note to review, because the gate runs the runner the branch carries (see [who CI trusts](gates.md#who-ci-trusts)).
 
 ## Adapters: biting earlier (planned)
 
