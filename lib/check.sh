@@ -87,11 +87,12 @@ PUSHLINE
 check_run() {
   local scratch=$1 base_ref=$2 start=$3 root base sha id rf sev fix atb
   local known=0 n_rules ms end n body new_n=0 global_n=0 touched_n=0 baseline_n=0
-  local loosened_n=0 rt_n=0 rt_rc=0 checks_n=0 broken=0 t0 t1 rc cfg_rc
+  local loosened_n=0 rt_n=0 rt_rc=0 checks_n=0 broken=0 t0 t1 rc cfg_rc dbase
   root=$(repo_root) || return 2
   touched_mode > /dev/null || return 2
   validate_rules || return 2
   base=$(resolve_base "$base_ref") || return 2
+  dbase=$(resolve_base_default "$base_ref") || return 2
   sha=$(merge_base "$base") || return 2
   # Every file the branch changes, deletions included: the scope of declared checks.
   # --no-renames: a rename lists both its old path (deleted) and its new one.
@@ -196,7 +197,7 @@ check_run() {
   base_has "$sha" .gauntlet/config || cfg_rc=$?
   if [ "$rc" -gt 1 ] || [ "$cfg_rc" -gt 1 ]; then return 2; fi
   if [ "$rc" -eq 0 ] || [ "$cfg_rc" -eq 0 ]; then
-    cmp_loosened "$sha" "$scratch/loosened.covered" > "$scratch/loosened.rows" || return 2
+    cmp_loosened "$sha" "$scratch/loosened.covered" "$dbase" > "$scratch/loosened.rows" || return 2
     # Covered loosenings pass; the report names each one with its row's reason, here and in CI.
     awk -F '\t' '{ printf "note: loosened %s: %s; covered by \"%s\"\n", $1, $2, $3 }' "$scratch/loosened.covered" >> "$body" || return 2
     if [ -s "$scratch/loosened.rows" ]; then
@@ -698,27 +699,29 @@ cmp_touched_in() {
   cat "$scratch/touched"
 }
 
-# cmp_loosened <merge-base> [<covered-file>]: the no-loosening check (decision 6,
+# cmp_loosened <merge-base> [<covered-file> [<default-base>]]: the no-loosening check (decision 6,
 # EXC-AC5..AC8). Compares each rule file at the merge-base with the working tree and prints
 # a tab row (rule, what changed) for each loosening that no new exceptions.tsv row covers.
 # Prints nothing when nothing was loosened. A loosening that a row covers is not printed;
 # when <covered-file> is given it gets a row (rule, what changed, the row's reason) for
-# each of them, so the report can say what was relaxed and why.
+# each of them, so the report can say what was relaxed and why. <default-base> is the base
+# resolve_base_default names: the base= of the config is judged against it as well as against the
+# merge-base (cmp_loosened_in).
 cmp_loosened() {
-  local mb=$1 covered=${2:-} scratch status=0
+  local mb=$1 covered=${2:-} dbase=${3:-} scratch status=0
   scratch=$(tmp_new -d) || return 2
-  cmp_loosened_in "$mb" "$scratch" || status=$?
+  cmp_loosened_in "$mb" "$scratch" "$dbase" || status=$?
   if [ "$status" -eq 0 ] && [ -n "$covered" ]; then cp "$scratch/covered" "$covered" || status=2; fi
   rm -rf "$scratch"
   return "$status"
 }
 
-# cmp_loosened_in <merge-base> <scratch>: the work of cmp_loosened, with
+# cmp_loosened_in <merge-base> <scratch> <default-base>: the work of cmp_loosened, with
 # intermediate files kept in <scratch>; the covered rows are left in <scratch>/covered.
 # Only rules that exist at the base are judged; a rule added on the branch is never
 # loosened.
 cmp_loosened_in() {
-  local mb=$1 scratch=$2 root name id reason n
+  local mb=$1 scratch=$2 dbase=$3 root name id reason n dmb=''
   root=$(repo_root) || return 2
   exc_new_rows "$mb" "$scratch/exc.new" || return 2
   # The new rows' targets and reasons: "<rule>: <what>" with its reason, and the removed rule.
@@ -752,15 +755,35 @@ cmp_loosened_in() {
 
   # .gauntlet/config is judged like a rule file, under the pseudo-rule @config (R34): one
   # new `loosen @config` row covers every item below, as a rule's row covers its changes.
-  cmp_config "$mb" "$scratch" > "$scratch/changes" || return 2
+  cmp_config "$mb" "$scratch" "$dbase" > "$scratch/changes" || return 2
   reason=$(awk -F "$DETECT_TAB" 'index($1, "@config:") == 1 { print "x" $2; exit }' "$scratch/new.loosen") || return 2
+  cp "$scratch/changes" "$scratch/changes.mb" || return 2
   loosen_row @config "$reason" "$scratch" || return 2
+
+  # A base= the branch sets can aim the run at the branch itself (base=HEAD), and then nothing
+  # differs from its merge-base. CI names the target (--base origin/<target>), so the base= is
+  # also judged against the base the run would have without it, and the rows that are new
+  # since that merge-base cover it. Skipped when that base does not resolve: CI judges it.
+  if [ -n "$dbase" ]; then dmb=$(git merge-base HEAD "$dbase" 2> /dev/null) || dmb=; fi
+  if [ -n "$dmb" ]; then
+    at_base "$dmb" .gauntlet/config > "$scratch/cfg.dbase" || return 2
+    cmp_base "$scratch/cfg.dbase" "$scratch/cfg.head" "$dbase" > "$scratch/changes" || return 2
+    # What the comparison with the merge-base already said is not said twice.
+    awk 'FILENAME == ARGV[1] { seen[$0] = 1; next } !($0 in seen)' "$scratch/changes.mb" "$scratch/changes" > "$scratch/changes.d" || return 2
+    if [ -s "$scratch/changes.d" ]; then
+      exc_new_rows "$dmb" "$scratch/exc.new.d" || return 2
+      awk -F "$DETECT_TAB" '$1 == "loosen" { print $2 "\t" $3 }' "$scratch/exc.new.d" > "$scratch/new.loosen.d" || return 2
+      reason=$(awk -F "$DETECT_TAB" 'index($1, "@config:") == 1 { print "x" $2; exit }' "$scratch/new.loosen.d") || return 2
+      cp "$scratch/changes.d" "$scratch/changes" || return 2
+      loosen_row @config "$reason" "$scratch" || return 2
+    fi
+  fi
   cat "$scratch/out"
 }
 
 # cmp_config <merge-base> <scratch>: print one line per way .gauntlet/config was loosened
 # since the merge-base, read the way the runner reads it (config_value, check_key_rows):
-#   base         the value differs (set, changed or removed);
+#   base         the base it selects differs (set, changed or removed; cmp_base);
 #   touched      the gate went from on to off (the default is off, so deleting the line
 #                of an enabled gate counts);
 #   check <name> removed; its .ci went from on to off (the default is off); its .paths
@@ -774,14 +797,10 @@ cmp_loosened_in() {
 # src/api/ becoming src/ is not narrowing and src/ becoming src/api/ is, and an empty list
 # becoming a prefix is.
 cmp_config() {
-  local mb=$1 scratch=$2 bv hv bt ht
+  local mb=$1 scratch=$2 dbase=${3:-} bt ht
   at_base "$mb" .gauntlet/config > "$scratch/cfg.base" || return 2
   at_base HEAD .gauntlet/config > "$scratch/cfg.head" || return 2
-  bv=$(config_value "$scratch/cfg.base" base "") || return 2
-  hv=$(config_value "$scratch/cfg.head" base "") || return 2
-  if [ "$bv" != "$hv" ]; then
-    printf 'base %s → %s\n' "${bv:-(unset)}" "${hv:-(unset)}"
-  fi
+  cmp_base "$scratch/cfg.base" "$scratch/cfg.head" "$dbase" || return 2
   bt=$(config_value "$scratch/cfg.base" touched off) || return 2
   ht=$(config_value "$scratch/cfg.head" touched off) || return 2
   if [ "$bt" = on ] && [ "$ht" != on ]; then printf 'touched on → off\n'; fi
@@ -830,6 +849,19 @@ cmp_config() {
       }
     }
   ' "$scratch/cfg.base.checks" "$scratch/cfg.head.checks"
+}
+
+# cmp_base <base-config> <head-config> <default-base>: print "base A → B" when the base the
+# runner would use differs between the two config files, A and B being the values as written
+# ("(unset)" for none). Compared as the bases they select: no base= selects <default-base>, so
+# base=main where the default is main changes nothing. Returns 2 when a file cannot be read.
+cmp_base() {
+  local bv hv
+  bv=$(config_value "$1" base "") || return 2
+  hv=$(config_value "$2" base "") || return 2
+  if [ "${bv:-$3}" != "${hv:-$3}" ]; then
+    printf 'base %s → %s\n' "${bv:-(unset)}" "${hv:-(unset)}"
+  fi
 }
 
 # loosen_row <id> <row> <scratch>: file the changes in <scratch>/changes, one per line,

@@ -1387,6 +1387,115 @@ test_an_old_config_row_does_not_cover_a_new_config_loosening() {
   assert_contains "$OUT" "  @config  touched on → off"
 }
 
+# A base= that selects the branch itself leaves nothing to compare with: judged against its
+# merge-base alone, a local run passes what CI (--base origin/<target>) fails. The base= is also
+# judged against the base the run would have without it.
+
+# exc_base_self [clean]: main with the todo rule and a baseline; feat sets base=HEAD and, unless
+# the argument is "clean", adds a TODO.
+exc_base_self() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf 'base=HEAD\n' > .gauntlet/config
+  if [ "${1:-}" != clean ]; then printf 'TODO new\n' > c.ts; fi
+  exc_rebase
+  exc_commit feat
+}
+
+test_a_base_that_selects_the_branch_itself_is_loosening_in_the_local_run_too() {
+  local local_lines
+  exc_base_self
+  run "$G" check --ci
+  assert_eq 1 "$STATUS" "local: $OUT"
+  assert_contains "$OUT" "  @config  base (unset) → HEAD"
+  local_lines=$(printf '%s\n' "$OUT" | grep '@config')
+  exc_gate
+  assert_eq 1 "$STATUS" "CI: $OUT"
+  assert_eq "$local_lines" "$(printf '%s\n' "$OUT" | grep '@config')" "the same @config lines locally and in CI"
+}
+
+test_a_row_that_covers_the_base_is_new_since_the_default_base_too() {
+  exc_base_self clean
+  run "$G" loosen @config "base" "reviewed: the stack is rebased onto HEAD"
+  assert_eq 0 "$STATUS" "loosen: $OUT"
+  exc_commit row
+  run "$G" check --ci
+  assert_eq 0 "$STATUS" "local: $OUT"
+  assert_contains "$OUT" 'note: loosened @config: base (unset) → HEAD; covered by "reviewed: the stack is rebased onto HEAD"'
+  exc_gate
+  assert_eq 0 "$STATUS" "CI: $OUT"
+}
+
+# Both sides say develop: the same base, and the run's own default (main) changes nothing.
+test_a_base_the_main_branch_has_too_is_no_loosening() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  printf 'base=develop\n' > .gauntlet/config
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b develop
+  printf 'x\n' > b.txt
+  exc_rebase
+  exc_commit develop
+  must git checkout -q -b feat
+  printf 'y\n' > c.txt
+  exc_rebase
+  exc_commit feat
+  run "$G" check --ci
+  assert_eq 0 "$STATUS" "local: $OUT"
+  assert_not_contains "$OUT" "@config"
+  exc_gate
+  assert_eq 0 "$STATUS" "CI: $OUT"
+  assert_not_contains "$OUT" "@config"
+}
+
+# The base= names the base the run has without it: that is no change of base.
+test_a_base_that_names_the_default_base_is_no_loosening() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b feat
+  printf 'base=main\n' > .gauntlet/config
+  exc_rebase
+  exc_commit feat
+  run "$G" check --ci
+  assert_eq 0 "$STATUS" "local: $OUT"
+  assert_not_contains "$OUT" "@config"
+  exc_gate
+  assert_eq 0 "$STATUS" "CI: $OUT"
+  assert_not_contains "$OUT" "@config"
+}
+
+# No main and no origin/HEAD: the default base does not resolve, so that comparison is skipped.
+test_a_default_base_that_does_not_resolve_is_skipped_without_an_error() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  printf 'base=trunk\n' > .gauntlet/config
+  exc_rebase
+  exc_commit main
+  must git branch -m main trunk
+  must git checkout -q -b feat
+  printf 'x\n' > b.txt
+  exc_rebase
+  exc_commit feat
+  run "$G" check --ci
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "@config"
+  assert_not_contains "$OUT" "unknown ref"
+}
+
 # exc_both_loosened <row-id> <what> <reason>: main enforces touched=on and the todo rule at
 # block; feat turns both off, and only one new row, for <row-id>, covers anything.
 exc_both_loosened() {

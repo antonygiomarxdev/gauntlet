@@ -21,15 +21,28 @@ current_branch() {
 # Exits via die when outside a repo. Callers must use a plain x=$(...) or
 # || exit; never local x=$(...), if x=$(...) or a bare "$(...)", which mask it.
 resolve_base() {
+  base_chain 1 "${1:-}"
+}
+
+# resolve_base_default [ref]: the base resolve_base would print if the tracked config had no
+# base=: the explicit ref, branch.<cur>.gauntletBase, origin/HEAD, main. What a branch cannot
+# change by editing its own config; the loosening check of base= compares with it.
+resolve_base_default() {
+  base_chain 0 "${1:-}"
+}
+
+# base_chain <config: 1|0> <ref>: the work of the two above; the tracked config is read only
+# when the first argument is 1.
+base_chain() {
   local branch ref
-  if [ -n "${1:-}" ]; then
-    printf '%s\n' "$1"
+  if [ -n "${2:-}" ]; then
+    printf '%s\n' "$2"
     return 0
   fi
   branch=$(current_branch)
   if ref=$(git config --get "branch.$branch.gauntletBase") && [ -n "$ref" ]; then
     printf '%s\n' "$ref"
-  elif ref=$(config_get base "") && [ -n "$ref" ]; then
+  elif [ "$1" -eq 1 ] && ref=$(config_get base "") && [ -n "$ref" ]; then
     # The tracked config is somebody else's text. A name that holds a control byte is no ref
     # (git forbids them, and U+0080 to U+009F in UTF-8 form are terminal controls too), and
     # it must never reach a terminal as it is: refuse it here, escaped.
