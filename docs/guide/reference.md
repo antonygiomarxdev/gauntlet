@@ -33,7 +33,7 @@ Only `base <ref>` writes git config (`branch.<name>.gauntletBase`). `waive`, `lo
 |---|---|
 | `0` | Passed. |
 | `1` | The gate failed: `check`, `test-rules` or `doctor` found a problem, or `check --ci --pre-push` refused a push of a commit that is not HEAD. |
-| `2` | The setup is broken or the usage is wrong. Examples: not in a git repo, a missing tool, a bad config key, a dirty tree at `check --ci`, a shallow clone without the base, a tab or newline in a tracked path, a broken detector (`gauntlet: broken detector: <id>: exit 2`), a read of the base or the index that git cannot answer, an install lock that stays held. |
+| `2` | The setup is broken or the usage is wrong. Examples: not in a git repo, a missing tool, a bad config key, a dirty tree or an untracked file under `.gauntlet/` at `check --ci`, a shallow clone without the base, a tab or newline in a tracked path, a broken detector (`gauntlet: broken detector: <id>: exit 2`), a read of the base or the index that git cannot answer, an install lock that stays held. |
 | `129`, `130`, `143` | SIGHUP, SIGINT or SIGTERM ended the run (128 plus the signal number). The run removes its temp files first. A SIGTERM sent to gauntlet alone is handled when the detector it is running returns; a signal to the process group, as Ctrl-C sends, ends the detector too. |
 
 A read that git cannot answer is exit 2, never "the file is absent": `gauntlet: cannot read <path> at <sha>`, with git's first error line after it when git gave one. A path with a tab or a newline in its name is refused: `gauntlet: path with a tab or newline: <name>; rename the file`. That covers the tracked files a run measures. A diff or a tree listing that names such a path only scopes checks, so a branch can still rename or delete the offending file.
@@ -163,7 +163,7 @@ slow: todo 51 ms (consider stage: push)
    - `note tool for rule <id> not checked: the detector starts with <word>, which is not a plain command name, so doctor cannot tell whether it exists`
 2. **Runner.** The vendored runner must be complete and run `--version`.
    - `FAIL .gauntlet/lib lacks files the runner sources (<names>): run gauntlet install to re-vendor`
-   - `FAIL runner at <path> is not executable; run chmod +x '<path>'`
+   - `FAIL runner at <path> is not executable; run chmod +x '<path>'` (for a path with a control byte, which is printed escaped, the command is left out: `run chmod +x on it`)
    - `FAIL .gauntlet/bin or .gauntlet/lib is broken or missing: run gauntlet install from a gauntlet checkout …`
 3. **Formats.** Each rule's format must be built in or in `.gauntlet/formats/`.
    - `FAIL rule <id>: format <name> is unknown: use a built-in format or add .gauntlet/formats/<name>.md`
@@ -171,7 +171,7 @@ slow: todo 51 ms (consider stage: push)
    - `FAIL <stage> gate missing from <file>: run gauntlet install-hooks`, or `add this line by hand as the first command …` for a hook that `install-hooks` would only print.
    - `FAIL <stage> gate in <file> is an older gauntlet line (it differs from the current one): run gauntlet install-hooks`, or `replace the line ending in "# gauntlet" in <file> with: <line>` when it would only print.
    - `FAIL <file> has N lines ending in "# gauntlet" (lines a, b, ...); keep one, the current form, and remove the others`
-   - `FAIL <stage> hook <file> is not executable: chmod +x '<file>'`
+   - `FAIL <stage> hook <file> is not executable: chmod +x '<file>'` (same rule for a control byte in the path)
    - `FAIL gate missing from <config>: run gauntlet install-hooks and add what it prints`
    - `FAIL lefthook pre-push gate in <file> has no use_stdin: true, so it judges the checked-out branch whatever git pushes: add use_stdin: true`
    - `FAIL <stage> gate in <file>: shared hooks directory: the gate must use the guarded form; run gauntlet install-hooks to see it`

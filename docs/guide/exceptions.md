@@ -30,7 +30,7 @@ gauntlet loosen @config "<what changes>" "<reason>"
 gauntlet remove <rule> "<reason>"
 ```
 
-- Each command appends one row, dated today. Commit the file on the branch: `check --ci` refuses a dirty tree, and a `loosen` or `remove` row counts only once it is in the base-to-HEAD history.
+- Each command appends one row, dated today. Commit the file on the branch: `check --ci` refuses a dirty tree and an untracked file under `.gauntlet/` (exit 2), and a `loosen` or `remove` row counts only once it is in the base-to-HEAD history.
 - All three exit 2 without a `.gauntlet/` directory (`gauntlet: no .gauntlet/ directory; run gauntlet install`). `loosen` and `remove` also exit 2 for a rule that exists nowhere (`gauntlet: no rule <id>`): in the working tree, in HEAD or at the merge-base. A case file such as `todo.bad.md` is not a rule. `remove @config` is refused: `gauntlet: no rule @config`.
 - The runner does not check who wrote a row. A row written by hand works the same way, so review the diff of `exceptions.tsv` like any other change.
 - An agent may **propose** the exact command, with its reason. The runner cannot stop an agent from writing a row. Keeping agents from writing rows is the skill's job and the Claude Code adapter's, and the PR diff and a CI comment on each new row are planned (IS-02; FRD-04 §4, rule 10).

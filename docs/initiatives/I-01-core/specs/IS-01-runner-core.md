@@ -53,7 +53,7 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
 ## Decisions this plan makes (owner may override)
 
 1. **The runner is split into `lib/` files and vendored as a folder.** Design §6 lists only `bin/gauntlet`; split files keep each concern small enough to review.
-2. **`check --ci` refuses a dirty tree.** It exits 2 when tracked files differ from `HEAD`, with the message `gauntlet checks what you push; commit or stash first`. Measuring the working tree while pushing `HEAD` would break parity. Untracked files do not count.
+2. **`check --ci` refuses a dirty tree.** It exits 2 when tracked files differ from `HEAD`, with the message `gauntlet checks what you push; commit or stash first`. Measuring the working tree while pushing `HEAD` would break parity. Untracked files do not count, except a non-ignored one under `.gauntlet/` (R64).
 3. **Partial staging** (HOOK-AC3). The `pre-commit` check runs on the working tree. When a staged file also has unstaged changes, auto-tighten is skipped and a notice is printed. Push and CI still verify the exact baseline. The ceiling: a commit check can pass on code that is not what gets committed. The push gate catches it.
 4. **lefthook and prek configs are not edited.** They can be YAML, TOML or JSON. `install-hooks` does not edit the file. For a YAML config it prints the snippet to paste; for TOML or JSON, the two commands to translate. `doctor` fails until the snippet is present. husky, a `core.hooksPath` inside the repo and plain `.git/hooks` get the line added automatically. A shared hooks directory outside the repo is printed only, in a guarded form that does nothing where the repository has no `.gauntlet/` (R25, R53).
 5. **Waivers apply only on their own branch.** A `waive` row applies only when its `branch` column equals the current branch (`GITHUB_HEAD_REF` in CI, `git symbolic-ref --short HEAD` locally). Rows from merged branches are ignored, and `doctor` lists them as stale. Deleting them on merge is left for later.
@@ -123,7 +123,7 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
   - matrix: `ubuntu-latest` and `macos-latest`;
   - checkout with `fetch-depth: 0`;
   - install tools: on ubuntu, `sudo apt-get install -y ripgrep shellcheck` and `pipx install ast-grep-cli==0.51.0` (pinned); on macOS, `brew install ripgrep ast-grep shellcheck`;
-  - then run shellcheck and `test/run.sh`; on ubuntu a second run with `GAUNTLET_TEST_BSD_DATE=1` covers a `date` without `%N`; on macOS a shim puts the system bash 3.2 first on `PATH` and the job fails if `bash` is not 3.x.
+  - then run shellcheck and `test/run.sh`; a second Ubuntu job runs it with `GAUNTLET_TEST_BSD_DATE=1` to cover a `date` without `%N`; on macOS a shim puts the system bash 3.2 first on `PATH` and the job fails if `bash` is not 3.x.
 
   Validate the YAML with `python3 -c 'import yaml,sys;yaml.safe_load(open(sys.argv[1]))' .github/workflows/test.yml`.
 - [ ] **Step 6:** Commit: `chore: add runner skeleton, test harness and CI`.
@@ -697,7 +697,7 @@ Binding rulings made while this spec was built, condensed from the controller's 
 
 **R9. `severity_rank`.** It prints the rank (block 3, shadow 2, track 1) and returns 1 for any other severity. Callers read it with `$(...)`. Why: an exit status of 3 would trip `set -e` and collide with the exit codes. Cost if wrong: one line in each caller.
 
-**R10. Glob conversion.** One left-to-right scan in POSIX awk. `**/` matches zero or more directories, `**` matches anything, `*` matches within one directory, `?` matches one character, and the other regex metacharacters are escaped. Why: the order in the brief escaped the brackets it had just produced. Cost if wrong: one function rewrite.
+**R10. Glob conversion.** One left-to-right scan in POSIX awk. `**/` matches zero or more directories, `**` matches anything, `*` matches within one directory, `?` matches one character other than `/`, and the other regex metacharacters are escaped. Why: the order in the brief escaped the brackets it had just produced. Cost if wrong: one function rewrite.
 
 **R11. Runner library path.** `lib/detect.sh` sets `GAUNTLET_LIB` from its own location, and the built-in formats live under it. Format frontmatter is read by the same reader as rule frontmatter. Why: no runner-root variable existed yet. Cost if wrong: the variable moves to `core.sh`.
 
@@ -798,3 +798,11 @@ Condensed from the controller's `rulings.md` in the same way. R38 and R46 only o
 **R59. gauntlet never deletes a line from a hook.** Deleting lines by pattern can break the hook around them (the only command of an `if` block, a function body, a project command that holds the gate text). One marked line is replaced in place (R47). Two or more leave the hook untouched: `install-hooks` prints `gauntlet: <file> has N lines ending in "# gauntlet" (lines a, b); keep one, the current form, and remove the others` and the current line, and `doctor` fails with the same sentence. Known edge: in a shared hooks directory, the unmarked guarded form next to one marked plain line counts as one marked line.
 
 **R60. A command printed for the user to paste quotes the repo's text.** `sh_quote` (in `lib/core.sh`) wraps a value in single quotes, an embedded `'` as `'\''`. It is applied to the change text and the base ref in the `gauntlet loosen` / `gauntlet base` hint, and to the path in every `chmod +x` hint. Constants (`git add --chmod=+x .gauntlet/bin/gauntlet`) and placeholders (`<reason>`) are not quoted. Not built: a check that a gauntlet line sits before an `exit` or inside a here-doc.
+
+**R61. A marked plain line in a shared hooks directory is the old form,** even when the unmarked guarded form is also there: the plain line fails in every repository without `.gauntlet/`. `doctor` fails it with the guarded-form sentence; `install-hooks` edits nothing and says to remove the line ending in `# gauntlet`. This changes the reading in every hooks directory: one marked line that is no current form is `old` whether or not a form is also present, and `install-hooks` replaces it in place (R47).
+
+**R62. A script that serves both hooks uses the sentence of R59** for a crowded gate, in `install-hooks` and in `doctor`.
+
+**R63. A path with a control byte gets no command to paste.** `path_spell` would change the path inside the quotes, so the message says `run chmod +x on it`. A hooks path that starts with `-` keeps `chmod +x '<path>'` (accepted limit).
+
+**R64. `check --ci` refuses while `.gauntlet/` holds an untracked file that git does not ignore** (`git ls-files --others --exclude-standard -- .gauntlet`): a clone would not have the file, so the run would judge differently from CI. Exit 2, the dirty-tree sentence, then `gauntlet: untracked files under .gauntlet, which a clone does not have: <names>; commit or ignore them` (five names at most, then `and N more`). A file ignored only on one machine (`.git/info/exclude`, a global excludes file) passes; `doctor` fails ignored files under `.gauntlet/`.

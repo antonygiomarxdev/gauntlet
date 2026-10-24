@@ -60,7 +60,7 @@ Stacked PRs are therefore never charged with the whole stack.
 
 CI must check out the full history. In a shallow clone that has no common history with the base, gauntlet exits 2 with `shallow clone: fetch full history`. Reproduce the condition, not just the command.
 
-`check --ci` checks what you push, so it refuses a tree with uncommitted changes to tracked files: exit 2, `gauntlet checks what you push; commit or stash first`. Untracked files do not count.
+`check --ci` checks what you push, so it refuses a tree with uncommitted changes to tracked files: exit 2, `gauntlet checks what you push; commit or stash first`. It also refuses while `.gauntlet/` holds an untracked file that git does not ignore, because a clone would not have it: exit 2, the same sentence, then `gauntlet: untracked files under .gauntlet, which a clone does not have: <names>; commit or ignore them` (at most five names, then `and N more`). Other untracked files do not count.
 
 ## The commit gate
 
