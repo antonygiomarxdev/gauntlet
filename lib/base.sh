@@ -69,12 +69,21 @@ fetch_base_ref() {
   esac
 }
 
-# base_resolves <ref>: succeed when <ref> names a commit once the gates' own fetch has run (a
-# failed fetch is not an error here: a ref that is already local still resolves). doctor asks this
-# with the ref resolve_base gives, so it judges the base the way merge_base does.
+# base_resolves <ref>: succeed when <ref> names a commit in this repository as it stands. It does
+# not fetch: merge_base does that for the gates, and doctor, which asks this, never touches the
+# network.
 base_resolves() {
-  fetch_base_ref "$1" > /dev/null 2>&1 || true
   git rev-parse --verify -q "$1^{commit}" > /dev/null
+}
+
+# base_fetchable <ref>: succeed when the gates would fetch <ref> to resolve it (fetch_base_ref: an
+# origin/ ref) and a remote origin is configured to fetch it from. A ref that is missing here and
+# is not fetchable cannot become resolvable.
+base_fetchable() {
+  case "$1" in
+    origin/?*) git config --get remote.origin.url > /dev/null ;;
+    *) return 1 ;;
+  esac
 }
 
 # merge_base <ref>: print the sha where HEAD forked from ref. An origin/ ref is
@@ -93,7 +102,7 @@ merge_base() {
   if [ "$rc" -ne 0 ]; then
     printf 'gauntlet: fetch of %s failed; using the local ref\n' "$(path_spell "$ref")" >&2
   fi
-  git rev-parse --verify -q "$ref^{commit}" >/dev/null || die "unknown ref: $ref; $BASE_HINT"
+  base_resolves "$ref" || die "unknown ref: $ref; $BASE_HINT"
   if sha=$(git merge-base HEAD "$ref") && [ -n "$sha" ]; then
     printf '%s\n' "$sha"
     return 0

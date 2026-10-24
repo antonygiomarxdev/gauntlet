@@ -725,6 +725,9 @@ test_the_base_that_does_not_resolve_is_printed_escaped() {
   run "$G" check --ci
   assert_contains "$OUT" 'gauntlet: fetch of origin/x\x1b[2Jy failed; using the local ref'
   assert_clean "$OUT" "the failed fetch"
+  run "$G" doctor
+  assert_contains "$OUT" 'note base origin/x\x1b[2Jy is not fetched yet; the gates fetch it'
+  assert_clean "$OUT" "doctor with a remote ref that is not fetched"
 }
 
 # doctor prints the ignore pattern git matched, and the pattern is the project's text: [b<ESC>]in/

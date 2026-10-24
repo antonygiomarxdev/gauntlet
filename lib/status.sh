@@ -583,14 +583,18 @@ doctor_ignored() {
   return 0
 }
 
-# doctor_base: the base the gates compare with must resolve, by the resolution they use
-# (resolve_base, then base_resolves, which fetches an origin/ ref first as merge_base does). The
-# usual cause is a default branch that is not main in a repo without origin/HEAD.
+# doctor_base: the base the gates compare with must resolve, by the resolution they use (resolve_base),
+# looked up locally: doctor never touches the network, so it does not fetch. An origin/ ref that is
+# missing here while a remote origin is configured is a note: the gates fetch it (merge_base). Any
+# other ref that is missing is a FAIL; the usual cause is a default branch that is not main in a repo
+# without origin/HEAD.
 doctor_base() {
   local base
   base=$(resolve_base "") || return 2
   if base_resolves "$base"; then
     doctor_ok "base $base"
+  elif base_fetchable "$base"; then
+    doctor_note "base $base is not fetched yet; the gates fetch it"
   else
     doctor_fail "base $base does not resolve; $BASE_HINT"
   fi

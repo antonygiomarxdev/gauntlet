@@ -1958,25 +1958,60 @@ test_doctor_on_a_clone_whose_default_branch_is_master() {
   assert_contains "$OUT" "FAIL base main does not resolve; run gauntlet base <ref> or set base= in .gauntlet/config"
 }
 
-# The gates fetch an origin/ ref before they use it, so doctor must too: a base that only exists
-# on the remote is resolvable, and the check must not call it missing.
-test_doctor_resolves_an_origin_base_the_way_the_gates_do() {
-  must git init -q --bare -b main "$TMP/remote.git"
+# doctor never touches the network (R49): against a remote that cannot be reached a fetch would
+# hang a hook or a CI step, and doctor has nothing to gain from one. A base that is a remote ref
+# not fetched yet is a note, because the gates fetch it; a ref that is neither local nor plausibly
+# remote is still a FAIL.
+test_doctor_never_fetches_and_notes_an_origin_base_that_is_not_fetched_yet() {
+  mkrepo
+  must git remote add origin "file://$TMP/no/such/remote.git"
+  doctor_install
+  must git config branch.main.gauntletBase origin/dev
+  git_counts
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor: $OUT"
+  assert_contains "$OUT" "note base origin/dev is not fetched yet; the gates fetch it"
+  assert_not_contains "$OUT" "FAIL"
+  if grep -q 'fetch' "$SHIM_CALLS"; then fail "doctor asked git to fetch: $(grep fetch "$SHIM_CALLS")"; fi
+  printf 'base=origin/dev\n' > .gauntlet/config
+  must git config --unset branch.main.gauntletBase
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor with base= in the config: $OUT"
+  assert_contains "$OUT" "note base origin/dev is not fetched yet; the gates fetch it"
+}
+
+test_doctor_resolves_an_origin_base_that_is_already_local() {
+  must git init -q --bare "$TMP/remote.git"
   mkrepo
   must git remote add origin "$TMP/remote.git"
   must git push -q origin main
   must git push -q origin main:dev
-  must git update-ref -d refs/remotes/origin/dev
+  must git fetch -q origin
   doctor_install
   must git config branch.main.gauntletBase origin/dev
-  if git rev-parse -q --verify refs/remotes/origin/dev > /dev/null; then fail "origin/dev is already local: the fixture does not test the fetch"; fi
+  git_counts
   run "$G" doctor
   assert_eq 0 "$STATUS" "doctor: $OUT"
   assert_contains "$OUT" "ok base origin/dev"
-  must git config branch.main.gauntletBase origin/gone
+  assert_not_contains "$OUT" "note"
+  if grep -q 'fetch' "$SHIM_CALLS"; then fail "doctor asked git to fetch: $(grep fetch "$SHIM_CALLS")"; fi
+}
+
+# The gates fetch only origin/ refs, so doctor does not call another missing ref "not fetched yet",
+# and without a remote origin there is nothing to fetch it from.
+test_doctor_fails_a_missing_base_that_the_gates_would_not_fetch() {
+  mkrepo
+  doctor_install
+  must git config branch.main.gauntletBase origin/dev
   run "$G" doctor
-  assert_eq 1 "$STATUS" "doctor with an origin ref that does not exist: $OUT"
-  assert_contains "$OUT" "FAIL base origin/gone does not resolve"
+  assert_eq 1 "$STATUS" "doctor with no remote origin: $OUT"
+  assert_contains "$OUT" "FAIL base origin/dev does not resolve; run gauntlet base <ref> or set base= in .gauntlet/config"
+  must git remote add origin "file://$TMP/no/such/remote.git"
+  must git remote add upstream "file://$TMP/no/such/remote.git"
+  must git config branch.main.gauntletBase upstream/dev
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor with a ref of another remote: $OUT"
+  assert_contains "$OUT" "FAIL base upstream/dev does not resolve; run gauntlet base <ref> or set base= in .gauntlet/config"
 }
 
 # R36: doctor says what install-hooks says about one script serving both hooks, and is satisfied
