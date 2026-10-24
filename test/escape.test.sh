@@ -685,10 +685,21 @@ test_the_lock_messages_print_the_path_escaped() {
     must chmod 555 .git
     run env "$G" install-hooks
     chmod 755 .git
-    assert_contains "$OUT" 'gauntlet: cannot create'
-    assert_contains "$OUT" 'r\x1bp/.git/gauntlet-install.lock'
+    assert_contains "$OUT" 'gauntlet: cannot lock: '
+    assert_contains "$OUT" 'r\x1bp/.git is not writable; fix the permissions'
     assert_clean "$OUT" "the lock that cannot be made"
   fi
+}
+
+# The lock of a layout inside the worktree is .gauntlet/.install.lock: the path is spelled too.
+test_the_worktree_lock_messages_print_the_path_escaped() {
+  esc_hooks_repo
+  must git config core.hooksPath .husky
+  must mkdir .gauntlet/.install.lock
+  run env GAUNTLET_LOCK_WAIT=0 "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" 'r\x1bp/.gauntlet/.install.lock; if none is running, remove it'
+  assert_clean "$OUT" "the worktree lock held"
 }
 
 # --- W3b: the runner ignore and the base ---

@@ -2043,27 +2043,193 @@ test_the_lock_is_in_the_common_git_dir_of_a_linked_worktree() {
 }
 
 # A git dir that cannot be written is not a lock to wait for: the command says it could not make
-# the lock, at once. The permission is restored before anything is asserted.
-test_an_unwritable_git_dir_is_an_error_not_a_wait() {
+# the lock, and why, at once, before it has written anything. The permission is restored before
+# anything is asserted.
+test_an_unwritable_git_dir_with_the_default_hooks_says_why_it_cannot_lock() {
+  hooks_repo "$TMP/repo"
+  if hooks_as_root; then
+    skip "running as root: a directory is writable here whatever its mode"
+    return 77
+  fi
+  must chmod 555 .git
+  run "$G" install
+  local install_out=$OUT install_status=$STATUS
+  chmod 755 .git
+  hooks_vendor
+  must chmod 555 .git
+  run env GAUNTLET_LOCK_WAIT=30 "$G" install-hooks
+  chmod 755 .git
+  assert_eq 2 "$install_status" "install: $install_out"
+  assert_eq "gauntlet: cannot lock: $TMP/repo/.git is not writable; fix the permissions" "$install_out"
+  [ ! -e .gauntlet/config ] || fail "install wrote the state files without a lock"
+  assert_eq 2 "$STATUS" "install-hooks: $OUT"
+  assert_eq "gauntlet: cannot lock: $TMP/repo/.git is not writable; fix the permissions" "$OUT"
+}
+
+# The layouts that never write under the git dir keep working when it is read-only (a container, a
+# sandbox): husky, a hooks directory inside the worktree, a hook manager's config, and a shared
+# directory that is only printed. Their lock is in the worktree.
+test_a_read_only_git_dir_does_not_stop_a_husky_install_or_install_hooks() {
+  hooks_repo "$TMP/repo"
+  if hooks_as_root; then
+    skip "running as root: a directory is writable here whatever its mode"
+    return 77
+  fi
+  must git config core.hooksPath .husky
+  hooks_vendor
+  must chmod 555 .git
+  run "$G" install-hooks
+  local first=$OUT first_status=$STATUS
+  run "$G" install
+  chmod 755 .git
+  assert_eq 0 "$first_status" "install-hooks: $first"
+  assert_contains "$first" "created .husky/pre-commit"
+  assert_eq 0 "$STATUS" "install: $OUT"
+  assert_contains "$OUT" "already present in .husky/pre-commit"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .husky/pre-commit)" "the gate line is there once"
+  [ ! -e .gauntlet/.install.lock ] || fail "the lock is still there after the run ended"
+}
+
+test_a_read_only_git_dir_does_not_stop_a_hook_manager_or_a_shared_dir() {
   hooks_repo "$TMP/repo"
   if hooks_as_root; then
     skip "running as root: a directory is writable here whatever its mode"
     return 77
   fi
   hooks_vendor
+  printf 'pre-commit:\n  parallel: true\n' > lefthook.yml
   must chmod 555 .git
-  run env GAUNTLET_LOCK_WAIT=30 "$G" install-hooks
+  run "$G" install-hooks
   chmod 755 .git
+  assert_eq 0 "$STATUS" "install-hooks with a lefthook config: $OUT"
+  assert_contains "$OUT" "ACTION NEEDED: add to lefthook.yml:"
+  rm lefthook.yml
+  must mkdir "$TMP/shared"
+  must git config core.hooksPath "$TMP/shared"
+  must chmod 555 .git
+  run "$G" install-hooks
+  chmod 755 .git
+  assert_eq 0 "$STATUS" "install-hooks with a shared hooks directory: $OUT"
+  assert_contains "$OUT" "is a hooks directory shared with other repositories"
+}
+
+# The lock of those layouts is .gauntlet/.install.lock of the worktree that runs the command.
+test_the_lock_of_a_husky_layout_is_in_the_gauntlet_dir_of_the_worktree() {
+  hooks_repo "$TMP/repo"
+  must git config core.hooksPath .husky
+  hooks_vendor
+  must mkdir .gauntlet/.install.lock
+  run env GAUNTLET_LOCK_WAIT=0 "$G" install-hooks
   assert_eq 2 "$STATUS" "install-hooks: $OUT"
-  assert_contains "$OUT" "gauntlet: cannot create $TMP/repo/.git/gauntlet-install.lock"
-  assert_not_contains "$OUT" "waiting"
+  assert_contains "$OUT" "gauntlet: another install holds $TMP/repo/.gauntlet/.install.lock; if none is running, remove it"
+  run env GAUNTLET_LOCK_WAIT=0 "$G" install
+  assert_eq 2 "$STATUS" "install: $OUT"
+  assert_contains "$OUT" "another install holds $TMP/repo/.gauntlet/.install.lock"
+  [ ! -e .husky/pre-commit ] || fail "a hook was written while the lock was held"
+  [ -d .gauntlet/.install.lock ] || fail "a process that did not own the lock removed it"
+}
+
+# A linked worktree has its own .gauntlet/ and, in a layout inside the worktree, its own hooks, so
+# it does not wait for the main worktree's lock. The default hooks are shared and have one lock
+# (test_the_lock_is_in_the_common_git_dir_of_a_linked_worktree).
+test_a_linked_worktree_with_a_husky_layout_has_a_lock_of_its_own() {
+  hooks_repo "$TMP/repo"
+  must git config core.hooksPath .husky
+  must git worktree add -q "$TMP/wt" -b side
+  hooks_vendor
+  must mkdir .gauntlet/.install.lock
+  must cd "$TMP/wt"
+  hooks_vendor
+  run env GAUNTLET_LOCK_WAIT=0 "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks in the worktree while the main worktree's lock is held: $OUT"
+  must mkdir .gauntlet/.install.lock
+  run env GAUNTLET_LOCK_WAIT=0 "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks with the worktree's own lock held: $OUT"
+  assert_contains "$OUT" "another install holds $TMP/wt/.gauntlet/.install.lock"
+}
+
+# install holds the lock of its layout while it vendors, and makes .gauntlet/ to put it in: the
+# copy of the runner sees the lock there. It is gone when the run ends.
+test_install_holds_the_worktree_lock_of_a_husky_layout_while_it_vendors() {
+  hooks_repo "$TMP/repo"
+  must git config core.hooksPath .husky
+  must mkdir "$TMP/shim"
+  local real_cp
+  real_cp=$(command -v cp)
+  cat > "$TMP/shim/cp" <<SHIM
+#!/bin/sh
+case "\$*" in
+  *.bin.new*) [ -d "$TMP/repo/.gauntlet/.install.lock" ] && touch "$TMP/lock.seen" ;;
+esac
+exec "$real_cp" "\$@"
+SHIM
+  must chmod +x "$TMP/shim/cp"
+  run env PATH="$TMP/shim:$PATH" "$G" install
+  assert_eq 0 "$STATUS" "install: $OUT"
+  [ -e "$TMP/lock.seen" ] || fail "the runner was copied without the worktree lock"
+  [ ! -e .gauntlet/.install.lock ] || fail "the lock is still there after the run ended"
+}
+
+# A lock that cannot be made in a directory that can be written is not "not writable": the message
+# names the lock, as it did before.
+test_a_lock_that_cannot_be_made_in_a_writable_dir_names_the_lock() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must mkdir "$TMP/shim"
+  local real_mkdir
+  real_mkdir=$(command -v mkdir)
+  cat > "$TMP/shim/mkdir" <<SHIM
+#!/bin/sh
+case "\$*" in
+  *gauntlet-install.lock) echo "mkdir: simulated failure" >&2; exit 1 ;;
+esac
+exec "$real_mkdir" "\$@"
+SHIM
+  must chmod +x "$TMP/shim/mkdir"
+  run env PATH="$TMP/shim:$PATH" "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks: $OUT"
+  assert_eq "gauntlet: cannot create $TMP/repo/.git/gauntlet-install.lock" "$OUT"
+}
+
+# install-hooks only locks what it may write, and never makes .gauntlet/ to put a lock in: without
+# one there is no runner, and it refuses or only prints.
+test_install_hooks_does_not_make_the_gauntlet_dir_for_a_lock() {
+  hooks_repo "$TMP/repo"
+  must git config core.hooksPath .husky
+  run "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks without a runner: $OUT"
+  [ ! -e .gauntlet ] || fail "install-hooks made .gauntlet/ for its lock"
+  must git config --unset core.hooksPath
+  printf 'pre-commit:\n  parallel: true\n' > lefthook.yml
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks with a lefthook config and no runner: $OUT"
+  [ ! -e .gauntlet ] || fail "install-hooks made .gauntlet/ for its lock"
+}
+
+# install and install-hooks of one layout share one lock, so a runner swapped by one is never seen
+# half-made by the other (install-hooks refuses a repo whose runner is missing), and the two
+# cannot wait for each other. Eight runs start together, half of each command.
+test_install_and_install_hooks_racing_on_a_husky_layout_serialize() {
+  hooks_repo "$TMP/repo"
+  must git config core.hooksPath .husky
+  hooks_vendor
+  cat > "$TMP/mix" <<MIX
+#!/bin/sh
+if [ \$((\$\$ % 2)) -eq 0 ]; then exec "$G" install; else exec "$G" install-hooks; fi
+MIX
+  must chmod +x "$TMP/mix"
+  hooks_parallel 8 "$TMP/mix"
+  diff -r "$ROOT/lib" .gauntlet/lib || fail ".gauntlet/lib differs from the checkout's lib"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .husky/pre-commit)" "pre-commit gate lines"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_CI" .husky/pre-push)" "pre-push gate lines"
+  [ ! -e .gauntlet/.install.lock ] || fail "the lock is still there after every run ended"
 }
 
 # I1 (final review B): a root .gitignore with bin/ or lib/ hid the vendored runner, so a clone
 # had hooks that called a runner it did not have. install writes .gauntlet/.gitignore: STATUS.md
 # (the derived file) is ignored, and bin/ and lib/ are brought back whatever a shallower
 # ignore says, down to the files in them (a root *.sh would otherwise still hide lib/*.sh).
-HOOK_TEST_GITIGNORE=$'STATUS.md\n!bin/\n!lib/\n!bin/**\n!lib/**\n'
+HOOK_TEST_GITIGNORE=$'STATUS.md\n.install.lock/\n!bin/\n!lib/\n!bin/**\n!lib/**\n'
 
 test_install_writes_the_gauntlet_gitignore_and_keeps_an_existing_one() {
   hooks_repo "$TMP/repo"

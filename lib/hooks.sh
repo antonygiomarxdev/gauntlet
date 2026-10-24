@@ -98,25 +98,45 @@ END {
 }
 '
 
-# install_lock: take the lock that serializes install and install-hooks, or wait for it. The
-# lock is a directory under the git common dir (so linked worktrees, which share the hooks,
-# share it), made with mkdir, which either creates it or fails. Monorepo `prepare` scripts run
-# these commands at the same moment, and unserialised they lost the project's own hook body,
-# doubled the gate line and left .gauntlet/lib empty. A command that finds the lock held waits
-# for it (GAUNTLET_LOCK_WAIT seconds, 30 by default; one line on stderr says so) and then does
-# its work on what the other left, which is where the "gate line already there" check is: it
-# runs under the lock, so it sees every edit made before. Only the run that made the lock
-# names it in GAUNTLET_LOCK, and only that name is removed on the way out (gauntlet_cleanup).
-# Needs hook_paths first. A run that already holds the lock (install calls install_hooks)
-# returns at once. After the wait a lock nobody frees, left by a killed process, is not broken
-# on a guess: exit 2 with the path to remove.
+# install_lock <target> [create]: take the lock that serializes install and install-hooks, or
+# wait for it. <target> is hook_target's answer, which says where the hooks go and so what the lock
+# has to protect. The lock is a directory made with mkdir, which either creates it or fails.
+# Monorepo `prepare` scripts run these commands at the same moment, and unserialised they lost the
+# project's own hook body, doubled the gate line and left .gauntlet/lib empty. It sits under the git
+# common dir when the hooks directory does (the default .git/hooks, which linked worktrees share
+# and so must take turns at). For every other layout (husky, a hooks directory in the worktree, a
+# hook manager's config, a shared directory that is only printed) nothing is written under the git
+# dir, which may be read-only, so the lock is .gauntlet/.install.lock of the worktree. install and
+# install-hooks of one layout take the same lock: one lock per run, so they cannot wait for each
+# other. install makes .gauntlet/ for it ("create"); install-hooks never does, since without one
+# there is no runner and it refuses or only prints. A command that finds the lock held waits for
+# it (GAUNTLET_LOCK_WAIT seconds, 30 by default; one line on stderr says so) and then does its work
+# on what the other left, which is where the "gate line already there" check is: it runs under the
+# lock, so it sees every edit made before. Only the run that made the lock names it in
+# GAUNTLET_LOCK, and only that name is removed on the way out (gauntlet_cleanup). Needs hook_paths
+# first. A run that already holds the lock (install calls install_hooks) returns at once. After the
+# wait a lock nobody frees, left by a killed process, is not broken on a guess: exit 2 with the
+# path to remove.
 install_lock() {
-  local lock wait=${GAUNTLET_LOCK_WAIT:-30} limit ticks=0 told=0 absent=0 sig=''
+  local target=$1 dir lock wait=${GAUNTLET_LOCK_WAIT:-30} limit ticks=0 told=0 absent=0 sig=''
   if [ -n "${GAUNTLET_LOCK:-}" ]; then return 0; fi
   case "$wait" in
     ''|*[!0-9]*) die "GAUNTLET_LOCK_WAIT must be a whole number of seconds, got [$wait]" ;;
   esac
-  lock="$HOOKS_COMMON/gauntlet-install.lock"
+  case "${target#dir }/" in
+    "$HOOKS_COMMON/"*)
+      dir=$HOOKS_COMMON
+      lock="$dir/gauntlet-install.lock"
+      ;;
+    *)
+      dir="$HOOKS_ROOT/.gauntlet"
+      if [ ! -d "$dir" ]; then
+        if [ "${2:-}" != create ]; then return 0; fi
+        mkdir -p "$dir" 2> /dev/null || die "cannot lock: $HOOKS_ROOT is not writable; fix the permissions"
+      fi
+      lock="$dir/.install.lock"
+      ;;
+  esac
   limit=$((wait * 5))
   while :; do
     # A signal that lands while mkdir runs is handled once it returns, before the next
@@ -141,7 +161,10 @@ install_lock() {
       # mkdir failed and nothing is there: the lock was freed between the two calls, or the
       # directory cannot be written. A few more tries tell them apart.
       absent=$((absent + 1))
-      if [ "$absent" -ge 3 ]; then die "cannot create $lock"; fi
+      if [ "$absent" -ge 3 ]; then
+        if [ -w "$dir" ]; then die "cannot create $lock"; fi
+        die "cannot lock: $dir is not writable; fix the permissions"
+      fi
     fi
   done
 }
@@ -150,13 +173,13 @@ install_lock() {
 # stays out of git. bin/ and lib/ are the vendored runner and must be committed: a root .gitignore
 # with bin/ or lib/ would hide them, and !bin/ undoes that for the directory. A root pattern for
 # files (*.sh, *.md) still matches the files inside, so !bin/** and !lib/** bring those back too.
-GAUNTLET_GITIGNORE=$'STATUS.md\n!bin/\n!lib/\n!bin/**\n!lib/**\n'
+GAUNTLET_GITIGNORE=$'STATUS.md\n.install.lock/\n!bin/\n!lib/\n!bin/**\n!lib/**\n'
 
 # install: vendor the runner, create the state files that are missing, then
 # install the hooks. The source is the checkout that holds the running script. The
 # whole of it runs under the install lock (install_lock).
 install_runner() {
-  local src root
+  local src root target
   src=$(install_source) || die "cannot find the runner source"
   if [ ! -f "$src/bin/gauntlet" ] || [ ! -d "$src/lib" ]; then
     die "no runner at $src: expected bin/gauntlet and lib/"
@@ -164,7 +187,8 @@ install_runner() {
   root=$(repo_root)
   cd "$root" || die "cannot enter $root"
   hook_paths || die "cannot find the git directory"
-  install_lock
+  target=$(hook_target) || exit 2
+  install_lock "$target" create
   vendor_runner "$src"
   create_missing .gauntlet/baseline.tsv ''
   create_missing .gauntlet/exceptions.tsv $'type\ttarget\treason\tdate\tbranch\n'
@@ -293,8 +317,8 @@ install_hooks() {
   root=$(repo_root)
   cd "$root" || die "cannot enter $root"
   hook_paths || die "cannot find the git directory"
-  install_lock
   target=$(hook_target) || exit 2
+  install_lock "$target"
   kind=${target%% *}
   dir=${target#"$kind"}
   dir=${dir# }
