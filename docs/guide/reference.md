@@ -108,7 +108,7 @@ An existing file is never overwritten. The two vendored folders are replaced, an
 - A command that finds the lock held waits `GAUNTLET_LOCK_WAIT` seconds and says so once: `gauntlet: waiting for another install to finish (<lock>)`.
 - After the wait it gives up: `gauntlet: another install holds <lock>; if none is running, remove it`, exit 2.
 - A lock left by a process killed with SIGKILL is never removed on a guess. Remove it by hand with `rmdir <lock>`, once you know no install is running. Do not remove it while one runs: the run that made the lock removes whatever directory is at that path when it ends.
-- A git dir that is not writable is an error, not a fallback: `gauntlet: cannot lock: <dir> is not writable; fix the permissions`. A file named `.gauntlet` gives `gauntlet: cannot lock: .gauntlet is not a directory; remove or rename it`.
+- A git dir that is not writable is an error, not a fallback: `gauntlet: cannot lock: <dir> is not writable; fix the permissions`. A file named `.gauntlet` gives `gauntlet: cannot lock: .gauntlet is not a directory; remove or rename it` in the layouts whose lock lives in `.gauntlet/`. In the default `.git/hooks` layout the lock is in the git dir, and `install` stops earlier, at `gauntlet: cannot create .gauntlet`. Both exit 2.
 
 An `install` killed halfway leaves `.gauntlet/.bin.new`, `.gauntlet/.lib.new` or `.gauntlet/.bin.old`, `.gauntlet/.lib.old`; the next `install` puts the runner right and removes them.
 
@@ -125,12 +125,13 @@ There is no uninstall command. To remove gauntlet from a repo:
 
 ### `status`
 
-`gauntlet status` reads the committed baseline (no detector runs). It prints, and writes to `.gauntlet/STATUS.md`, this text:
+`gauntlet status` reads `.gauntlet/baseline.tsv` as it is in the working tree (no detector runs). It prints, and writes to `.gauntlet/STATUS.md`, this text:
 
 ```
 | rule | severity | total |
 | --- | --- | --- |
-| todo | block | 2 |
+| silent-catch | block | 2 |
+| todo | shadow | 2 |
 
 | file | block total |
 | --- | --- |
@@ -177,7 +178,7 @@ slow: todo 51 ms (consider stage: push)
 5. **Ignored files.** No file of gauntlet's may be hidden from git. It lists every untracked file under `.gauntlet/` that git ignores, apart from `STATUS.md`, the lock and editor junk, and names the rule that hides it. It does not judge intent: a file you hide on purpose is listed too.
    - `FAIL a root ignore rule hides <paths> (<source>:<line>:<pattern>); remove or narrow that rule`
    - `FAIL required lines are missing from .gauntlet/.gitignore, so a root ignore rule hides <paths> (…): run gauntlet install to add them`
-   - `FAIL .gauntlet/ is ignored by git (<pattern>): nothing in it can be committed; remove or narrow that rule`
+   - `FAIL .gauntlet/ is ignored by git (<source>:<line>:<pattern>): nothing in it can be committed; remove or narrow that rule`
    - `FAIL gauntlet: cannot read .gauntlet/.gitignore; fix the permissions`
 6. **Base.** The base the gates would use must resolve in this clone.
    - `note base <ref> is not fetched yet; the gates fetch it`, for an `origin/` ref when a remote `origin` exists.
