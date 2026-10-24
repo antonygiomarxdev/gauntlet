@@ -600,6 +600,9 @@ test_status_and_promote_print_a_rule_id_escaped() {
 # The path of a rule file gauntlet cannot write is somebody's text in the message. (The shell
 # prints its own "Permission denied" line with the raw path before this one; only gauntlet's line
 # is judged here.)
+# The file name of a rule is a rule id somebody wrote. The shell itself names the file when a
+# redirection fails ("bash: <path>: Permission denied"), so the whole output is judged, not only
+# the line gauntlet prints, for an ESC and for a C1 control in its UTF-8 form (C2 9B is CSI).
 test_promote_prints_the_path_it_cannot_write_escaped() {
   local id msg
   [ "$(id -u)" -ne 0 ] || { skip "root writes any file"; return 77; }
@@ -612,6 +615,40 @@ test_promote_prints_the_path_it_cannot_write_escaped() {
   msg=$(printf '%s\n' "$OUT" | grep -a '^gauntlet: cannot write ')
   assert_contains "$msg" 'a\x1b[2Jb.md'
   assert_clean "$msg" "the cannot write line"
+  assert_clean "$OUT" "promote"
+  assert_eq 1 "$(printf '%s\n' "$OUT" | awk 'END{print NR}')" "one line, gauntlet's: $OUT"
+}
+
+test_promote_prints_no_raw_c1_byte_of_a_path_it_cannot_write() {
+  local id
+  [ "$(id -u)" -ne 0 ] || { skip "root writes any file"; return 77; }
+  mkrepo
+  id=$(printf 'a\302\233[2Jb')
+  rule "$id" severity=shadow paths='**/*.ts'
+  must chmod 444 ".gauntlet/rules/$id.md"
+  run "$G" promote "$id"
+  assert_eq 2 "$STATUS" "promote: $OUT"
+  assert_contains "$OUT" 'a\xc2\x9b[2Jb.md'
+  assert_clean "$OUT" "promote"
+  assert_eq 1 "$(printf '%s\n' "$OUT" | awk 'END{print NR}')" "one line, gauntlet's: $OUT"
+}
+
+# The two values status reads from the environment are printed back when they are wrong, and
+# they are anybody's text.
+test_status_prints_no_raw_byte_of_a_bad_gauntlet_today() {
+  mkrepo
+  run env GAUNTLET_TODAY="$(printf '2026\033[2J-10\302\233-22')" "$G" status
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" 'got [2026\x1b[2J-10\xc2\x9b-22]'
+  assert_clean "$OUT" "status"
+}
+
+test_status_prints_no_raw_byte_of_a_bad_commit_budget() {
+  mkrepo
+  run env GAUNTLET_COMMIT_BUDGET_MS="$(printf '5\033[2J0\302\2330')" "$G" status
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" 'got [5\x1b[2J0\xc2\x9b0]'
+  assert_clean "$OUT" "status"
 }
 
 # A symlink detector file whose blob git cannot read: the message names the path. The other git

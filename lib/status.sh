@@ -119,7 +119,7 @@ status_today() {
     day=$(date +%Y-%m-%d) || return 2
   fi
   if ! valid_date "$day"; then
-    printf 'gauntlet: GAUNTLET_TODAY must be a real date, YYYY-MM-DD, got [%s]\n' "$day" >&2
+    printf 'gauntlet: GAUNTLET_TODAY must be a real date, YYYY-MM-DD, got [%s]\n' "$(path_spell "$day")" >&2
     return 2
   fi
   printf '%s\n' "$day"
@@ -252,8 +252,9 @@ promote_cmd() {
     rm -f "$tmp"
     return 2
   fi
-  # Writing over the file keeps its mode; moving the temp file would not.
-  if ! cat "$tmp" > "$file"; then
+  # Writing over the file keeps its mode; moving the temp file would not. A failed redirection
+  # makes the shell name the file itself, unescaped: its line is dropped for gauntlet's own.
+  if ! { cat "$tmp" > "$file"; } 2> /dev/null; then
     rm -f "$tmp"
     printf 'gauntlet: cannot write %s\n' "$(path_spell "$file")" >&2
     return 2

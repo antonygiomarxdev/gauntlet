@@ -1277,7 +1277,7 @@ commit_budget() {
   local budget=${GAUNTLET_COMMIT_BUDGET_MS:-5000}
   case "$budget" in
     ''|*[!0-9]*)
-      printf 'gauntlet: GAUNTLET_COMMIT_BUDGET_MS must be a whole number of milliseconds, got [%s]\n' "$budget" >&2
+      printf 'gauntlet: GAUNTLET_COMMIT_BUDGET_MS must be a whole number of milliseconds, got [%s]\n' "$(path_spell "$budget")" >&2
       return 2
       ;;
   esac
