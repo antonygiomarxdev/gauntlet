@@ -5,6 +5,7 @@
 
 # The pre-push gate text has one source, lib/hooks.sh; the tests read it there and never paste it.
 STATUS_TEST_GATE_CI=$(hook_const HOOK_GATE_CI)
+STATUS_TEST_SHARED_STAGED=$(hook_const HOOK_SHARED_STAGED)
 STATUS_TEST_SHARED_CI=$(hook_const HOOK_SHARED_CI)
 STATUS_TEST_CMD_CI=$(hook_const GAUNTLET_CMD_CI)
 
@@ -492,14 +493,78 @@ test_doctor_print_only_hook_names_manual_line() {
   doctor_install
   run "$G" doctor
   assert_eq 1 "$STATUS" "doctor with a shared hooks dir"
-  assert_contains "$OUT" "FAIL pre-commit gate missing from $TMP/shared/pre-commit: add this line by hand as the first command, after the shebang line if there is one: if [ -x .gauntlet/bin/gauntlet ]; then .gauntlet/bin/gauntlet check --staged || exit \$?; fi"
+  assert_contains "$OUT" "FAIL pre-commit gate missing from $TMP/shared/pre-commit: add this line by hand as the first command, after the shebang line if there is one: $STATUS_TEST_SHARED_STAGED"
   assert_contains "$OUT" "FAIL pre-push gate missing from $TMP/shared/pre-push: add this line by hand as the first command, after the shebang line if there is one: $STATUS_TEST_SHARED_CI"
   assert_not_contains "$OUT" "install-hooks"
-  printf '%s\n' '.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet' > "$TMP/shared/pre-commit"
-  printf '%s\n' "$STATUS_TEST_GATE_CI" > "$TMP/shared/pre-push"
+  printf '%s\n' "$STATUS_TEST_SHARED_STAGED" > "$TMP/shared/pre-commit"
+  printf '%s\n' "$STATUS_TEST_SHARED_CI" > "$TMP/shared/pre-push"
   must chmod +x "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
   run "$G" doctor
   assert_eq 0 "$STATUS" "doctor after the gate lines are added by hand"
+}
+
+# R53, review D M6: a plain gate line in a shared hooks directory fails every commit and push of a
+# repo that has no .gauntlet/, so doctor does not accept it, and says why instead of "missing". The
+# plain line (either form) is rejected; install-hooks says to replace it by the guarded one.
+test_doctor_rejects_a_plain_gate_in_a_shared_hooks_dir_and_says_why() {
+  mkrepo
+  must mkdir "$TMP/shared"
+  must git config core.hooksPath "$TMP/shared"
+  doctor_install
+  printf '%s\n' '.gauntlet/bin/gauntlet check --staged  # gauntlet' > "$TMP/shared/pre-commit"
+  printf '%s\n' "$STATUS_TEST_GATE_CI" > "$TMP/shared/pre-push"
+  must chmod +x "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_eq 2 "$(doctor_fails)" "one FAIL per hook: $OUT"
+  assert_contains "$OUT" "FAIL pre-commit gate in $TMP/shared/pre-commit: shared hooks directory: the gate must use the guarded form; run gauntlet install-hooks to see it"
+  assert_contains "$OUT" "FAIL pre-push gate in $TMP/shared/pre-push: shared hooks directory: the gate must use the guarded form; run gauntlet install-hooks to see it"
+  printf '%s\n' '.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet' > "$TMP/shared/pre-commit"
+  run "$G" doctor
+  assert_contains "$OUT" "FAIL pre-commit gate in $TMP/shared/pre-commit: shared hooks directory: the gate must use the guarded form"
+  run "$G" install-hooks
+  assert_contains "$OUT" "ACTION NEEDED: replace the line ending in \"# gauntlet\" in $TMP/shared/pre-commit with:"$'\n'"$STATUS_TEST_SHARED_STAGED"
+  printf '%s\n' "$STATUS_TEST_SHARED_STAGED" > "$TMP/shared/pre-commit"
+  printf '%s\n' "$STATUS_TEST_SHARED_CI" > "$TMP/shared/pre-push"
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor with the guarded lines: $OUT"
+}
+
+# A script that serves both hooks of a shared hooks directory: doctor wants the guarded gates inside
+# the tests on the hook's name, says so for a plain gate there, and is satisfied by the guarded ones
+# (review D M1: the print branch of the one-script check had no test).
+test_doctor_checks_a_script_that_serves_both_hooks_of_a_shared_hooks_dir() {
+  mkrepo
+  must mkdir "$TMP/shared"
+  printf '#!/bin/sh\necho shared\n' > "$TMP/shared/pre-commit"
+  must chmod 755 "$TMP/shared/pre-commit"
+  must ln -s pre-commit "$TMP/shared/pre-push"
+  must git config core.hooksPath "$TMP/shared"
+  doctor_install
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  assert_eq 1 "$(doctor_fails)" "one FAIL for the one script, not one per hook: $OUT"
+  assert_contains "$OUT" "FAIL $TMP/shared/pre-commit and $TMP/shared/pre-push are the same file, so a gate line in it would run in both hooks: run gauntlet install-hooks and add by hand the lines it prints"
+  # shellcheck disable=SC2016 # the hook text holds ${0##*/}, which must not expand here
+  printf '#!/bin/sh\nif [ "${0##*/}" = pre-commit ]; then\n.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet\nfi\nif [ "${0##*/}" = pre-push ]; then\n%s\nfi\n' "$STATUS_TEST_GATE_CI" > "$TMP/shared/pre-commit"
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor with plain gates in a shared script: $OUT"
+  assert_contains "$OUT" "are the same file, so a gate line in it would run in both hooks"
+  # shellcheck disable=SC2016 # as above
+  printf '#!/bin/sh\nif [ "${0##*/}" = pre-commit ]; then\n%s\nfi\nif [ "${0##*/}" = pre-push ]; then\n%s\nfi\n' "$STATUS_TEST_SHARED_STAGED" "$STATUS_TEST_SHARED_CI" > "$TMP/shared/pre-commit"
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor with the guarded gates: $OUT"
+  assert_contains "$OUT" "ok pre-commit gate in $TMP/shared/pre-commit"
+  assert_contains "$OUT" "ok pre-push gate in $TMP/shared/pre-commit"
+}
+
+# An own hooks directory still wants the plain gate, and says nothing about a shared one.
+test_doctor_says_nothing_about_a_shared_hooks_dir_for_an_own_hooks_dir() {
+  mkrepo
+  doctor_install
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor: $OUT"
+  assert_not_contains "$OUT" "shared hooks directory"
 }
 
 # The guarded form that install-hooks prints for a shared hooks directory is the one doctor asks for.
@@ -508,7 +573,7 @@ test_doctor_accepts_the_guarded_form_in_a_shared_hooks_dir() {
   must mkdir "$TMP/shared"
   must git config core.hooksPath "$TMP/shared"
   doctor_install
-  printf '%s\n' 'if [ -x .gauntlet/bin/gauntlet ]; then .gauntlet/bin/gauntlet check --staged || exit $?; fi' > "$TMP/shared/pre-commit"
+  printf '%s\n' "$STATUS_TEST_SHARED_STAGED" > "$TMP/shared/pre-commit"
   printf '%s\n' "$STATUS_TEST_SHARED_CI" > "$TMP/shared/pre-push"
   must chmod +x "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
   run "$G" doctor
@@ -521,7 +586,7 @@ test_doctor_accepts_the_guarded_form_in_a_shared_hooks_dir() {
 test_doctor_does_not_accept_the_guarded_form_in_an_own_hooks_dir() {
   mkrepo
   doctor_install
-  printf '%s\n' 'if [ -x .gauntlet/bin/gauntlet ]; then .gauntlet/bin/gauntlet check --staged || exit $?; fi' > .git/hooks/pre-commit
+  printf '%s\n' "$STATUS_TEST_SHARED_STAGED" > .git/hooks/pre-commit
   must chmod +x .git/hooks/pre-commit
   run "$G" doctor
   assert_contains "$OUT" "FAIL pre-commit gate missing from .git/hooks/pre-commit"
@@ -1668,7 +1733,7 @@ test_doctor_names_the_manual_line_for_an_old_pre_push_line() {
   must mkdir "$TMP/shared"
   must git config core.hooksPath "$TMP/shared"
   doctor_install
-  printf '%s\n' '.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet' > "$TMP/shared/pre-commit"
+  printf '%s\n' "$STATUS_TEST_SHARED_STAGED" > "$TMP/shared/pre-commit"
   printf '%s\n' '.gauntlet/bin/gauntlet check --ci --pre-push || exit $?  # gauntlet' > "$TMP/shared/pre-push"
   must chmod +x "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
   run "$G" doctor
@@ -1716,7 +1781,7 @@ test_a_shared_hooks_dir_hook_with_an_older_gauntlet_line_is_told_to_replace_it()
   must mkdir "$TMP/shared"
   must git config core.hooksPath "$TMP/shared"
   doctor_install
-  printf '%s\n' '.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet' > "$TMP/shared/pre-commit"
+  printf '%s\n' "$STATUS_TEST_SHARED_STAGED" > "$TMP/shared/pre-commit"
   printf '%s\n' "$STATUS_TEST_OLD_CI" > "$TMP/shared/pre-push"
   must chmod +x "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
   run "$G" install-hooks

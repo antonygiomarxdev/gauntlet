@@ -843,6 +843,19 @@ test_the_shared_hooks_dir_advice_prints_the_paths_escaped() {
   assert_clean "$OUT" "the shared hooks directory advice"
 }
 
+test_the_shared_dir_doctor_message_prints_the_path_escaped() {
+  local shared
+  esc_hooks_repo
+  shared="$TMP/sh$(printf '\033')d"
+  must mkdir "$shared"
+  printf '%s\n' '.gauntlet/bin/gauntlet check --staged  # gauntlet' > "$shared/pre-commit"
+  chmod 755 "$shared/pre-commit"
+  must git config core.hooksPath "$shared"
+  run "$G" doctor
+  assert_contains "$OUT" 'sh\x1bd/pre-commit: shared hooks directory: the gate must use the guarded form; run gauntlet install-hooks to see it'
+  assert_clean "$OUT" "doctor with a plain gate in a shared hooks directory"
+}
+
 test_the_cannot_write_message_prints_the_path_and_the_reason_escaped() {
   if [ "$(id -u)" -eq 0 ]; then
     skip "running as root: a read-only file is still writable here"

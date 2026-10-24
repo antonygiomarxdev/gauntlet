@@ -15,7 +15,7 @@ HOOK_TEST_GATE_STAGED='.gauntlet/bin/gauntlet check --staged || exit $?  # gaunt
 HOOK_TEST_CI=$(hook_const HOOK_LINE_CI)
 HOOK_TEST_GATE_CI=$(hook_const HOOK_GATE_CI)
 HOOK_TEST_CMD_CI=$(hook_const GAUNTLET_CMD_CI)
-HOOK_TEST_SHARED_STAGED='if [ -x .gauntlet/bin/gauntlet ]; then .gauntlet/bin/gauntlet check --staged || exit $?; fi'
+HOOK_TEST_SHARED_STAGED=$(hook_const HOOK_SHARED_STAGED)
 HOOK_TEST_SHARED_CI=$(hook_const HOOK_SHARED_CI)
 # shellcheck disable=SC2016 # shell text for a hook: ${0##*/} is expanded when the hook runs
 HOOK_TEST_GUARD_STAGED='if [ "${0##*/}" = pre-commit ]; then'
@@ -976,6 +976,45 @@ test_install_stops_when_it_cannot_give_the_runner_its_exec_bit_back() {
     assert_eq 2 "$STATUS" "install with a chmod that exits $rc: $OUT"
     assert_contains "$OUT" "gauntlet: cannot make $TMP/repo/.gauntlet/bin/gauntlet executable; run chmod +x on it"
     assert_not_contains "$OUT" "updated mode"
+  done
+}
+
+# R53: the guard of a shared hooks directory is "this repo has a .gauntlet/", not "its runner can
+# run": a repo that never adopted gauntlet passes, and a repo that has adopted it and whose runner
+# is missing or cannot run FAILS, loudly, the way CI would. Real commits and pushes through hooks
+# that hold the lines install-hooks prints.
+test_the_guarded_form_of_a_shared_dir_fails_loudly_where_the_runner_cannot_run() {
+  hooks_repo "$TMP/repo"
+  run "$G" install
+  assert_eq 0 "$STATUS" "install: $OUT"
+  must git init -q --bare "$TMP/remote.git"
+  must git remote add origin "$TMP/remote.git"
+  must mkdir "$TMP/shared"
+  printf '#!/bin/sh\n%s\n' "$HOOK_TEST_SHARED_STAGED" > "$TMP/shared/pre-commit"
+  printf '#!/bin/sh\n%s\n' "$HOOK_TEST_SHARED_CI" > "$TMP/shared/pre-push"
+  chmod 755 "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
+  must git config core.hooksPath "$TMP/shared"
+  must git add -A
+  run git commit -q -m "adopt gauntlet"
+  assert_eq 0 "$STATUS" "commit with a working runner: $OUT"
+  run git push -q origin main
+  assert_eq 0 "$STATUS" "push with a working runner: $OUT"
+  local state
+  for state in "not executable" missing; do
+    case "$state" in
+      missing) must rm .gauntlet/bin/gauntlet ;;
+      *) must chmod 644 .gauntlet/bin/gauntlet ;;
+    esac
+    printf '%s\n' "$state" > b.txt
+    must git add b.txt
+    run git commit -q -m "commit with a runner that is $state"
+    if [ "$STATUS" -eq 0 ]; then fail "a commit went through a runner that is $state: $OUT"; fi
+    assert_contains "$OUT" ".gauntlet/bin/gauntlet"
+    run git commit -q --no-verify -m "commit with a runner that is $state"
+    assert_eq 0 "$STATUS" "commit --no-verify: $OUT"
+    run git push -q origin main
+    if [ "$STATUS" -eq 0 ]; then fail "a push went through a runner that is $state: $OUT"; fi
+    assert_contains "$OUT" ".gauntlet/bin/gauntlet"
   done
 }
 
@@ -1955,7 +1994,8 @@ test_the_pre_push_line_reads_nothing_from_a_terminal_and_keeps_it() {
 # guarded form for a shared hooks directory is that line inside the test for the runner.
 test_every_form_of_the_pre_push_line_is_one_line() {
   assert_eq "$HOOK_TEST_CI" "$HOOK_TEST_GATE_CI" "plain and gate form"
-  assert_eq "if [ -x .gauntlet/bin/gauntlet ]; then ${HOOK_TEST_CI%  # gauntlet}; fi" "$HOOK_TEST_SHARED_CI" "guarded form"
+  assert_eq "if [ -d .gauntlet ]; then ${HOOK_TEST_CI%  # gauntlet}; fi" "$HOOK_TEST_SHARED_CI" "guarded form"
+  assert_eq 'if [ -d .gauntlet ]; then .gauntlet/bin/gauntlet check --staged || exit $?; fi' "$HOOK_TEST_SHARED_STAGED" "guarded pre-commit form"
   case "$HOOK_TEST_CI" in
     *"$HOOK_TEST_CMD_CI"*"  # gauntlet") ;;
     *) fail "the line does not run the gate command and end in the marker: $HOOK_TEST_CI" ;;
@@ -2751,6 +2791,50 @@ test_a_shared_script_missing_one_guard_still_gets_the_advice() {
   printf '#!/bin/sh\n%s\n%s\n%s\nfi\n' "$HOOK_TEST_GATE_STAGED" "$HOOK_TEST_GUARD_CI" "$HOOK_TEST_GATE_CI" > .git/hooks/pre-commit
   run "$G" install-hooks
   assert_contains "$OUT" "ACTION NEEDED"
+}
+
+# Each gate is under the test for its own hook, not only somewhere in the file: two gates under one
+# guard, a gate outside any guard, and the two gates under each other's guards are none of them done,
+# and the advice is printed again. A line of the project's own between the guard and its gate is fine.
+test_a_shared_script_is_done_only_when_each_gate_is_under_its_own_guard() {
+  one_script_repo symlink
+  local body
+  # shellcheck disable=SC2016 # no expansion wanted in the labels
+  for body in \
+    "$HOOK_TEST_GUARD_STAGED"$'\n'"$HOOK_TEST_GATE_STAGED"$'\n'"$HOOK_TEST_GATE_CI"$'\nfi\n'"$HOOK_TEST_GUARD_CI"$'\nfi' \
+    "$HOOK_TEST_GUARD_STAGED"$'\n'"$HOOK_TEST_GATE_STAGED"$'\nfi\n'"$HOOK_TEST_GATE_CI"$'\n'"$HOOK_TEST_GUARD_CI"$'\nfi' \
+    "$HOOK_TEST_GATE_STAGED"$'\n'"$HOOK_TEST_GUARD_STAGED"$'\nfi\n'"$HOOK_TEST_GUARD_CI"$'\n'"$HOOK_TEST_GATE_CI"$'\nfi' \
+    "$HOOK_TEST_GUARD_STAGED"$'\n'"$HOOK_TEST_GATE_CI"$'\nfi\n'"$HOOK_TEST_GUARD_CI"$'\n'"$HOOK_TEST_GATE_STAGED"$'\nfi' \
+    "$HOOK_TEST_GUARD_STAGED"$'\n'"$HOOK_TEST_GATE_STAGED"$'\nfi\n'"$HOOK_TEST_GUARD_CI"$'\nfi\n'"$HOOK_TEST_GATE_CI"; do
+    printf '#!/bin/sh\n%s\necho shared\n' "$body" > .git/hooks/pre-commit
+    run "$G" install-hooks
+    assert_contains "$OUT" "ACTION NEEDED" "a script that is not done: $body"
+    assert_not_contains "$OUT" "already present"
+  done
+  printf '#!/bin/sh\n%s\necho mine\n%s\nfi\n%s\necho mine\n%s\nfi\necho shared\n' "$HOOK_TEST_GUARD_STAGED" "$HOOK_TEST_GATE_STAGED" "$HOOK_TEST_GUARD_CI" "$HOOK_TEST_GATE_CI" > .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_contains "$OUT" "already present in .git/hooks/pre-commit"
+  assert_not_contains "$OUT" "ACTION NEEDED"
+}
+
+# In a hooks directory shared with other repositories the gates inside the tests on the hook's name
+# are the guarded forms: a plain gate would fail in a repo that has no .gauntlet/.
+test_a_shared_dir_script_is_done_only_with_the_guarded_gates() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must mkdir "$TMP/shared"
+  printf '#!/bin/sh\necho shared\n' > "$TMP/shared/pre-commit"
+  chmod 755 "$TMP/shared/pre-commit"
+  must ln -s pre-commit "$TMP/shared/pre-push"
+  must git config core.hooksPath "$TMP/shared"
+  printf '#!/bin/sh\n%s\n%s\nfi\n%s\n%s\nfi\n' "$HOOK_TEST_GUARD_STAGED" "$HOOK_TEST_GATE_STAGED" "$HOOK_TEST_GUARD_CI" "$HOOK_TEST_GATE_CI" > "$TMP/shared/pre-commit"
+  run "$G" install-hooks
+  assert_contains "$OUT" "ACTION NEEDED"
+  assert_not_contains "$OUT" "already present"
+  printf '#!/bin/sh\n%s\n%s\nfi\n%s\n%s\nfi\n' "$HOOK_TEST_GUARD_STAGED" "$HOOK_TEST_SHARED_STAGED" "$HOOK_TEST_GUARD_CI" "$HOOK_TEST_SHARED_CI" > "$TMP/shared/pre-commit"
+  run "$G" install-hooks
+  assert_contains "$OUT" "already present in $TMP/shared/pre-commit"
+  assert_not_contains "$OUT" "ACTION NEEDED"
 }
 
 # Git ignores a hook without the exec bit, so the warning follows every answer install-hooks gives

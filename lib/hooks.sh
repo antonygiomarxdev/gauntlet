@@ -50,12 +50,16 @@ HOOK_GUARD_STAGED='if [ "${0##*/}" = pre-commit ]; then'
 HOOK_GUARD_CI='if [ "${0##*/}" = pre-push ]; then'
 
 # The form for a hooks directory shared with other repositories (core.hooksPath outside this
-# repo): the same gate, but only where the vendored runner exists, so a repository without
-# gauntlet is not blocked by it. The gate is the first command of the body, so git's stdin
-# reaches the pre-push gate. install-hooks prints it, doctor accepts it. Built from the command
-# strings above, so the gate text has one source.
-HOOK_SHARED_STAGED="if [ -x .gauntlet/bin/gauntlet ]; then $GAUNTLET_CMD_STAGED || exit \$?; fi"
-HOOK_SHARED_CI="if [ -x .gauntlet/bin/gauntlet ]; then $HOOK_BODY_CI; fi"
+# repo): the same gate, but only in a repository that has a .gauntlet/ directory, so one that never
+# adopted gauntlet is not blocked by it (R53). The guard is the directory, not the runner: where the
+# repository has adopted gauntlet and its runner is missing or cannot run, sh fails the command (126
+# or 127), the commit or push is blocked, and the error says which file, as CI's would. A guard on
+# an executable runner would skip the gate there in silence while CI fails. The gate is the first
+# command of the body, so git's stdin reaches the pre-push gate. install-hooks prints it, doctor
+# accepts it, and in a shared directory accepts nothing else. Built from the command strings above,
+# so the gate text has one source.
+HOOK_SHARED_STAGED="if [ -d .gauntlet ]; then $GAUNTLET_CMD_STAGED || exit \$?; fi"
+HOOK_SHARED_CI="if [ -d .gauntlet ]; then $HOOK_BODY_CI; fi"
 
 # shellcheck disable=SC2016 # the awk program reads its record; it is not shell text to expand
 # marked(line, needle): whether a line of a hook is gauntlet's (R47): it ends in the marker (a CR
@@ -508,14 +512,42 @@ add_hook_pair() {
   add_hook_line "$1/pre-push" "$HOOK_LINE_CI" "$HOOK_GATE_CI" "$HOOK_NEEDLE_CI"
 }
 
-# hooks_one_script_done <file>: succeed when <file>, which serves both hooks, holds both gate
-# lines and both tests on the hook's name (HOOK_GUARD_*), as whole lines. Presence, not meaning:
-# like every check of a hook, it cannot tell what the lines around them do.
+# hooks_one_script_done <file> [shared]: succeed when <file>, which serves both hooks, holds the gate
+# of each hook inside the test on that hook's name (HOOK_GUARD_*), as a whole line: the staged gate
+# between HOOK_GUARD_STAGED and the next line that is just "fi", the push gate between HOOK_GUARD_CI
+# and its "fi". Four lines somewhere in the file are not enough: both gates under one guard, a gate
+# outside its guard, or each under the other's, run the wrong gate in a hook. With "shared" (a hooks
+# directory other repositories use) the gates are the guarded forms only. Meaning, not only
+# presence, but still only what the lines say: a block with an "fi" of its own in it ends the guard
+# early and is not recognised, and nothing is known of what the lines around the block do.
 hooks_one_script_done() {
-  hook_has_gate "$1" "$GAUNTLET_CMD_STAGED" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED" "$HOOK_SHARED_STAGED" \
-    && hook_has_gate "$1" "$HOOK_NEEDLE_CI" "$HOOK_LINE_CI" "$HOOK_GATE_CI" "$HOOK_SHARED_CI" \
-    && grep -Fxq -- "$HOOK_GUARD_STAGED" "$1" 2> /dev/null \
-    && grep -Fxq -- "$HOOK_GUARD_CI" "$1" 2> /dev/null
+  local staged ci
+  if [ "${2:-}" = shared ]; then
+    staged=$HOOK_SHARED_STAGED
+    ci=$HOOK_SHARED_CI
+  else
+    staged=$HOOK_LINE_STAGED$'\n'$HOOK_GATE_STAGED$'\n'$HOOK_SHARED_STAGED
+    ci=$HOOK_LINE_CI$'\n'$HOOK_GATE_CI$'\n'$HOOK_SHARED_CI
+  fi
+  [ -f "$1" ] || return 1
+  [ "$(GL_GUARD_STAGED=$HOOK_GUARD_STAGED GL_GUARD_CI=$HOOK_GUARD_CI GL_STAGED=$staged GL_CI=$ci LC_ALL=C awk '
+    BEGIN {
+      ns = split(ENVIRON["GL_STAGED"], S, "\n")
+      nc = split(ENVIRON["GL_CI"], C, "\n")
+    }
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      t = line
+      gsub(/^[ \t]+|[ \t]+$/, "", t)
+      if (line == ENVIRON["GL_GUARD_STAGED"]) { open = "s"; next }
+      if (line == ENVIRON["GL_GUARD_CI"]) { open = "c"; next }
+      if (t == "fi") { open = ""; next }
+      if (open == "s") for (i = 1; i <= ns; i++) if (line == S[i]) s_ok = 1
+      if (open == "c") for (i = 1; i <= nc; i++) if (line == C[i]) c_ok = 1
+    }
+    END { print (s_ok && c_ok) ? "done" : "no" }
+  ' "$1" 2> /dev/null)" = "done" ]
 }
 
 # hooks_one_script <commit-hook> <push-hook> [shared]: the two paths are one file (same device and
@@ -523,20 +555,26 @@ hooks_one_script_done() {
 # for both hooks. Say why and print the lines to add by hand; or say they are there. With "shared"
 # the lines are the guarded forms, for a hooks directory other repositories use.
 hooks_one_script() {
-  local shown a b staged=$HOOK_GATE_STAGED ci=$HOOK_GATE_CI
+  local shown a b staged=$HOOK_GATE_STAGED ci=$HOOK_GATE_CI state
   if [ "${3:-}" = shared ]; then
     staged=$HOOK_SHARED_STAGED
     ci=$HOOK_SHARED_CI
   fi
   shown=$(path_spell "$(display_path "$1")")
-  if hooks_one_script_done "$1"; then
+  if hooks_one_script_done "$1" "${3:-}"; then
     printf 'already present in %s\n' "$shown"
     warn_if_not_executable "$1"
     return 0
   fi
   a=$shown
   b=$(path_spell "$(display_path "$2")")
-  if [ "$(hook_gate_state "$1" "$HOOK_NEEDLE_CI" "$HOOK_GATE_CI" "$HOOK_SHARED_CI")" = old ]; then
+  # In a shared directory the guarded form is the only gate, so a plain one of ours is one to replace.
+  if [ "${3:-}" = shared ]; then
+    state=$(hook_gate_state "$1" "$HOOK_NEEDLE_CI" "$HOOK_SHARED_CI")
+  else
+    state=$(hook_gate_state "$1" "$HOOK_NEEDLE_CI" "$HOOK_GATE_CI" "$HOOK_SHARED_CI")
+  fi
+  if [ "$state" = old ]; then
     printf 'ACTION NEEDED: %s and %s are the same file, so a gate line in it would run in both hooks. It is not edited. Its pre-push line is an older one: %s:\n%s\n' "$a" "$b" "$(hook_replace_words "$shown" 'check --ci')" "$ci"
     warn_if_not_executable "$1"
     return 0
@@ -555,8 +593,9 @@ print_hook_pair() {
     hooks_one_script "$1/pre-commit" "$1/pre-push" shared
     return 0
   fi
-  print_only "$1/pre-commit" "$HOOK_SHARED_STAGED" "$(hook_gate_state "$1/pre-commit" "$GAUNTLET_CMD_STAGED" "$HOOK_GATE_STAGED" "$HOOK_SHARED_STAGED")"
-  print_only "$1/pre-push" "$HOOK_SHARED_CI" "$(hook_gate_state "$1/pre-push" "$HOOK_NEEDLE_CI" "$HOOK_GATE_CI" "$HOOK_SHARED_CI")"
+  # Only the guarded form is the gate here; a plain gate line of ours is one to replace.
+  print_only "$1/pre-commit" "$HOOK_SHARED_STAGED" "$(hook_gate_state "$1/pre-commit" "$GAUNTLET_CMD_STAGED" "$HOOK_SHARED_STAGED")"
+  print_only "$1/pre-push" "$HOOK_SHARED_CI" "$(hook_gate_state "$1/pre-push" "$HOOK_NEEDLE_CI" "$HOOK_SHARED_CI")"
 }
 
 # hook_reason <text>: the cause in the last line of a tool's or the shell's error, which reads

@@ -482,16 +482,17 @@ doctor_hooks() {
         doctor_one_script "$dir/pre-commit" "$dir/pre-push" "$execcheck"
         return 0
       fi
-      doctor_hook_file pre-commit "$dir/pre-commit" "$kind" "$execcheck" "$HOOK_GATE_STAGED" "$GAUNTLET_CMD_STAGED" "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED"
-      doctor_hook_file pre-push "$dir/pre-push" "$kind" "$execcheck" "$HOOK_GATE_CI" "$HOOK_NEEDLE_CI" "$HOOK_LINE_CI" "$HOOK_GATE_CI"
+      doctor_hook_file pre-commit "$dir/pre-commit" "$kind" "$execcheck" "$HOOK_GATE_STAGED" "$GAUNTLET_CMD_STAGED" '' "$HOOK_LINE_STAGED" "$HOOK_GATE_STAGED"
+      doctor_hook_file pre-push "$dir/pre-push" "$kind" "$execcheck" "$HOOK_GATE_CI" "$HOOK_NEEDLE_CI" '' "$HOOK_LINE_CI" "$HOOK_GATE_CI"
       ;;
     print)
-      # A shared hooks directory: the guarded form is the one to add, and the gate form is accepted.
+      # A shared hooks directory: the guarded form is the only gate (R53). A plain gate line of ours
+      # is rejected, and the FAIL says why.
       if [ "$dir/pre-commit" -ef "$dir/pre-push" ]; then
         doctor_one_script "$dir/pre-commit" "$dir/pre-push" "$execcheck" "$HOOK_SHARED_CI"
         return 0
       fi
-      doctor_hook_file pre-commit "$dir/pre-commit" "$kind" "$execcheck" "$HOOK_SHARED_STAGED" "$GAUNTLET_CMD_STAGED" "$HOOK_GATE_STAGED" "$HOOK_SHARED_STAGED"
+      doctor_hook_file pre-commit "$dir/pre-commit" "$kind" "$execcheck" "$HOOK_SHARED_STAGED" "$GAUNTLET_CMD_STAGED" "$HOOK_LINE_STAGED"$'\n'"$HOOK_GATE_STAGED" "$HOOK_SHARED_STAGED"
       doctor_hook_file pre-push "$dir/pre-push" "$kind" "$execcheck" "$HOOK_SHARED_CI" "$HOOK_NEEDLE_CI" "$HOOK_GATE_CI" "$HOOK_SHARED_CI"
       ;;
   esac
@@ -503,31 +504,39 @@ doctor_hooks() {
 # inside the tests on the hook's name; the FAIL says what install-hooks says. <push-line> is the
 # line install-hooks prints for the pre-push test (the guarded form in a shared hooks directory).
 doctor_one_script() {
-  local shown
+  local shown state
   shown=$(display_path "$1")
   if [ "$3" -eq 1 ] && [ -f "$1" ] && [ ! -x "$1" ]; then
     doctor_fail "hook $shown is not executable: chmod +x $shown"
   fi
-  if hooks_one_script_done "$1"; then
+  # In a shared hooks directory (a push line is given) the guarded form is the only gate.
+  if [ -n "${4:-}" ]; then
+    state=$(hook_gate_state "$1" "$HOOK_NEEDLE_CI" "$4")
+  else
+    state=$(hook_gate_state "$1" "$HOOK_NEEDLE_CI" "$HOOK_GATE_CI" "$HOOK_SHARED_CI")
+  fi
+  if hooks_one_script_done "$1" ${4:+shared}; then
     doctor_ok "pre-commit gate in $shown"
     doctor_ok "pre-push gate in $shown"
-  elif [ "$(hook_gate_state "$1" "$HOOK_NEEDLE_CI" "$HOOK_GATE_CI" "$HOOK_SHARED_CI")" = old ]; then
+  elif [ "$state" = old ]; then
     doctor_fail "$shown and $(display_path "$2") are the same file, so a gate line in it would run in both hooks: $(hook_replace_words "$shown" 'check --ci'): ${4:-$HOOK_GATE_CI}"
   else
     doctor_fail "$shown and $(display_path "$2") are the same file, so a gate line in it would run in both hooks: run gauntlet install-hooks and add by hand the lines it prints, as the first commands of the script"
   fi
 }
 
-# doctor_hook_file <stage> <file> <kind> <execcheck> <advice> <needle> <form>...: <file> must hold a
-# gate line of its stage: one of the <form>s, whole line. When execcheck is 1 the hook must be
+# doctor_hook_file <stage> <file> <kind> <execcheck> <advice> <needle> <plain> <form>...: <file> must hold a
+# gate line of its stage: one of the <form>s, whole line. <plain> is the forms (one per line) that a
+# shared hooks directory rejects: the plain gate, which fails in a repository without .gauntlet/;
+# empty for a hooks directory of this project's own. When execcheck is 1 the hook must be
 # executable, since git ignores it otherwise. A hook install-hooks cannot edit, and a hooks dir it
 # only prints for (kind print), get the line to add by hand, <advice>: running install-hooks would
 # print the same thing. A line that is gauntlet's (marked, running the <needle> gate) but is not
 # one of the forms is an older line (R47): the verdict is the same whatever it lacks, and the
 # message says it differs from the current one.
 doctor_hook_file() {
-  local stage=$1 file=$2 kind=$3 execcheck=$4 advice=$5 needle=$6 shown manual=0 state
-  shift 6
+  local stage=$1 file=$2 kind=$3 execcheck=$4 advice=$5 needle=$6 plain=$7 shown manual=0 state
+  shift 7
   shown=$(display_path "$file")
   if [ "$execcheck" -eq 1 ] && [ -f "$file" ] && [ ! -x "$file" ]; then
     doctor_fail "$stage hook $shown is not executable: chmod +x $shown"
@@ -535,6 +544,10 @@ doctor_hook_file() {
   state=$(hook_gate_state "$file" "$needle" "$@")
   if [ "$state" = present ]; then
     doctor_ok "$stage gate in $shown"
+    return 0
+  fi
+  if [ -n "$plain" ] && [ "$(hook_gate_state "$file" "$needle" "$plain")" = present ]; then
+    doctor_fail "$stage gate in $shown: shared hooks directory: the gate must use the guarded form; run gauntlet install-hooks to see it"
     return 0
   fi
   if [ "$kind" = print ]; then
