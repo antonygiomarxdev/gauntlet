@@ -169,7 +169,7 @@ slow: todo 51 ms (consider stage: push)
 4. **Hooks.** Each hook must hold exactly one gauntlet line, the current form of its stage, or the lefthook or prek config must hold both commands.
    - `FAIL <stage> gate missing from <file>: run gauntlet install-hooks`, or `add this line by hand as the first command …` for a hook that `install-hooks` would only print.
    - `FAIL <stage> gate in <file> is an older gauntlet line (it differs from the current one): run gauntlet install-hooks`, or `replace the line ending in "# gauntlet" in <file> with: <line>` when it would only print.
-   - `FAIL more than one gauntlet line in <file>; run gauntlet install-hooks`
+   - `FAIL <file> has N lines ending in "# gauntlet" (lines a, b, ...); keep one, the current form, and remove the others`
    - `FAIL <stage> hook <file> is not executable: chmod +x <file>`
    - `FAIL gate missing from <config>: run gauntlet install-hooks and add the snippet it prints`
    - `FAIL lefthook pre-push gate in <file> has no use_stdin: true, so it judges the checked-out branch whatever git pushes: add use_stdin: true`

@@ -171,24 +171,26 @@ The pre-push hook gets the buffering line shown [above](#the-hook-line) in the s
 
 It runs before anything your hook does, so no early `exit`, `exec`, line continuation or failing last command can skip it. If the gate passes, your hook runs unchanged and keeps its own exit status. The gate runs first, so your own steps run after it. A formatter in lint-staged, for example, runs after the gate has checked the staged files as they were. A created hook gets the plain form, `.gauntlet/bin/gauntlet check --staged  # gauntlet`.
 
-A line that ends in `# gauntlet` and runs the gate of its stage is gauntlet's, and a hook has exactly one. `install-hooks` says what it did:
+A line that ends in `# gauntlet` and runs the gate of its stage is gauntlet's, and a hook should have exactly one. `install-hooks` never deletes a line from a hook. It says what it did:
 - `already present in <file>`: the one line is the current form;
-- `updated gauntlet line in <file>`: a marked line that differed from the current form was replaced where it stood;
-- `removed N old gauntlet line(s) from <file>`: the other marked lines were deleted;
+- `updated gauntlet line in <file>`: the hook had one marked line that differed from the current form, and it was replaced where it stood;
 - `added gauntlet line to <file>` and `created <file>`.
+
+A hook with two or more marked lines is not edited, because deleting a line can break the hook around it (the only command of an `if`, a function body) and can delete a command of yours that happens to end in `# gauntlet`. `install-hooks` prints what it found and the current line, and you keep one line, in the current form, and remove the others by hand (see below).
 
 `install-hooks` overwrites a marked line you customised, for example one with `--base origin/develop` added. Put the base in `base=` of `.gauntlet/config` instead. A commented-out line, in a hook or in a hook manager's config, counts for nothing.
 
 ### When install-hooks only prints
 
-`install-hooks` prints the line instead of editing a hook it cannot change safely. You add it by hand as the first command. Those cases are:
+`install-hooks` prints the line instead of editing a hook it cannot change safely, and leaves the edit to you: the gate line goes in as the first command. It exits 0 in these cases; `doctor` is what fails until the hook is right. Those cases are:
 - a shebang that is not a shell (`sh`, `bash`, `dash`, `zsh`, `ksh` or `ash`, directly or through `env`);
 - CRLF line endings, or a NUL byte in the file;
 - a dangling symlink, or a symlink to a file outside the repo;
 - a shared hooks directory outside the repo and its git dir;
-- one script that serves both hooks.
+- one script that serves both hooks;
+- a hook with two or more lines ending in `# gauntlet`.
 
-The words say which edit is needed. `ACTION NEEDED: add to <file>:` when the hook has no gauntlet line; `ACTION NEEDED: replace the line ending in "# gauntlet" in <file> with:` when it has one that differs from the current form; `ACTION NEEDED: leave exactly one gauntlet line in <file>, the line below, and delete every other line ending in "# gauntlet":` when it has several. In a shared hooks directory the advice is printed on every run, even for a line that is already there, and `doctor` says whether it is. A hook that cannot be written at all (permissions) is an error, `gauntlet: cannot write <path>: <reason>; fix the permissions or add the line by hand`, and the exact lines follow on stderr, led by a shebang when the file is new.
+The words say which edit is needed. `ACTION NEEDED: add to <file>:` when the hook has no gauntlet line; `ACTION NEEDED: replace the line ending in "# gauntlet" in <file> with:` when it has one that differs from the current form; `gauntlet: <file> has N lines ending in "# gauntlet" (lines a, b, ...); keep one, the current form, and remove the others` when it has several, with the current line after it. In a shared hooks directory the advice is printed on every run, even for a line that is already there, and `doctor` says whether it is. A hook that cannot be written at all (permissions) is an error, `gauntlet: cannot write <path>: <reason>; fix the permissions or add the line by hand`, and the exact lines follow on stderr, led by a shebang when the file is new.
 
 In a shared hooks directory the guarded line is the only form `doctor` accepts. Where there is no `.gauntlet/` directory, it does nothing, so other repos sharing the directory are not blocked. Where `.gauntlet/` exists and `.gauntlet/bin/gauntlet` is missing or not executable, it fails the commit or push loudly, as CI would.
 
