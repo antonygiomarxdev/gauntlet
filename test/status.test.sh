@@ -424,6 +424,45 @@ test_doctor_lefthook_needs_snippet() {
   assert_contains "$OUT" "ok gate in lefthook.yml"
 }
 
+# A lefthook pre-push command gets no stdin unless it says use_stdin: true, and then the gate sees
+# no ref lines and judges the checked-out branch whatever git pushes. doctor said ok to that.
+test_doctor_fails_a_lefthook_pre_push_gate_without_use_stdin() {
+  mkrepo
+  printf 'pre-commit:\n  commands:\n    gauntlet:\n      run: .gauntlet/bin/gauntlet check --staged\npre-push:\n  commands:\n    gauntlet:\n      run: %s\n' "$STATUS_TEST_CMD_CI" > lefthook.yml
+  doctor_install
+  doctor_one_fail "FAIL lefthook pre-push gate in lefthook.yml has no use_stdin: true, so it judges the checked-out branch whatever git pushes: add use_stdin: true"
+  printf '      use_stdin: true\n' >> lefthook.yml
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor with use_stdin: true: $OUT"
+  assert_contains "$OUT" "ok gate in lefthook.yml"
+}
+
+# The switch is spelled the way each lefthook config format spells it; prek has no such switch.
+test_doctor_reads_use_stdin_in_every_lefthook_format_and_asks_none_of_prek() {
+  mkrepo
+  doctor_install
+  local cmds="run = \"$STATUS_TEST_CMD_CI\" # .gauntlet/bin/gauntlet check --staged"
+  printf '%s\n' "$cmds" > lefthook.toml
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "toml without use_stdin: $OUT"
+  assert_contains "$OUT" "FAIL lefthook pre-push gate in lefthook.toml has no use_stdin: true"
+  printf '%s\nuse_stdin = true\n' "$cmds" > lefthook.toml
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "toml with use_stdin = true: $OUT"
+  rm lefthook.toml
+  printf '{"run": "%s", "x": ".gauntlet/bin/gauntlet check --staged", "use_stdin": true}\n' "$STATUS_TEST_CMD_CI" > .lefthook.json
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "json with \"use_stdin\": true: $OUT"
+  printf '{"run": "%s", "x": ".gauntlet/bin/gauntlet check --staged", "use_stdin": false}\n' "$STATUS_TEST_CMD_CI" > .lefthook.json
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "json with use_stdin false: $OUT"
+  rm .lefthook.json
+  printf -- '- repo: local\n  hooks:\n    - id: gauntlet\n      entry: .gauntlet/bin/gauntlet check --staged\n    - id: gauntlet-ci\n      entry: %s\n' "$STATUS_TEST_CMD_CI" > .pre-commit-config.yaml
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "prek config needs no use_stdin: $OUT"
+  assert_contains "$OUT" "ok gate in .pre-commit-config.yaml"
+}
+
 test_doctor_missing_runner() {
   mkrepo
   doctor_install

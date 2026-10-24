@@ -479,6 +479,44 @@ test_json_and_toml_configs_get_generic_snippet() {
   if [ -e .git/hooks/pre-commit ]; then fail "hooks were written although a config owns them"; fi
 }
 
+# install-hooks agrees with doctor: a lefthook config that runs the gate without use_stdin: true is
+# not "already configured". It is told what to add, and left alone.
+test_install_hooks_asks_for_use_stdin_when_lefthook_runs_the_gate_without_it() {
+  hooks_repo "$TMP/repo"
+  cat > lefthook.yml <<YAML
+pre-commit:
+  commands:
+    gauntlet:
+      run: .gauntlet/bin/gauntlet check --staged
+pre-push:
+  commands:
+    gauntlet:
+      run: $HOOK_TEST_CMD_CI
+YAML
+  local config
+  config=$(hooks_sum lefthook.yml)
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks"
+  assert_contains "$OUT" "ACTION NEEDED: add use_stdin: true to the pre-push gauntlet command in lefthook.yml"
+  assert_not_contains "$OUT" "already configured"
+  assert_eq "$config" "$(hooks_sum lefthook.yml)" "lefthook.yml is unchanged"
+  printf '      use_stdin: true\n' >> lefthook.yml
+  run "$G" install-hooks
+  assert_contains "$OUT" "already configured in lefthook.yml"
+}
+
+# The generic snippet is what lefthook.toml and lefthook.json get; it names the switch there.
+test_the_generic_snippet_for_lefthook_names_use_stdin_and_prek_does_not() {
+  hooks_repo "$TMP/repo"
+  printf '{}\n' > lefthook.json
+  printf 'x = 1\n' > prek.toml
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks"
+  assert_contains "$OUT" "ACTION NEEDED: add to lefthook.json:"
+  assert_contains "$OUT" "lefthook: also set use_stdin to true on the pre-push command"
+  assert_eq 1 "$(printf '%s\n' "$OUT" | grep -c 'use_stdin to true')" "only the lefthook snippet names use_stdin"
+}
+
 test_hookspath_never_set() {
   hooks_repo "$TMP/plain"
   local config

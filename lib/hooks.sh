@@ -695,27 +695,55 @@ config_files() {
 }
 
 # print_config_snippets: for each config_files entry, print the lines to add, or say
-# it is already configured.
+# it is already configured. What it says follows config_state, which doctor reads too.
 print_config_snippets() {
   local f
   config_files | while IFS= read -r f; do
-    if config_has_gate "$f"; then
-      printf 'already configured in %s\n' "$f"
-      continue
-    fi
-    printf 'ACTION NEEDED: add to %s:\n' "$f"
+    case "$(config_state "$f")" in
+      ok)
+        printf 'already configured in %s\n' "$(path_spell "$f")"
+        continue
+        ;;
+      stdin)
+        printf 'ACTION NEEDED: add use_stdin: true to the pre-push gauntlet command in %s, so that git'"'"'s ref lines reach it\n' "$(path_spell "$f")"
+        continue
+        ;;
+    esac
+    printf 'ACTION NEEDED: add to %s:\n' "$(path_spell "$f")"
     case "$f" in
       .pre-commit-config.*) prek_snippet ;;
       *.yml|*.yaml) lefthook_snippet ;;
-      *) generic_snippet ;;
+      *) generic_snippet "$f" ;;
     esac
   done
 }
 
-# config_has_gate <file>: succeed when <file> contains both gate command strings.
-# doctor reuses this to tell a configured hook manager from an unconfigured one.
-config_has_gate() {
-  grep -Fq -- "$GAUNTLET_CMD_STAGED" "$1" 2>/dev/null && grep -Fq -- "$GAUNTLET_CMD_CI" "$1" 2>/dev/null
+# config_is_lefthook <file>: whether <file> is a lefthook config (lefthook.*, .lefthook.*,
+# .config/lefthook.*), the one hook manager that passes git's stdin to a command only when it is
+# told to (use_stdin).
+config_is_lefthook() {
+  case "${1##*/}" in
+    lefthook.*|.lefthook.*) return 0 ;;
+  esac
+  return 1
+}
+
+# config_state <file>: how a hook-manager config stands with the gate, on stdout: "ok" when it has
+# both gate command strings (and, for lefthook, use_stdin set to true, in the way YAML, TOML or
+# JSON spell it), "stdin" when it has both but lefthook's pre-push command would get no stdin, so
+# the gate would judge the checked-out branch whatever git pushes, else "missing". The check is on
+# the file, not on the command: a use_stdin on another command satisfies it (a ceiling). doctor and
+# install-hooks both ask this, so a config is done or not by one rule.
+config_state() {
+  if grep -Fq -- "$GAUNTLET_CMD_STAGED" "$1" 2> /dev/null && grep -Fq -- "$GAUNTLET_CMD_CI" "$1" 2> /dev/null; then
+    if config_is_lefthook "$1" && ! grep -Eq 'use_stdin"?[[:space:]]*[:=][[:space:]]*true' "$1" 2> /dev/null; then
+      printf 'stdin\n'
+    else
+      printf 'ok\n'
+    fi
+  else
+    printf 'missing\n'
+  fi
 }
 
 # lefthook_snippet: the lefthook lines for both hooks.
@@ -754,9 +782,13 @@ prek_snippet() {
 EOF
 }
 
-# generic_snippet: the two commands, with the hook each one belongs to.
+# generic_snippet <file>: the two commands, with the hook each one belongs to; for a lefthook
+# config, the switch that makes git's stdin reach the pre-push command.
 generic_snippet() {
   printf '  pre-commit: %s\n  pre-push: %s\n' "$GAUNTLET_CMD_STAGED" "$GAUNTLET_CMD_CI"
+  if config_is_lefthook "$1"; then
+    printf '  lefthook: also set use_stdin to true on the pre-push command, so that git'"'"'s ref lines reach it\n'
+  fi
 }
 
 # abs_path <path>: the absolute, normalised, physical form of <path>. A relative path

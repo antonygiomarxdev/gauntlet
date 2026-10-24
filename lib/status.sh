@@ -464,11 +464,11 @@ doctor_hooks() {
     configs)
       config_files > "$scratch/configs" || return 2
       while IFS= read -r f; do
-        if config_has_gate "$f"; then
-          doctor_ok "gate in $f"
-        else
-          doctor_fail "gate missing from $f: run gauntlet install-hooks and add the snippet it prints"
-        fi
+        case "$(config_state "$f")" in
+          ok) doctor_ok "gate in $f" ;;
+          stdin) doctor_fail "lefthook pre-push gate in $f has no use_stdin: true, so it judges the checked-out branch whatever git pushes: add use_stdin: true" ;;
+          *) doctor_fail "gate missing from $f: run gauntlet install-hooks and add the snippet it prints" ;;
+        esac
       done < "$scratch/configs"
       ;;
     husky|husky-v9|dir)
