@@ -315,7 +315,7 @@ install_source() {
 # core.fileMode=false, can check it out like that; the advice "run gauntlet install" would not
 # help, since install from the vendored copy stops at the same refusal.
 runner_not_executable_words() {
-  printf 'runner at %s is not executable; run chmod +x %s\n' "$1" "$1"
+  printf 'runner at %s is not executable; run chmod +x %s\n' "$1" "$(sh_quote "$1")"
 }
 
 # repair_runner_mode: give a vendored runner without the exec bit its mode back. The index keeps

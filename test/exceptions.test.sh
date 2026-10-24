@@ -1413,7 +1413,7 @@ test_a_base_that_selects_the_branch_itself_is_loosening_in_the_local_run_too() {
   run "$G" check --ci
   assert_eq 1 "$STATUS" "local: $OUT"
   assert_contains "$OUT" "  @config  base (unset) → HEAD"
-  assert_contains "$OUT" 'gauntlet: base= is also judged against main (the base without it); add a row with gauntlet loosen @config "base (unset) → HEAD" "<reason>", or run gauntlet base HEAD on this branch'
+  assert_contains "$OUT" 'gauntlet: base= is also judged against main (the base without it); add a row with gauntlet loosen @config '"'base (unset) → HEAD'"' "<reason>", or run gauntlet base '"'HEAD'"' on this branch'
   local_lines=$(printf '%s\n' "$OUT" | grep '^  @config')
   exc_gate
   assert_eq 1 "$STATUS" "CI: $OUT"
@@ -1461,17 +1461,18 @@ test_a_base_the_main_branch_has_too_is_no_loosening() {
 # develop. The run cannot know the target CI will name, so base= is also judged against the
 # default base (R42); the FAIL says how to clear it.
 
-# exc_gitflow [row]: main with the todo rule and a baseline; develop sets base=develop and, with
-# an argument, files a `loosen @config` row for it. Leaves develop checked out.
+# exc_gitflow [row]: main with the todo rule and a baseline; develop (or $EXC_GITFLOW_BRANCH) sets
+# base= to itself and, with an argument, files a `loosen @config` row for it. Leaves it checked out.
 exc_gitflow() {
+  local integration=${EXC_GITFLOW_BRANCH:-develop}
   mkrepo
   printf 'ok\n' > a.ts
   rule todo paths='**/*.ts'
   cases_of todo 'TODO x'
   exc_rebase
   exc_commit main
-  must git checkout -q -b develop
-  printf 'base=develop\n' > .gauntlet/config
+  must git checkout -q -b "$integration"
+  printf 'base=%s\n' "$integration" > .gauntlet/config
   if [ -n "${1:-}" ]; then
     run "$G" loosen @config "base" "$1"
     assert_eq 0 "$STATUS" "loosen: $OUT"
@@ -1494,9 +1495,42 @@ test_a_base_on_develop_only_fails_with_the_way_out() {
   run "$G" check --ci
   assert_eq 1 "$STATUS" "local: $OUT"
   assert_contains "$OUT" "  @config  base (unset) → develop"
-  assert_contains "$OUT" 'gauntlet: base= is also judged against main (the base without it); add a row with gauntlet loosen @config "base (unset) → develop" "<reason>", or run gauntlet base develop on this branch'
+  assert_contains "$OUT" 'gauntlet: base= is also judged against main (the base without it); add a row with gauntlet loosen @config '"'base (unset) → develop'"' "<reason>", or run gauntlet base '"'develop'"' on this branch'
   # The hint comes right after the line it explains, not before the FAIL line of another section.
   assert_eq '  @config  base (unset) → develop' "$(printf '%s\n' "$OUT" | grep -B1 'is also judged against' | head -n 1)" "the hint follows the @config line"
+}
+
+# exc_hint_pastes <ref>: a base named <ref> on a branch cut from it, judged against main: the two
+# commands the hint asks the user to paste, run by a shell, are the words of the hint and nothing
+# else. A ref is a name the repository chose: `$(...)`, quotes and separators are legal in one.
+exc_hint_pastes() {
+  local ref=$1 hint rest loosen_cmd base_cmd
+  EXC_GITFLOW_BRANCH=$ref exc_gitflow
+  exc_gitflow_feat
+  run "$G" check --ci
+  assert_eq 1 "$STATUS" "local: $OUT"
+  hint=$(printf '%s\n' "$OUT" | grep 'is also judged against')
+  rest=${hint#*add a row with }
+  loosen_cmd=${rest%%, or run *}
+  base_cmd=${rest#*, or run }
+  base_cmd=${base_cmd% on this branch}
+  paste_run "$loosen_cmd"
+  assert_eq 0 "$STATUS" "pasted loosen: $OUT"
+  assert_eq "[loosen]"$'\n'"[@config]"$'\n'"[base (unset) → $ref]"$'\n'"[<reason>]" "$OUT" "the arguments of the pasted loosen"
+  assert_eq "" "$(ls -A "$TMP/paste/cwd")" "the pasted loosen made no file"
+  paste_run "$base_cmd"
+  assert_eq 0 "$STATUS" "pasted base: $OUT"
+  assert_eq "[base]"$'\n'"[$ref]" "$OUT" "the arguments of the pasted base"
+  assert_eq "" "$(ls -A "$TMP/paste/cwd")" "the pasted base made no file"
+}
+
+# shellcheck disable=SC2016 # the ref is literal text: nothing in it is to expand here
+test_the_base_hint_pastes_as_the_ref_when_it_holds_a_command_substitution() {
+  exc_hint_pastes 'ev$(touch${IFS}PWNED)'
+}
+
+test_the_base_hint_pastes_as_the_ref_when_it_holds_a_quote_and_separators() {
+  exc_hint_pastes "q'uote\$HOME;ls&x"
 }
 
 test_a_base_on_develop_only_passes_with_a_row_on_develop() {

@@ -955,11 +955,28 @@ test_install_hooks_refuses_without_a_runner() {
   printf '#!/bin/sh\n' > .gauntlet/bin/gauntlet
   run "$G" install-hooks
   assert_eq 2 "$STATUS" "install-hooks with a runner that is not executable: $OUT"
-  assert_eq "gauntlet: runner at $TMP/repo/.gauntlet/bin/gauntlet is not executable; run chmod +x $TMP/repo/.gauntlet/bin/gauntlet" "$OUT"
+  assert_eq "gauntlet: runner at $TMP/repo/.gauntlet/bin/gauntlet is not executable; run chmod +x '$TMP/repo/.gauntlet/bin/gauntlet'" "$OUT"
   must chmod +x .gauntlet/bin/gauntlet
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks with an executable runner: $OUT"
   assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "the hook was written once the runner is there"
+}
+
+# R60: the command in that message is one word per value. The path of the repository is whatever
+# the user's directory is called (a space, a quote, a `$(...)`); unquoted, pasting the command runs it.
+test_the_chmod_command_for_a_runner_is_pasted_as_one_word_whatever_the_path_holds() {
+  local dir="$TMP/it's a \$(touch\${IFS}PWNED) repo" cmd
+  hooks_repo "$dir"
+  hooks_vendor
+  must chmod 644 .gauntlet/bin/gauntlet
+  run "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks: $OUT"
+  cmd=${OUT#*; run }
+  assert_eq "chmod +x '$TMP/it'\\''s a \$(touch\${IFS}PWNED) repo/.gauntlet/bin/gauntlet'" "$cmd" "the command"
+  paste_run "$cmd"
+  assert_eq 0 "$STATUS" "pasted: $OUT"
+  assert_eq "" "$(ls -A "$TMP/paste/cwd")" "the pasted command made no file"
+  if [ ! -x .gauntlet/bin/gauntlet ]; then fail "the pasted command did not make the runner executable"; fi
 }
 
 # W3b review D I1: a runner that exists and has lost its exec bit (a checkout from a file system
@@ -970,7 +987,7 @@ test_a_runner_that_is_not_executable_gets_a_message_of_its_own() {
   hooks_repo "$TMP/repo"
   hooks_vendor
   must chmod 644 .gauntlet/bin/gauntlet
-  local want="runner at $TMP/repo/.gauntlet/bin/gauntlet is not executable; run chmod +x $TMP/repo/.gauntlet/bin/gauntlet"
+  local want="runner at $TMP/repo/.gauntlet/bin/gauntlet is not executable; run chmod +x '$TMP/repo/.gauntlet/bin/gauntlet'"
   run "$G" install-hooks
   assert_eq 2 "$STATUS" "install-hooks: $OUT"
   assert_eq "gauntlet: $want" "$OUT"

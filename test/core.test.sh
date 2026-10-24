@@ -730,3 +730,41 @@ test_every_mktemp_call_is_inside_the_run_root() {
   assert_eq "" "$stray" "mktemp calls outside the run root"
   assert_eq "$runs" "$roots" "one root per run"
 }
+
+# sh_quote: a value as one word for a shell. gauntlet prints commands for the user to paste, and
+# the value in them is a ref, a path or a rule id that a repository chose.
+test_sh_quote_wraps_the_value_in_single_quotes() {
+  # shellcheck source=lib/core.sh
+  # shellcheck disable=SC2153 # ROOT is set by test/lib.sh
+  . "$ROOT/lib/core.sh"
+  assert_eq "'main'" "$(sh_quote main)" "an ordinary word"
+  assert_eq "''" "$(sh_quote '')" "the empty value is still a word"
+  assert_eq "'a b'" "$(sh_quote 'a b')" "a space"
+}
+
+# The one character a single-quoted word cannot hold is written close, escape, open.
+test_sh_quote_writes_an_embedded_single_quote_as_close_escape_open() {
+  # shellcheck source=lib/core.sh
+  # shellcheck disable=SC2153 # ROOT is set by test/lib.sh
+  . "$ROOT/lib/core.sh"
+  assert_eq "'it'\\''s'" "$(sh_quote "it's")" "one quote"
+  assert_eq "''\\'''" "$(sh_quote "'")" "a quote alone"
+  assert_eq "'a'\\'''\\''b'" "$(sh_quote "a''b")" "two quotes in a row"
+}
+
+# What a shell reads back is the value, byte for byte, whatever it holds: expansions, separators,
+# redirections, globs, a leading dash, a newline, a tab, a backslash, non-ASCII text.
+# shellcheck disable=SC2016 # the values are literal text: nothing in them is to expand here
+test_sh_quote_reads_back_as_the_same_value_in_a_shell() {
+  local v n=0
+  # shellcheck source=lib/core.sh
+  # shellcheck disable=SC2153 # ROOT is set by test/lib.sh
+  . "$ROOT/lib/core.sh"
+  for v in 'plain' 'ev$(touch${IFS}PWNED)' '`touch PWNED`' 'a;touch PWNED' 'a&b|c' 'a>b<c' '*' '?[a]' '-n' '--help' '#x' '!x' 'a\b' 'a"b' "it's" "'" "a'b'c" $'a\tb' $'a\nb' ' lead and trail ' 'ñandú → x' '$HOME' '~'; do
+    n=$((n + 1))
+    printf '%s' "$v" > "$TMP/want.$n"
+    (cd "$TMP" && sh -c "printf %s $(sh_quote "$v")" > "$TMP/got.$n" 2>&1)
+    cmp -s "$TMP/want.$n" "$TMP/got.$n" || fail "sh_quote did not read back as [$v]: got [$(cat "$TMP/got.$n")]"
+  done
+  if [ -e "$TMP/PWNED" ]; then fail "a value ran as a command"; fi
+}

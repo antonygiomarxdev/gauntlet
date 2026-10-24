@@ -844,10 +844,31 @@ test_doctor_runner_not_executable_fails() {
   mkrepo
   doctor_install
   must chmod -x .gauntlet/bin/gauntlet
-  doctor_one_fail "FAIL runner at $TMP/repo/.gauntlet/bin/gauntlet is not executable; run chmod +x $TMP/repo/.gauntlet/bin/gauntlet"
+  doctor_one_fail "FAIL runner at $TMP/repo/.gauntlet/bin/gauntlet is not executable; run chmod +x '$TMP/repo/.gauntlet/bin/gauntlet'"
   must chmod 755 .gauntlet/bin/gauntlet
   run "$G" doctor
   assert_eq 0 "$STATUS" "doctor after chmod +x: $OUT"
+}
+
+# R60: the command in the FAIL is one word per value, as install-hooks prints it, whatever the
+# directory of the repository is called.
+test_doctor_chmod_command_for_a_runner_is_pasted_as_one_word_whatever_the_path_holds() {
+  local dir="$TMP/it's a \$(touch\${IFS}PWNED) repo" cmd
+  mkrepo
+  doctor_install
+  must mv "$TMP/repo" "$dir"
+  must cd "$dir"
+  must chmod -x .gauntlet/bin/gauntlet
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  cmd=$(printf '%s\n' "$OUT" | grep '^FAIL runner at ')
+  cmd=${cmd#*; run }
+  assert_eq "chmod +x '$TMP/it'\\''s a \$(touch\${IFS}PWNED) repo/.gauntlet/bin/gauntlet'" "$cmd" "the command"
+  paste_run "$cmd"
+  assert_eq 0 "$STATUS" "pasted: $OUT"
+  assert_eq "" "$(ls -A "$TMP/paste/cwd")" "the pasted command made no file"
+  run "$G" doctor
+  assert_eq 0 "$STATUS" "doctor after the pasted command: $OUT"
 }
 
 # A lib file that is there and not empty but does not load is none of the list's business: only
@@ -1131,7 +1152,7 @@ test_doctor_nonexec_plain_hook_fails() {
   mkrepo
   doctor_install
   must chmod 644 .git/hooks/pre-commit
-  doctor_one_fail "FAIL pre-commit hook .git/hooks/pre-commit is not executable: chmod +x .git/hooks/pre-commit"
+  doctor_one_fail "FAIL pre-commit hook .git/hooks/pre-commit is not executable: chmod +x '.git/hooks/pre-commit'"
 }
 
 # gate_fixture: a repo with one commit-stage rule that forbids TODO, committed, so a new
@@ -1178,7 +1199,7 @@ dir_hook_case() {
   must chmod 644 "$2/pre-commit"
   run "$G" doctor
   assert_eq 1 "$STATUS" "doctor with a non-executable hook in $2"
-  assert_contains "$OUT" "FAIL pre-commit hook $2/pre-commit is not executable: chmod +x $2/pre-commit"
+  assert_contains "$OUT" "FAIL pre-commit hook $2/pre-commit is not executable: chmod +x '$2/pre-commit'"
   violation_commit
   assert_eq 0 "$STATUS" "git ignores the non-executable hook, so the gate does not run"
   assert_contains "$OUT" "was ignored because it's not set as executable"
@@ -1214,7 +1235,7 @@ test_doctor_nonexec_husky_v8_hook_fails() {
   must git config core.hooksPath .husky
   doctor_install
   must chmod 644 .husky/pre-commit
-  doctor_one_fail "FAIL pre-commit hook .husky/pre-commit is not executable: chmod +x .husky/pre-commit"
+  doctor_one_fail "FAIL pre-commit hook .husky/pre-commit is not executable: chmod +x '.husky/pre-commit'"
 }
 
 test_doctor_nonexec_husky_v9_hook_is_ok() {
@@ -1246,7 +1267,7 @@ test_husky_v8_nonexec_hook_is_ignored_by_git_and_doctor_fails() {
   assert_eq 0 "$STATUS" "git ignores a non-executable v8 hook, so the gate does not run"
   run "$G" doctor
   assert_eq 1 "$STATUS" "doctor with the non-executable v8 hook"
-  assert_contains "$OUT" "FAIL pre-commit hook .husky/pre-commit is not executable: chmod +x .husky/pre-commit"
+  assert_contains "$OUT" "FAIL pre-commit hook .husky/pre-commit is not executable: chmod +x '.husky/pre-commit'"
 }
 
 test_doctor_hooks_path_with_tilde_resolves_like_install_hooks() {
@@ -1262,14 +1283,33 @@ test_doctor_hooks_path_with_tilde_resolves_like_install_hooks() {
   must chmod 644 home/.husky/pre-commit
   run "$G" doctor
   assert_eq 1 "$STATUS" "doctor with the v8 hook under HOME not executable"
-  assert_contains "$OUT" "FAIL pre-commit hook home/.husky/pre-commit is not executable: chmod +x home/.husky/pre-commit"
+  assert_contains "$OUT" "FAIL pre-commit hook home/.husky/pre-commit is not executable: chmod +x 'home/.husky/pre-commit'"
 }
 
 test_doctor_nonexec_pre_push_hook_fails() {
   mkrepo
   doctor_install
   must chmod 644 .git/hooks/pre-push
-  doctor_one_fail "FAIL pre-push hook .git/hooks/pre-push is not executable: chmod +x .git/hooks/pre-push"
+  doctor_one_fail "FAIL pre-push hook .git/hooks/pre-push is not executable: chmod +x '.git/hooks/pre-push'"
+}
+
+# The same for a hook: its path is shown from the repository root, so the pasted command runs there.
+test_doctor_chmod_command_for_a_hook_is_pasted_as_one_word_whatever_the_path_holds() {
+  local name="odd'dir \$(touch\${IFS}PWNED)" cmd
+  mkrepo
+  must git config core.hooksPath "$name"
+  doctor_install
+  must chmod 644 "$name/pre-commit"
+  run "$G" doctor
+  assert_eq 1 "$STATUS" "doctor: $OUT"
+  cmd=$(printf '%s\n' "$OUT" | grep '^FAIL pre-commit hook ')
+  cmd=${cmd#*: chmod}
+  cmd="chmod$cmd"
+  assert_eq "chmod +x 'odd'\\''dir \$(touch\${IFS}PWNED)/pre-commit'" "$cmd" "the command"
+  paste_run "$cmd" "$TMP/repo"
+  assert_eq 0 "$STATUS" "pasted: $OUT"
+  if [ -e "$TMP/repo/PWNED" ]; then fail "the pasted command ran the text in the path"; fi
+  if [ ! -x "$name/pre-commit" ]; then fail "the pasted command did not make the hook executable"; fi
 }
 
 test_doctor_fail_lines_name_the_fix() {
@@ -2436,7 +2476,7 @@ test_doctor_fails_a_shared_script_that_is_not_executable() {
   must ln -s pre-commit .git/hooks/pre-push
   doctor_install
   run "$G" doctor
-  assert_contains "$OUT" "FAIL hook .git/hooks/pre-commit is not executable: chmod +x .git/hooks/pre-commit"
+  assert_contains "$OUT" "FAIL hook .git/hooks/pre-commit is not executable: chmod +x '.git/hooks/pre-commit'"
 }
 
 # core.hooksPath that git cannot read: doctor stops with git's message instead of judging the default directory.

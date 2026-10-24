@@ -213,8 +213,10 @@ check_run() {
     fi
     # What only the default base adds, and no row covers, gets its way out said once.
     if [ -s "$scratch/loosened.hint" ]; then
-      printf 'gauntlet: base= is also judged against %s (the base without it); add a row with gauntlet loosen @config "%s" "<reason>", or run gauntlet base %s on this branch\n' \
-        "$(path_spell "$dbase")" "$(path_spell "$(cat "$scratch/loosened.hint")")" "$(path_spell "$base")" >> "$body"
+      # The two commands are pasted by the user: the base is a ref the repository chose, so its
+      # words are quoted (R60). The ref in the first part is display only.
+      printf 'gauntlet: base= is also judged against %s (the base without it); add a row with gauntlet loosen @config %s "<reason>", or run gauntlet base %s on this branch\n' \
+        "$(path_spell "$dbase")" "$(path_spell "$(sh_quote "$(cat "$scratch/loosened.hint")")")" "$(path_spell "$(sh_quote "$base")")" >> "$body"
     fi
     loosened_n=$(awk 'END { print NR }' "$scratch/loosened.rows") || return 2
   fi

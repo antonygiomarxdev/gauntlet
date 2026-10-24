@@ -31,6 +31,26 @@ path_spell() {
   fi
 }
 
+# sh_quote <text>: <text> as one word for a shell, in single quotes, an embedded single quote
+# written '\'' (close, escaped quote, open). For a command that gauntlet asks the user to paste
+# (R60): a ref, a branch, a rule id, a path or text of the config is whatever the repository
+# chose, and `$(...)`, a quote, a space or a separator in it would be run or split when pasted.
+# The result is then printed through path_spell like any other text, which only rewrites control
+# bytes. Display-only text (a name in a sentence) keeps path_spell alone.
+sh_quote() {
+  local rest=$1 out=''
+  while :; do
+    case $rest in
+      *"'"*)
+        out=$out${rest%%"'"*}"'\\''"
+        rest=${rest#*"'"}
+        ;;
+      *) break ;;
+    esac
+  done
+  printf "'%s'\n" "$out$rest"
+}
+
 # report_spell: path_spell for the lines of a report that gauntlet builds from names, rule ids
 # and tool output: standard input line by line, and a line that starts with "::" after blanks
 # has its first colon written \x3a, so no line of a report is a workflow command whatever a

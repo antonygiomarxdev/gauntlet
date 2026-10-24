@@ -259,6 +259,23 @@ run() {
   STATUS=$?
 }
 
+# paste_run <text> [<dir>]: run <text>, a command that gauntlet printed for the user to paste, the way
+# a shell reads it (sh -c), from <dir> (default: an empty directory under $TMP/paste). A gauntlet that
+# prints each of its arguments in square brackets, one per line, comes first on PATH: a real run
+# would change the repository. Output in $OUT, status in $STATUS. A pasted command that is more than
+# one word per value leaves a file in <dir> (touch) or fails, which the test reads there.
+# shellcheck disable=SC2016 # the stub's text is not to expand here
+paste_run() {
+  local dir=${2:-$TMP/paste/cwd}
+  must mkdir -p "$TMP/paste/bin" "$dir"
+  printf '#!/bin/sh\nfor a in "$@"; do printf "[%%s]\\n" "$a"; done\n' > "$TMP/paste/bin/gauntlet"
+  must chmod +x "$TMP/paste/bin/gauntlet"
+  # shellcheck disable=SC2034 # read by test files
+  OUT=$(cd "$dir" && PATH="$TMP/paste/bin:$PATH" sh -c "$1" 2>&1)
+  # shellcheck disable=SC2034 # read by test files
+  STATUS=$?
+}
+
 # fail <msg>: abort the current test (each test runs in its own subshell).
 fail() {
   echo "$1" >&2
