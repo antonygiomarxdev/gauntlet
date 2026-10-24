@@ -193,7 +193,7 @@ slow: todo 51 ms (consider stage: push)
 10. **Waivers.** `stale waive <path> (branch <branch>)` lists the waivers of other branches. They never fail.
 
 Limits:
-- Hooks: `doctor` checks that the gate line is there, not that the gate runs. See [hooks](gates.md#what-doctor-checks-and-what-it-does-not). A lefthook `use_stdin: true` anywhere in the file satisfies the check, even on another command.
+- Hooks: `doctor` checks that the gate line is there, not that it is reached. See [hooks](gates.md#what-doctor-checks-and-what-it-does-not). A lefthook `use_stdin: true` anywhere in the file satisfies the check, even on another command.
 - If `.gauntlet/lib` is missing, the vendored script stops at startup with a `No such file` error and exit 1, before `doctor` prints anything. Run `gauntlet install` again from the checkout.
 - `doctor` cannot tell a truncated file in `.gauntlet/lib` from a good one, unless it is empty.
 

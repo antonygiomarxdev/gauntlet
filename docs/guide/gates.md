@@ -200,7 +200,7 @@ An existing hook that is not executable gets a warning on stderr, and its mode i
 
 ### What `doctor` checks, and what it does not
 
-`doctor` checks that each hook holds exactly one gauntlet line and that it is the current form of its stage; that a lefthook pre-push command has `use_stdin: true`; and that the vendored runner is complete and loads. It does not check that the gate runs. A current gate line that sits after an early `exit` counts as present, and `doctor` says ok. A line that someone appends by hand to the end of an existing hook also counts as present, and `install-hooks` does not move it to the top: it reports `already present`. The full list is in the [reference](reference.md#doctor).
+`doctor` checks that each hook holds exactly one gauntlet line and that it is the current form of its stage; that a lefthook pre-push command has `use_stdin: true`; and that the vendored runner is complete and loads. It checks that a gate line is present, not that it is reached. A current gate line that sits after an early `exit`, or inside a here-doc, counts as present, and `doctor` says ok. A line that someone appends by hand to the end of an existing hook also counts as present, and `install-hooks` does not move it to the top: it reports `already present`. The full list is in the [reference](reference.md#doctor).
 
 Some hook setups have their own quirks:
 - **husky v8** runs the hook file a second time through its `husky.sh`. The gate therefore runs twice per commit. It also runs before husky's `HUSKY=0` check, so `HUSKY=0` does not skip it. Both were checked with husky 8.0.3.
