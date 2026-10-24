@@ -769,6 +769,30 @@ esc_hooks_dir() {
   must git config core.hooksPath "$ESC_DIR"
 }
 
+# The lines install-hooks prints when it has written a hook name the hook, and the name is the
+# project's text: one test per line.
+test_the_hook_written_lines_print_the_hook_path_escaped() {
+  esc_hooks_dir
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" 'created hk\x1bd/pre-commit'
+  assert_contains "$OUT" 'created hk\x1bd/pre-push'
+  assert_clean "$OUT" "created"
+  run "$G" install-hooks
+  assert_contains "$OUT" 'already present in hk\x1bd/pre-commit'
+  assert_clean "$OUT" "already present"
+  printf '#!/bin/sh\necho mine\n' > "$ESC_DIR/pre-commit"
+  printf '#!/bin/sh\n%s\n' "$(hook_const HOOK_NEEDLE_CI) || exit \$?  # gauntlet" > "$ESC_DIR/pre-push"
+  run "$G" install-hooks
+  assert_contains "$OUT" 'added gauntlet line to hk\x1bd/pre-commit'
+  assert_contains "$OUT" 'updated gauntlet line in hk\x1bd/pre-push'
+  assert_clean "$OUT" "added and updated"
+  : > "$ESC_DIR/pre-push"
+  run "$G" install-hooks
+  assert_contains "$OUT" 'added gauntlet line to hk\x1bd/pre-push'
+  assert_clean "$OUT" "added to an empty hook"
+}
+
 test_the_one_script_advice_prints_the_paths_escaped() {
   esc_hooks_dir
   printf '#!/bin/sh\necho shared\n' > "$ESC_DIR/pre-commit"

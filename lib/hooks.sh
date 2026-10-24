@@ -18,6 +18,9 @@ GAUNTLET_CMD_CI="$HOOK_NEEDLE_CI --pre-push"
 # line, is already done. A line that ends in the marker "# gauntlet" and runs the gate of its stage
 # is gauntlet's (R47): when it is not the current form, install-hooks replaces it where it stands
 # and doctor fails it. No list of older forms is kept.
+# The shebang of the advice printed when a hook cannot be created: what is pasted into a new file
+# is a hook that runs (the file install-hooks makes has `#!/usr/bin/env sh`; any sh shebang does).
+HOOK_PASTE_SHEBANG='#!/bin/sh'
 HOOK_LINE_STAGED="$GAUNTLET_CMD_STAGED  # gauntlet"
 HOOK_GATE_STAGED="$GAUNTLET_CMD_STAGED || exit \$?  # gauntlet"
 
@@ -437,7 +440,9 @@ install_hooks() {
   fi
   case "$kind" in
     husky|husky-v9|dir)
-      err=$(mkdir -p "$dir" 2>&1) || hook_cannot_write "$dir" "$(hook_reason "$err")" "$HOOK_LINE_STAGED" "$HOOK_LINE_CI"
+      err=$(mkdir -p "$dir" 2>&1) || hook_cannot_write "$dir" "$(hook_reason "$err")" \
+        "$(hook_shown "$dir/pre-commit"):" "$HOOK_PASTE_SHEBANG" "$HOOK_LINE_STAGED" \
+        "$(hook_shown "$dir/pre-push"):" "$HOOK_PASTE_SHEBANG" "$HOOK_LINE_CI"
       add_hook_pair "$dir"
       ;;
     print) print_hook_pair "$dir" ;;
@@ -616,12 +621,13 @@ hook_cannot_write() {
   exit 2
 }
 
-# hook_overwrite <new-content-file> <hook> <line>: write the content over <hook> (which keeps its
+# hook_overwrite <new-content-file> <hook> <line>...: write the content over <hook> (which keeps its
 # mode when it exists; a move of the temp file would not). The shell's own redirect error is
-# captured, not printed raw: hook_cannot_write names the cause and the line to add by hand.
+# captured, not printed raw: hook_cannot_write names the cause and the lines to add by hand: the
+# whole hook (shebang first) when the file is new or empty, the gate line alone when it is an edit.
 hook_overwrite() {
   local err
-  err=$({ cat "$1" > "$2"; } 2>&1) || hook_cannot_write "$2" "$(hook_reason "$err")" "$3"
+  err=$({ cat "$1" > "$2"; } 2>&1) || hook_cannot_write "$2" "$(hook_reason "$err")" "${@:3}"
 }
 
 # add_hook_line <file> <plain> <gate> [<old-plain> <old-gate>]: the gate runs first in a hook
@@ -658,7 +664,7 @@ add_hook_line() {
   if [ ! -e "$file" ]; then
     tmp=$(tmp_new) || die "cannot create a temp file"
     printf '#!/usr/bin/env sh\n%s\n' "$line" > "$tmp" || die "cannot create a temp file"
-    hook_overwrite "$tmp" "$file" "$line"
+    hook_overwrite "$tmp" "$file" "$HOOK_PASTE_SHEBANG" "$line"
     rm -f "$tmp"
     chmod +x "$file" || die "cannot make $file executable"
     printf 'created %s\n' "$(hook_shown "$file")"
@@ -667,7 +673,7 @@ add_hook_line() {
   if [ ! -s "$file" ]; then
     tmp=$(tmp_new) || die "cannot create a temp file"
     printf '#!/usr/bin/env sh\n%s\n' "$line" > "$tmp" || die "cannot create a temp file"
-    hook_overwrite "$tmp" "$file" "$line"
+    hook_overwrite "$tmp" "$file" "$HOOK_PASTE_SHEBANG" "$line"
     rm -f "$tmp"
     printf 'added gauntlet line to %s\n' "$(hook_shown "$file")"
     warn_if_not_executable "$file"

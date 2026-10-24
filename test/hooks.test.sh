@@ -2874,6 +2874,7 @@ test_a_read_only_hook_file_says_why_and_prints_the_line() {
   assert_eq 2 "$STATUS" "install-hooks: $OUT"
   assert_contains "$OUT" "gauntlet: cannot write .git/hooks/pre-commit: Permission denied; fix the permissions or add the line by hand"
   assert_contains "$OUT" "$HOOK_TEST_GATE_STAGED"
+  assert_not_contains "$OUT" "#!/bin/sh"
   assert_eq 1 "$(printf '%s\n' "$OUT" | grep -c 'Permission denied')" "one mention of the cause, no raw redirect error: $OUT"
   assert_not_contains "$OUT" ": line "
   hooks_expect .git/hooks/pre-commit $'#!/bin/sh\necho mine\n'
@@ -2892,7 +2893,7 @@ test_a_read_only_hooks_directory_says_why_and_prints_the_plain_line() {
   chmod 755 .git/hooks
   assert_eq 2 "$STATUS" "install-hooks: $OUT"
   assert_contains "$OUT" "gauntlet: cannot write .git/hooks/pre-commit: Permission denied; fix the permissions or add the line by hand"
-  assert_contains "$OUT" "$HOOK_TEST_STAGED"
+  assert_contains "$OUT" $'#!/bin/sh\n'"$HOOK_TEST_STAGED"
   assert_not_contains "$OUT" ": line "
 }
 
@@ -2910,8 +2911,7 @@ test_a_hooks_directory_that_cannot_be_made_names_both_lines() {
   chmod 755 .
   assert_eq 2 "$STATUS" "install-hooks: $OUT"
   assert_contains "$OUT" "gauntlet: cannot write .husky: Permission denied; fix the permissions or add the line by hand"
-  assert_contains "$OUT" "$HOOK_TEST_STAGED"
-  assert_contains "$OUT" "$HOOK_TEST_CI"
+  assert_contains "$OUT" $'.husky/pre-commit:\n#!/bin/sh\n'"$HOOK_TEST_STAGED"$'\n.husky/pre-push:\n#!/bin/sh\n'"$HOOK_TEST_CI"
 }
 
 # The same message for the other two ways a hook is written: an empty file, and the upgrade of an
@@ -2928,7 +2928,7 @@ test_an_empty_or_old_read_only_hook_says_why_too() {
   run "$G" install-hooks
   assert_eq 2 "$STATUS" "an empty read-only hook: $OUT"
   assert_contains "$OUT" "gauntlet: cannot write .git/hooks/pre-commit: Permission denied"
-  assert_contains "$OUT" "$HOOK_TEST_STAGED"
+  assert_contains "$OUT" $'#!/bin/sh\n'"$HOOK_TEST_STAGED"
   chmod 644 .git/hooks/pre-commit
   printf '#!/bin/sh\n%s\n' "$HOOK_TEST_STAGED" > .git/hooks/pre-commit
   printf '#!/bin/sh\n%s\n' "$HOOK_TEST_OLD_CI" > .git/hooks/pre-push
@@ -2938,6 +2938,7 @@ test_an_empty_or_old_read_only_hook_says_why_too() {
   assert_eq 2 "$STATUS" "an old gate line in a read-only hook: $OUT"
   assert_contains "$OUT" "gauntlet: cannot write .git/hooks/pre-push: Permission denied"
   assert_contains "$OUT" "$HOOK_TEST_GATE_CI"
+  assert_not_contains "$OUT" "#!/bin/sh"
   hooks_expect .git/hooks/pre-push $'#!/bin/sh\n'"$HOOK_TEST_OLD_CI"$'\n'
 }
 
