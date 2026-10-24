@@ -201,6 +201,9 @@ check_run() {
   base_has "$sha" .gauntlet/config || cfg_rc=$?
   if [ "$rc" -gt 1 ] || [ "$cfg_rc" -gt 1 ]; then return 2; fi
   if [ "$rc" -eq 0 ] || [ "$cfg_rc" -eq 0 ]; then
+    # base= is also judged against the default base (cmp_loosened_in), and CI fetches that one too:
+    # a stale local ref would give another verdict.
+    if [ "$dbase" != "$base" ]; then fetch_base_warn "$dbase"; fi
     cmp_loosened "$sha" "$scratch/loosened.covered" "$dbase" "$scratch/loosened.hint" > "$scratch/loosened.rows" || return 2
     # Covered loosenings pass; the report names each one with its row's reason, here and in CI.
     awk -F '\t' '{ printf "note: loosened %s: %s; covered by \"%s\"\n", $1, $2, $3 }' "$scratch/loosened.covered" >> "$body" || return 2
@@ -795,9 +798,10 @@ cmp_loosened_in() {
   cat "$scratch/out"
 }
 
-# cmp_config <merge-base> <scratch>: print one line per way .gauntlet/config was loosened
-# since the merge-base, read the way the runner reads it (config_value, check_key_rows):
-#   base         the base it selects differs (set, changed or removed; cmp_base);
+# cmp_config <merge-base> <scratch> <default-base>: print one line per way .gauntlet/config was
+# loosened since the merge-base, read the way the runner reads it (config_value, check_key_rows):
+#   base         the base it selects differs (set, changed or removed; cmp_base, where a file with
+#                no base= selects <default-base>, which may be empty);
 #   touched      the gate went from on to off (the default is off, so deleting the line
 #                of an enabled gate counts);
 #   check <name> removed; its .ci went from on to off (the default is off); its .paths

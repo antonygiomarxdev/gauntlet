@@ -71,6 +71,22 @@ fetch_base_ref() {
   esac
 }
 
+# fetch_base_warn <ref>: fetch_base_ref the way a gate does. git echoes the ref and the remote it
+# was given in its own errors, so its lines go to stderr through path_spell, and a failed fetch is
+# one warning line; the run goes on with the local ref. Dies only when it has no temp file. The
+# one place that message is made: merge_base (the selected base) and the loosening check of base=
+# (the default base) both fetch through it.
+fetch_base_warn() {
+  local err rc=0
+  err=$(tmp_new) || die "cannot create a temp file"
+  fetch_base_ref "$1" 2> "$err" || rc=$?
+  path_spell < "$err" >&2
+  rm -f "$err"
+  if [ "$rc" -ne 0 ]; then
+    printf 'gauntlet: fetch of %s failed; using the local ref\n' "$(path_spell "$1")" >&2
+  fi
+}
+
 # base_resolves <ref>: succeed when <ref> names a commit in this repository as it stands. It does
 # not fetch: merge_base does that for the gates, and doctor, which asks this, never touches the
 # network.
@@ -97,15 +113,8 @@ base_fetchable() {
 # line (--base), which beats every config: the hint to change a config would be wrong, so the
 # message says only which ref did not resolve.
 merge_base() {
-  local ref=$1 sha err rc=0
-  # git echoes the ref it was given in its own errors, so its lines go through path_spell too.
-  err=$(tmp_new) || die "cannot create a temp file"
-  fetch_base_ref "$ref" 2> "$err" || rc=$?
-  path_spell < "$err" >&2
-  rm -f "$err"
-  if [ "$rc" -ne 0 ]; then
-    printf 'gauntlet: fetch of %s failed; using the local ref\n' "$(path_spell "$ref")" >&2
-  fi
+  local ref=$1 sha
+  fetch_base_warn "$ref"
   if ! base_resolves "$ref"; then
     if [ -n "${2:-}" ]; then die "base $ref given with --base does not resolve"; fi
     die "unknown ref: $ref; $BASE_HINT"

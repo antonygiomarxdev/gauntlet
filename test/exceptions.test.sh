@@ -1518,6 +1518,77 @@ test_a_base_on_develop_only_passes_after_gauntlet_base_develop() {
   assert_not_contains "$OUT" "@config"
 }
 
+# The default base is fetched like the selected one, so the run judges what CI (which fetches)
+# judges. exc_stale_default_base: the gitflow layout with a remote. origin/HEAD names origin/main
+# as the default base; develop (base=develop) was pushed to origin's main, as a release does, and
+# this clone's origin/main is back at the commit it had before: a fetch moves it to develop's tip.
+exc_stale_default_base() {
+  local m0
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  exc_rebase
+  exc_commit main
+  must git init -q --bare "$TMP/origin.git"
+  must git remote add origin "$TMP/origin.git"
+  must git push -q origin main
+  must git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+  m0=$(git rev-parse HEAD)
+  must git checkout -q -b develop
+  printf 'base=develop\n' > .gauntlet/config
+  exc_rebase
+  exc_commit develop
+  must git push -q origin develop:main
+  must git update-ref refs/remotes/origin/main "$m0"
+  must git checkout -q -b feat
+  printf 'y\n' > c.txt
+  exc_rebase
+  exc_commit feat
+}
+
+test_the_default_base_is_fetched_before_the_second_comparison() {
+  exc_stale_default_base
+  run "$G" check --ci
+  assert_eq 0 "$STATUS" "local: $OUT"
+  assert_not_contains "$OUT" "@config"
+  assert_eq "$(git rev-parse develop)" "$(git rev-parse origin/main)" "origin/main was fetched"
+}
+
+test_a_default_base_that_cannot_be_fetched_warns_and_is_judged_as_it_is() {
+  exc_stale_default_base
+  must git remote set-url origin "$TMP/nowhere.git"
+  run "$G" check --ci
+  assert_eq 1 "$STATUS" "local: $OUT"
+  assert_contains "$OUT" "gauntlet: fetch of origin/main failed; using the local ref"
+  assert_eq 1 "$(printf '%s\n' "$OUT" | grep -c 'fetch of origin/main failed')" "one warning"
+  assert_contains "$OUT" "  @config  base (unset) → develop"
+}
+
+# origin/HEAD names a ref that is not here and cannot be fetched: that comparison is skipped.
+test_a_default_base_that_cannot_be_fetched_or_resolved_is_skipped() {
+  exc_stale_default_base
+  must git remote set-url origin "$TMP/nowhere.git"
+  must git update-ref -d refs/remotes/origin/main
+  run "$G" check --ci
+  assert_eq 0 "$STATUS" "local: $OUT"
+  assert_contains "$OUT" "gauntlet: fetch of origin/main failed; using the local ref"
+  assert_not_contains "$OUT" "@config"
+  assert_not_contains "$OUT" "unknown ref"
+}
+
+test_the_default_base_is_fetched_once_and_only_when_it_is_not_the_selected_base() {
+  exc_stale_default_base
+  git_counts
+  run "$G" check --ci
+  assert_eq 0 "$STATUS" "default: $OUT"
+  assert_eq 1 "$(grep -c '^fetch ' "$SHIM_CALLS")" "base=develop selects a local branch: only the default base is fetched"
+  : > "$SHIM_CALLS"
+  run "$G" check --ci --base origin/main
+  assert_eq 0 "$STATUS" "--base: $OUT"
+  assert_eq 1 "$(grep -c '^fetch ' "$SHIM_CALLS")" "the selected base is the default base: fetched once"
+}
+
 # The merge-base comparison already says it: the extra line is for what only the default base
 # adds, so it is not printed twice.
 test_the_merge_base_comparison_alone_gets_no_default_base_hint() {
