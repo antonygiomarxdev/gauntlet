@@ -57,7 +57,7 @@ The commit gate checks staged files in under 5 s, carries a lowered baseline int
 - **The first commit (no `HEAD`)** has nothing to compare, so the commit gate passes with a note.
 - **A deleted file** loses its baseline rows at commit.
 - **lefthook or prek configs.** Install prints the exact snippet to add instead of editing the YAML, and `doctor` fails until the snippet is present.
-- **A hook file that ends in `exit 0`.** The gauntlet line is inserted before the `exit`.
+- **A hook file that ends in `exit 0`.** The gauntlet line goes first in an existing hook, right after the shebang line, not before the `exit`. An early `exit`, an `exec` or a failing last command cannot skip it, and the project's own hook then runs unchanged.
 
 ## 7. Permissions
 
