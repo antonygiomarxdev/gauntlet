@@ -30,11 +30,11 @@ cd your-repo
 - `.gauntlet/bin/`, with the `gauntlet` script;
 - `.gauntlet/lib/`, with its libraries and the built-in output formats.
 
-It then creates what is missing (`.gauntlet/rules/`, an empty `baseline.tsv`, `exceptions.tsv` with its header, and `config` with `touched=off`), and adds the gate to your hooks. Running it again replaces both folders, so a later install upgrades the runner. Anything you put inside them by hand is removed.
+It then creates what is missing (`.gauntlet/rules/`, an empty `baseline.tsv`, `exceptions.tsv` with its header, `config` with `touched=off`, and `.gauntlet/.gitignore`), and adds the gate to your hooks. Running it again replaces both folders, so a later install upgrades the runner. Anything you put inside them by hand is removed. The [reference](reference.md#install-and-what-it-creates) lists everything `install` creates, and how to [uninstall](reference.md#uninstall).
 
 You can also link the script onto your `PATH` (`ln -s ~/.gauntlet/bin/gauntlet ~/bin/gauntlet`) and run `gauntlet install` from your repo. The link is followed back to the checkout.
 
-Commit `.gauntlet/`, except `.gauntlet/STATUS.md`, so teammates and CI run the same runner. Put `.gauntlet/STATUS.md` in `.gitignore`: a tracked copy makes `check --ci` exit 2 after the next `status`. The hooks that `install` writes into `.git/hooks` are not shared by a clone. If teammates need them, add `gauntlet install-hooks` to the setup step your project already has (`prepare`, `make setup`, …). See [hooks](gates.md#hooks-coexist-never-take-over).
+Commit `.gauntlet/`, so teammates and CI run the same runner. `.gauntlet/.gitignore` already keeps `.gauntlet/STATUS.md` out (a tracked copy makes `check --ci` exit 2 after the next `status`) and brings back every file gauntlet needs, whatever your root `.gitignore` says; `gauntlet doctor` fails if git still hides one. The hooks that `install` writes into `.git/hooks` are not shared by a clone. If teammates need them, add `gauntlet install-hooks` to the setup step your project already has (`prepare`, `make setup`, …). See [hooks](gates.md#hooks-coexist-never-take-over).
 
 ## 2. Onboard
 
@@ -72,7 +72,7 @@ Nothing blocks until its rule is `block`. The touched-file gate stays off until 
 
 ```sh
 gauntlet status          # debt per rule, worst files, shadow rules due for promotion
-gauntlet check --ci      # exactly what CI runs
+gauntlet check --ci      # the gate CI runs
 gauntlet promote <id>    # shadow → block
 gauntlet doctor          # tools present, hooks wired, baseline exact, config valid
 ```
