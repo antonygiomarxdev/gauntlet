@@ -516,7 +516,9 @@ doctor_one_script() {
   else
     state=$(hook_gate_state "$1" "$HOOK_NEEDLE_CI" "$HOOK_GATE_CI" "$HOOK_SHARED_CI")
   fi
-  if hooks_one_script_done "$1" ${4:+shared}; then
+  if [ "$(hook_gate_state "$1" "$GAUNTLET_CMD_STAGED")" = multiple ] || [ "$state" = multiple ]; then
+    doctor_fail "more than one gauntlet line in $shown; run gauntlet install-hooks"
+  elif hooks_one_script_done "$1" ${4:+shared}; then
     doctor_ok "pre-commit gate in $shown"
     doctor_ok "pre-push gate in $shown"
   elif [ "$state" = old ]; then
@@ -543,6 +545,10 @@ doctor_hook_file() {
     doctor_fail "$stage hook $shown is not executable: chmod +x $shown"
   fi
   state=$(hook_gate_state "$file" "$needle" "$@")
+  if [ "$state" = multiple ]; then
+    doctor_fail "more than one gauntlet line in $shown; run gauntlet install-hooks"
+    return 0
+  fi
   if [ "$state" = present ]; then
     doctor_ok "$stage gate in $shown"
     return 0

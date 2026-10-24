@@ -615,6 +615,26 @@ test_an_existing_pre_push_hook_receives_every_ref_of_a_push() {
   e2e_same_bytes "$TMP/seen.txt" "refs/heads/feat $sha refs/heads/feat $zero"$'\n'"HEAD $sha refs/heads/x $zero"$'\n'
 }
 
+# A line of an older gauntlet before the current one drains git's stdin before the current line
+# copies it, so the project's command after both got nothing (and the hook read as done). install-hooks
+# leaves one line, and the project's command gets the ref lines.
+test_a_stale_gauntlet_line_before_the_current_one_does_not_starve_the_projects_command() {
+  e2e_push_repo
+  printf '#!/bin/sh\n%s\n%s\ncat > "%s"\n' '.gauntlet/bin/gauntlet check --ci --pre-push || exit $?  # gauntlet' "$E2E_GATE_CI" "$TMP/seen.txt" > .git/hooks/pre-push
+  must chmod +x .git/hooks/pre-push
+  e2e_gl install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "updated gauntlet line in .git/hooks/pre-push"
+  assert_contains "$OUT" "removed 1 old gauntlet line from .git/hooks/pre-push"
+  assert_eq 1 "$(e2e_count_line "$E2E_LINE_CI" .git/hooks/pre-push)" "one gate line"
+  local sha zero
+  sha=$(git rev-parse feat)
+  zero=$(printf '%040d' 0)
+  run git push origin feat
+  assert_eq 0 "$STATUS" "push: $OUT"
+  e2e_same_bytes "$TMP/seen.txt" "refs/heads/feat $sha refs/heads/feat $zero"$'\n'
+}
+
 # The buffer is not a leftover: after a push that passes and after one the gate refuses, TMPDIR is
 # empty, and the refused push never reaches the project's command.
 test_the_pre_push_line_leaves_nothing_in_tmpdir_after_a_push_or_a_refusal() {

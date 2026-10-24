@@ -15,9 +15,11 @@ GAUNTLET_CMD_CI="$HOOK_NEEDLE_CI --pre-push"
 
 # The gate lines. A created hook gets the plain pinned form; an existing hook gets the `|| exit $?`
 # form on the line after its shebang (see add_hook_line). A hook that has either form, as a whole
-# line, is already done. A line that ends in the marker "# gauntlet" and runs the gate of its stage
-# is gauntlet's (R47): when it is not the current form, install-hooks replaces it where it stands
-# and doctor fails it. No list of older forms is kept.
+# line, and no other line of ours, is already done. A line that ends in the marker "# gauntlet" and
+# runs the gate of its stage is gauntlet's (R47), and a hook has exactly one: when it is not the
+# current form, install-hooks replaces it where it stands, and it removes every other line of ours,
+# stale or a copy of the current form; doctor fails a line that is not the current form and a hook
+# with more than one. No list of older forms is kept.
 # The shebang of the advice printed when a hook cannot be created: what is pasted into a new file
 # is a hook that runs (the file install-hooks makes has `#!/usr/bin/env sh`; any sh shebang does).
 HOOK_PASTE_SHEBANG='#!/bin/sh'
@@ -562,27 +564,35 @@ hooks_one_script_done() {
 # for both hooks. Say why and print the lines to add by hand; or say they are there. With "shared"
 # the lines are the guarded forms, for a hooks directory other repositories use.
 hooks_one_script() {
-  local shown a b staged=$HOOK_GATE_STAGED ci=$HOOK_GATE_CI state
+  local shown a b staged=$HOOK_GATE_STAGED ci=$HOOK_GATE_CI state staged_state
   if [ "${3:-}" = shared ]; then
     staged=$HOOK_SHARED_STAGED
     ci=$HOOK_SHARED_CI
   fi
   shown=$(path_spell "$(display_path "$1")")
-  if hooks_one_script_done "$1" "${3:-}"; then
-    printf 'already present in %s\n' "$shown"
-    warn_if_not_executable "$1"
-    return 0
-  fi
-  a=$shown
-  b=$(path_spell "$(display_path "$2")")
   # In a shared directory the guarded form is the only gate, so a plain one of ours is one to replace.
   if [ "${3:-}" = shared ]; then
     state=$(hook_gate_state "$1" "$HOOK_NEEDLE_CI" "$HOOK_SHARED_CI")
   else
     state=$(hook_gate_state "$1" "$HOOK_NEEDLE_CI" "$HOOK_GATE_CI" "$HOOK_SHARED_CI")
   fi
+  staged_state=$(hook_gate_state "$1" "$GAUNTLET_CMD_STAGED")
+  # Both gates in place is done, unless a hook has more than one line of ours (hook_gate_state).
+  if [ "$state" != multiple ] && [ "$staged_state" != multiple ] && hooks_one_script_done "$1" "${3:-}"; then
+    printf 'already present in %s\n' "$shown"
+    warn_if_not_executable "$1"
+    return 0
+  fi
+  a=$shown
+  b=$(path_spell "$(display_path "$2")")
   if [ "$state" = old ]; then
     printf 'ACTION NEEDED: %s and %s are the same file, so a gate line in it would run in both hooks. It is not edited. Its pre-push line is an older one: %s:\n%s\n' "$a" "$b" "$(hook_replace_words "$shown" 'check --ci')" "$ci"
+    warn_if_not_executable "$1"
+    return 0
+  fi
+  if [ "$state" = multiple ] || [ "$staged_state" = multiple ]; then
+    printf 'ACTION NEEDED: %s and %s are the same file, so a gate line in it would run in both hooks. It is not edited. It has more than one gauntlet line for one of the hooks, so make the first commands of %s exactly these, and delete every other line ending in "# gauntlet":\n' "$a" "$b" "$shown"
+    printf '%s\n%s\nfi\n%s\n%s\nfi\n' "$HOOK_GUARD_STAGED" "$staged" "$HOOK_GUARD_CI" "$ci"
     warn_if_not_executable "$1"
     return 0
   fi
@@ -642,7 +652,8 @@ hook_overwrite() {
 # printed instead. A missing file, or an empty one, gets the plain pinned form. An existing
 # file keeps its mode and every byte except the inserted line. A line that is gauntlet's (it
 # ends in the marker and runs the <needle> gate) but not the current form is replaced where it
-# stands (upgrade_gate_line, R47) instead of getting a second gate.
+# stands, and every other line of ours goes (upgrade_gate_line, R47), instead of the hook getting a
+# second gate: after this a hook has exactly one gauntlet line.
 add_hook_line() {
   local file=$1 line=$2 gate=$3 needle=$4 state tmp rc=0
   state=$(hook_gate_state "$file" "$needle" "$line" "$gate")
@@ -657,9 +668,14 @@ add_hook_line() {
     1) print_only "$file" "$gate" "$state"; return 0 ;;
     *) die "cannot read $file" ;;
   esac
-  if [ "$state" = old ]; then
-    upgrade_gate_line "$file" "$gate" "$needle"
-    printf 'updated gauntlet line in %s\n' "$(hook_shown "$file")"
+  if [ "$state" = old ] || [ "$state" = multiple ]; then
+    upgrade_gate_line "$file" "$gate" "$needle" "$line" "$gate"
+    if [ "$HOOK_REPLACED" -eq 1 ]; then
+      printf 'updated gauntlet line in %s\n' "$(hook_shown "$file")"
+    fi
+    if [ "$HOOK_REMOVED" -gt 0 ]; then
+      printf 'removed %s from %s\n' "$(plural "$HOOK_REMOVED" 'old gauntlet line' 'old gauntlet lines')" "$(hook_shown "$file")"
+    fi
     warn_if_not_executable "$file"
     return 0
   fi
@@ -692,32 +708,57 @@ add_hook_line() {
   warn_if_not_executable "$file"
 }
 
-# upgrade_gate_line <file> <gate> <needle>: replace each line of <file> that is gauntlet's for
-# the <needle> gate (marked, HOOK_MARKED_AWK) by <gate>, where it stands. Every other byte stays,
-# a missing final newline included.
+# upgrade_gate_line <file> <gate> <needle> <form>...: leave <file> with exactly one line that is
+# gauntlet's for the <needle> gate (marked, HOOK_MARKED_AWK), where the first of them stood: that line
+# is replaced by <gate> unless it is one of the <form>s already, and every other marked line, stale or a
+# copy of the current form, is removed. Every other byte stays, a missing final newline included
+# (unless the last line is the one that went: then the line before it keeps its newline). Sets
+# HOOK_REPLACED (1 when the first line was replaced) and HOOK_REMOVED (how many lines went).
 upgrade_gate_line() {
-  local file=$1 tmp size
+  local file=$1 gate=$2 needle=$3 tmp sum size lastkept forms='' form
+  HOOK_REPLACED=0
+  HOOK_REMOVED=0
+  shift 3
+  for form in "$@"; do forms="$forms$form"$'\n'; done
   tmp=$(tmp_new) || die "cannot create a temp file"
-  GL_GATE=$2 GL_NEEDLE=$3 LC_ALL=C awk "$HOOK_MARKED_AWK"'
-    BEGIN { gate = ENVIRON["GL_GATE"]; needle = ENVIRON["GL_NEEDLE"] }
-    marked($0, needle) { print gate; next }
-    { print }
-  ' "$file" > "$tmp" || { rm -f "$tmp"; die "cannot read $file"; }
-  if [ -n "$(tail -c 1 "$file")" ]; then
-    # The file had no final newline and awk added one: take it off again.
+  sum=$(tmp_new) || die "cannot create a temp file"
+  GL_GATE=$gate GL_NEEDLE=$needle GL_FORMS=$forms GL_SUM=$sum LC_ALL=C awk "$HOOK_MARKED_AWK"'
+    BEGIN { gate = ENVIRON["GL_GATE"]; needle = ENVIRON["GL_NEEDLE"]; n = split(ENVIRON["GL_FORMS"], form, "\n") }
+    marked($0, needle) {
+      if (kept) { removed++; lastkept = 0; next }
+      kept = 1
+      line = $0
+      sub(/\r$/, "", line)
+      isform = 0
+      for (i = 1; i <= n; i++) if (form[i] != "" && line == form[i]) isform = 1
+      if (isform) print
+      else { print gate; replaced = 1 }
+      lastkept = 1
+      next
+    }
+    { print; lastkept = 1 }
+    END { printf "%d %d %d\n", replaced, removed, lastkept > ENVIRON["GL_SUM"] }
+  ' "$file" > "$tmp" || { rm -f "$tmp" "$sum"; die "cannot read $file"; }
+  read -r HOOK_REPLACED HOOK_REMOVED lastkept < "$sum" || { rm -f "$tmp" "$sum"; die "cannot read $file"; }
+  rm -f "$sum"
+  if [ -n "$(tail -c 1 "$file")" ] && [ "$lastkept" -eq 1 ]; then
+    # The file had no final newline and awk added one to the last line it kept: take it off again.
     size=$(wc -c < "$tmp")
     head -c "$((size - 1))" "$tmp" > "$tmp.cut" || { rm -f "$tmp" "$tmp.cut"; die "cannot read $file"; }
     mv "$tmp.cut" "$tmp" || { rm -f "$tmp" "$tmp.cut"; die "cannot read $file"; }
   fi
-  hook_overwrite "$tmp" "$file" "$2"
+  hook_overwrite "$tmp" "$file" "$gate"
   rm -f "$tmp"
 }
 
-# hook_gate_state <file> <needle> <form>...: how <file> stands with the gate line of one stage,
-# on stdout: "present" when a line of it is one of the <form>s (whole line, a CR before the
-# newline ignored), else "old" when a line of it is gauntlet's for the <needle> gate (marked) but
-# is none of them, else "none". A file that is missing or cannot be read is "none". doctor and
-# install-hooks both ask this, so a hook is done, old or missing by one rule.
+# hook_gate_state <file> <needle> <form>...: how <file> stands with the gate line of one stage, on
+# stdout. A line is gauntlet's when it is one of the <form>s (whole line, a CR before the newline
+# ignored) or marked for the <needle> gate. A hook has exactly one: "multiple" when it has two or more
+# of them, whatever they are (a stale line before or after the current one, a copy of the current
+# one, the guarded form of a shared directory next to a marked line); else "present" when that one
+# is a <form>, else "old" when it is a marked line that is none of them, else "none". A file that is
+# missing or cannot be read is "none". doctor and install-hooks both ask this, so a hook is done,
+# old, too full or missing by one rule.
 hook_gate_state() {
   local file=$1 needle=$2 forms='' form
   shift 2
@@ -731,10 +772,12 @@ hook_gate_state() {
     {
       line = $0
       sub(/\r$/, "", line)
-      for (i = 1; i <= n; i++) if (form[i] != "" && line == form[i]) present = 1
-      if (marked($0, needle)) old = 1
+      isform = 0
+      for (i = 1; i <= n; i++) if (form[i] != "" && line == form[i]) isform = 1
+      if (isform) present = 1
+      if (isform || marked($0, needle)) count++
     }
-    END { print (present ? "present" : (old ? "old" : "none")) }
+    END { print (count > 1 ? "multiple" : (present ? "present" : (count ? "old" : "none"))) }
   ' "$file" 2> /dev/null || printf 'none\n'
 }
 
@@ -818,13 +861,23 @@ hook_replace_words() {
   printf 'replace the line ending in "# gauntlet"%s in %s with' "${2:+ that runs $2}" "$1"
 }
 
+# hook_dedupe_words <file>: the words of the fix for a hook that holds more than one line of ours,
+# which install-hooks does not edit: the result is one line, the current form, and nothing else of
+# ours. Followed by ":" and the line.
+hook_dedupe_words() {
+  printf 'leave exactly one gauntlet line in %s, the line below, and delete every other line ending in "# gauntlet"' "$1"
+}
+
 # print_only <file> <gate> [<state>]: a hook we will not edit. Say what to add, and where it goes;
 # when it already holds a line of ours that is not the current form (state old), say to replace
-# that line, because adding the gate beside it would leave both.
+# that line, because adding the gate beside it would leave both, and when it holds more than one
+# (state multiple), say to leave one.
 print_only() {
   local shown
   shown=$(hook_shown "$1")
-  if [ "${3:-}" = old ]; then
+  if [ "${3:-}" = multiple ]; then
+    printf 'ACTION NEEDED: %s:\n%s\n' "$(hook_dedupe_words "$shown")" "$2"
+  elif [ "${3:-}" = old ]; then
     printf 'ACTION NEEDED: %s:\n%s\n' "$(hook_replace_words "$shown")" "$2"
   else
     printf 'ACTION NEEDED: add to %s:\n%s\n  (place it as the first command, after the shebang line if there is one)\n' "$shown" "$2"

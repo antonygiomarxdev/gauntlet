@@ -1859,6 +1859,64 @@ test_an_older_gauntlet_line_in_an_editable_hook_is_replaced_by_install_hooks() {
   assert_eq 0 "$STATUS" "doctor after install-hooks: $OUT"
 }
 
+# One rule: a hook has exactly one gauntlet line. A stale line next to the current one, or a copy of
+# the current one, is a FAIL, whichever comes first (a stale line first drains git's stdin; a second
+# line runs the gate twice), and install-hooks makes it right.
+test_doctor_fails_a_hook_with_more_than_one_gauntlet_line() {
+  mkrepo
+  doctor_install
+  local body old='.gauntlet/bin/gauntlet check --ci  # gauntlet'
+  for body in \
+    "$old"$'\n'"$STATUS_TEST_GATE_CI" \
+    "$STATUS_TEST_GATE_CI"$'\n'"$old" \
+    "$STATUS_TEST_GATE_CI"$'\n'"$STATUS_TEST_GATE_CI" \
+    "$old"$'\n'"$STATUS_TEST_OLD_CI"; do
+    printf '#!/bin/sh\n%s\necho x\n' "$body" > .git/hooks/pre-push
+    doctor_one_fail "FAIL more than one gauntlet line in .git/hooks/pre-push; run gauntlet install-hooks"
+    run "$G" install-hooks
+    run "$G" doctor
+    assert_eq 0 "$STATUS" "doctor after install-hooks: $OUT"
+    assert_contains "$OUT" "ok pre-push gate in .git/hooks/pre-push"
+  done
+}
+
+test_doctor_fails_a_pre_commit_hook_with_more_than_one_gauntlet_line() {
+  mkrepo
+  doctor_install
+  local staged='.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet'
+  printf '#!/bin/sh\n%s\n%s\n' "$staged" "$staged" > .git/hooks/pre-commit
+  doctor_one_fail "FAIL more than one gauntlet line in .git/hooks/pre-commit; run gauntlet install-hooks"
+}
+
+# The lines are counted in a hook install-hooks does not edit too, and in a shared hooks directory,
+# where the guarded form is a gauntlet line though it carries no marker.
+test_doctor_counts_gauntlet_lines_in_a_hook_that_install_hooks_does_not_edit() {
+  mkrepo
+  doctor_install
+  printf '#!/bin/sh\r\n%s\r\n%s\r\necho x\r\n' "$STATUS_TEST_OLD_CI" "$STATUS_TEST_GATE_CI" > .git/hooks/pre-push
+  doctor_one_fail "FAIL more than one gauntlet line in .git/hooks/pre-push; run gauntlet install-hooks"
+  must mkdir "$TMP/shared"
+  must git config core.hooksPath "$TMP/shared"
+  printf '%s\n' "$STATUS_TEST_SHARED_STAGED" > "$TMP/shared/pre-commit"
+  printf '#!/bin/sh\n%s\n%s\n' "$STATUS_TEST_SHARED_CI" "$STATUS_TEST_OLD_CI" > "$TMP/shared/pre-push"
+  must chmod +x "$TMP/shared/pre-commit" "$TMP/shared/pre-push"
+  doctor_one_fail "FAIL more than one gauntlet line in $TMP/shared/pre-push; run gauntlet install-hooks"
+}
+
+# One script for both hooks: each stage's line is counted by itself.
+# shellcheck disable=SC2016 # the hook text holds ${0##*/} and $? that must not expand here
+test_doctor_counts_gauntlet_lines_in_a_script_that_serves_both_hooks() {
+  mkrepo
+  doctor_install
+  printf '#!/bin/sh\nif [ "${0##*/}" = pre-commit ]; then\n.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet\nfi\nif [ "${0##*/}" = pre-push ]; then\n%s\n%s\nfi\n' "$STATUS_TEST_GATE_CI" "$STATUS_TEST_OLD_CI" > .git/hooks/pre-commit
+  must chmod 755 .git/hooks/pre-commit
+  must rm .git/hooks/pre-push
+  must ln .git/hooks/pre-commit .git/hooks/pre-push
+  doctor_one_fail "FAIL more than one gauntlet line in .git/hooks/pre-commit; run gauntlet install-hooks"
+  printf '#!/bin/sh\nif [ "${0##*/}" = pre-commit ]; then\n.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet\n.gauntlet/bin/gauntlet check --staged || exit $?  # gauntlet\nfi\nif [ "${0##*/}" = pre-push ]; then\n%s\nfi\n' "$STATUS_TEST_GATE_CI" > .git/hooks/pre-commit
+  doctor_one_fail "FAIL more than one gauntlet line in .git/hooks/pre-commit; run gauntlet install-hooks"
+}
+
 test_a_lefthook_config_with_an_older_gauntlet_command_is_told_to_replace_it() {
   mkrepo
   printf 'pre-commit:\n  commands:\n    gauntlet:\n      run: .gauntlet/bin/gauntlet check --staged\npre-push:\n  commands:\n    gauntlet:\n      run: .gauntlet/bin/gauntlet check --ci\n' > lefthook.yml
