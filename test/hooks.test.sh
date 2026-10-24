@@ -2085,15 +2085,16 @@ hooks_case_a_full_temp_file_blocks() {
   hooks_line_dir
   hooks_full_mktemp
   if [ "$1" = busybox ]; then
-    # busybox sh has no mktemp on PATH to shim, so its temp file cannot be made full this way; the
-    # message is the same code in every shell and the directory-on-stdin case below reaches it in
-    # busybox. This says so with an assertion instead of a silent pass: a busybox that does look
-    # mktemp up on PATH fails here, and then this case must run for it.
+    # A busybox sh usually runs its own mktemp and never looks at PATH for it, so its temp file
+    # cannot be made full this way; the message is the same code in every shell and the
+    # directory-on-stdin case below reaches it in busybox. Say so with a check: a busybox that does
+    # take mktemp from PATH gets the same assertions as the other shells.
     made=$(PATH="$TMP/mkshim:$PATH" TMPDIR="$TMP/line-tmp" busybox sh -c mktemp) || fail "busybox sh could not run mktemp"
-    rm -f "$made"
-    if [ "$made" = "$TMP/full" ]; then fail "busybox sh takes mktemp from PATH: run the full-file case for it"; fi
-    rm -rf "$TMP/mkshim" "$TMP/full"
-    return 0
+    if [ "$made" != "$TMP/full" ]; then
+      rm -f "$made"
+      rm -rf "$TMP/mkshim" "$TMP/full"
+      return 0
+    fi
   fi
   PATH="$TMP/mkshim:$PATH" hooks_line_run "$@" || rc=$?
   assert_eq 2 "$rc" "[$*] the hook exits 2 when the temp file is full: $(cat "$TMP/line.out")"
@@ -2317,12 +2318,46 @@ test_a_stale_line_that_is_the_only_command_of_an_if_block_is_left_in_place() {
   sh -n .git/hooks/pre-push || fail "the hook no longer parses"
 }
 
-# The same for a function body, and for a line the shell continues onto the next.
-test_a_stale_line_in_a_function_body_or_before_a_continuation_is_left_in_place() {
+# The same for a function body.
+test_a_stale_line_in_a_function_body_is_left_in_place() {
   hooks_repo "$TMP/repo"
   hooks_vendor
   hooks_crowded .git/hooks/pre-push $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\nrun_gate() {\n  '"$HOOK_TEST_OLD_CI"$'\n}\nrun_gate\n' 2 "lines 2, 4" "$HOOK_TEST_GATE_CI"
   sh -n .git/hooks/pre-push || fail "the hook no longer parses"
+}
+
+# And for a line the shell reads as the continuation of the one before it: the line before ends in a
+# backslash, so taking this one out would join that line to whatever follows.
+test_a_stale_line_that_continues_the_command_before_it_is_left_in_place() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  hooks_crowded .git/hooks/pre-push $'#!/bin/sh\n'"$HOOK_TEST_GATE_CI"$'\necho before \\\n  && '"$HOOK_TEST_OLD_CI"$'\ncat > seen\n' 2 "lines 2, 4" "$HOOK_TEST_GATE_CI"
+  sh -n .git/hooks/pre-push || fail "the hook no longer parses"
+}
+
+# R59 prints the sentence and edits nothing, but the hook is still a hook git may ignore: a mode
+# without the exec bit gets the warning install-hooks gives for every other hook, on stderr.
+test_a_crowded_hook_that_is_not_executable_gets_the_warning() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  printf '#!/bin/sh\n%s\n%s\n' "$HOOK_TEST_OLD_CI" "$HOOK_TEST_GATE_CI" > .git/hooks/pre-push
+  must chmod 644 .git/hooks/pre-push
+  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed: $(cat "$TMP/out" "$TMP/err")"
+  assert_contains "$(cat "$TMP/out")" "gauntlet: .git/hooks/pre-push has 2 lines ending in"
+  assert_eq "warning: .git/hooks/pre-push is not executable; git will ignore it" "$(cat "$TMP/err")" "stderr"
+}
+
+# The same for the shared hooks directory (R61) where the guarded line and a plain one are both there.
+test_a_shared_hook_with_the_guarded_and_a_plain_line_that_is_not_executable_gets_the_warning() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must mkdir "$TMP/shared"
+  must git config core.hooksPath "$TMP/shared"
+  printf '#!/bin/sh\n%s\n%s\n' "$HOOK_TEST_SHARED_CI" "$HOOK_TEST_GATE_CI" > "$TMP/shared/pre-push"
+  must chmod 644 "$TMP/shared/pre-push"
+  "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed: $(cat "$TMP/out" "$TMP/err")"
+  assert_contains "$(cat "$TMP/out")" "ACTION NEEDED: $TMP/shared/pre-push already runs the gate"
+  assert_eq "warning: $TMP/shared/pre-push is not executable; git will ignore it" "$(cat "$TMP/err")" "stderr"
 }
 
 # A command of the project's that mentions the gate and ends in the marker is a marked line (R47),
