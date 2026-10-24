@@ -315,7 +315,19 @@ install_source() {
 # core.fileMode=false, can check it out like that; the advice "run gauntlet install" would not
 # help, since install from the vendored copy stops at the same refusal.
 runner_not_executable_words() {
-  printf 'runner at %s is not executable; run chmod +x %s\n' "$1" "$(sh_quote "$1")"
+  printf 'runner at %s is not executable; %s\n' "$1" "$(chmod_words "$1" 'run ')"
+}
+
+# chmod_words <path> <lead>: the command that gives <path> its exec bit, for the user to paste
+# (R60): <lead>, "chmod +x" and the path single-quoted. When path_spell would change the path (a
+# control byte in it) the printed path is not the file, so no paste form is given: "run chmod +x
+# on it" (R63). The path is the caller's, not yet spelled.
+chmod_words() {
+  if [ "$(path_spell "$1")" = "$1" ]; then
+    printf '%schmod +x %s\n' "$2" "$(sh_quote "$1")"
+  else
+    printf 'run chmod +x on it\n'
+  fi
 }
 
 # repair_runner_mode: give a vendored runner without the exec bit its mode back. The index keeps

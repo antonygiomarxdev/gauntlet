@@ -508,7 +508,7 @@ doctor_one_script() {
   local shown state
   shown=$(display_path "$1")
   if [ "$3" -eq 1 ] && [ -f "$1" ] && [ ! -x "$1" ]; then
-    doctor_fail "hook $shown is not executable: chmod +x $(sh_quote "$shown")"
+    doctor_fail "hook $shown is not executable: $(chmod_words "$shown" '')"
   fi
   # In a shared hooks directory (a push line is given) the guarded form is the only gate.
   if [ -n "${4:-}" ]; then
@@ -548,7 +548,7 @@ doctor_hook_file() {
   shift 7
   shown=$(display_path "$file")
   if [ "$execcheck" -eq 1 ] && [ -f "$file" ] && [ ! -x "$file" ]; then
-    doctor_fail "$stage hook $shown is not executable: chmod +x $(sh_quote "$shown")"
+    doctor_fail "$stage hook $shown is not executable: $(chmod_words "$shown" '')"
   fi
   state=$(hook_gate_state "$file" "$needle" "$@")
   if [ "$state" = multiple ]; then

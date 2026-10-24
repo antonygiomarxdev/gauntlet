@@ -1002,6 +1002,23 @@ test_the_chmod_command_for_a_runner_is_pasted_as_one_word_whatever_the_path_hold
   if [ ! -x .gauntlet/bin/gauntlet ]; then fail "the pasted command did not make the runner executable"; fi
 }
 
+# R63: a path that path_spell would change (a control byte in it) has no paste form: spelled, it
+# would name another file. The message says what to do without a command to paste. An odd but
+# printable path keeps its quoted command (the test above).
+test_the_chmod_advice_has_no_paste_form_for_a_path_with_a_control_byte() {
+  local name
+  for name in $'tab\tb' $'nl\nb' $'esc\033b'; do
+    hooks_repo "$TMP/$name"
+    hooks_vendor
+    must chmod 644 .gauntlet/bin/gauntlet
+    run "$G" install-hooks
+    assert_eq 2 "$STATUS" "install-hooks in [$name]: $OUT"
+    assert_contains "$OUT" "is not executable; run chmod +x on it"
+    assert_not_contains "$OUT" "chmod +x '"
+    case "$OUT" in *$'\033'*|*$'\t'*) fail "a raw control byte reached the output: $OUT" ;; esac
+  done
+}
+
 # W3b review D I1: a runner that exists and has lost its exec bit (a checkout from a file system
 # without mode bits, core.fileMode=false) is not "no runner": the advice "run gauntlet install first"
 # loops, because install from the vendored copy said "already vendored" and stopped on the same

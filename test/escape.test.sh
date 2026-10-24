@@ -880,7 +880,7 @@ test_the_runner_that_is_not_executable_message_prints_the_path_escaped() {
   run "$G" install-hooks
   assert_eq 2 "$STATUS" "install-hooks: $OUT"
   assert_contains "$OUT" 'gauntlet: runner at '
-  assert_contains "$OUT" 'r\x1bp/.gauntlet/bin/gauntlet is not executable; run chmod +x '
+  assert_contains "$OUT" 'r\x1bp/.gauntlet/bin/gauntlet is not executable; run chmod +x on it'
   assert_clean "$OUT" "the refusal"
   printf 'pre-commit:\n  parallel: true\n' > lefthook.yml
   "$G" install-hooks > "$TMP/out" 2> "$TMP/err" || fail "install-hooks failed for a config: $(cat "$TMP/out" "$TMP/err")"
@@ -888,7 +888,7 @@ test_the_runner_that_is_not_executable_message_prints_the_path_escaped() {
   assert_clean "$(cat "$TMP/err")" "the warning"
   run "$G" doctor
   assert_contains "$OUT" 'FAIL runner at '
-  assert_contains "$OUT" 'r\x1bp/.gauntlet/bin/gauntlet is not executable; run chmod +x '
+  assert_contains "$OUT" 'r\x1bp/.gauntlet/bin/gauntlet is not executable; run chmod +x on it'
   assert_clean "$OUT" "doctor"
 }
 

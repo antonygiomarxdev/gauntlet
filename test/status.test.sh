@@ -1329,6 +1329,61 @@ test_doctor_chmod_command_for_a_hook_is_pasted_as_one_word_whatever_the_path_hol
   if [ ! -x "$name/pre-commit" ]; then fail "the pasted command did not make the hook executable"; fi
 }
 
+# R63: no command to paste for a path with a control byte (spelled, it would name another file).
+test_doctor_chmod_advice_for_a_runner_has_no_paste_form_for_a_path_with_a_control_byte() {
+  local name
+  for name in $'tab\tb' $'nl\nb' $'esc\033b'; do
+    mkrepo
+    doctor_install
+    must mv "$TMP/repo" "$TMP/$name"
+    must cd "$TMP/$name"
+    must chmod -x .gauntlet/bin/gauntlet
+    run "$G" doctor
+    assert_eq 1 "$STATUS" "doctor in [$name]: $OUT"
+    assert_contains "$OUT" "is not executable; run chmod +x on it"
+    assert_not_contains "$OUT" "chmod +x '"
+    case "$OUT" in *$'\033'*|*$'\t'*) fail "a raw control byte reached the output: $OUT" ;; esac
+    must cd "$TMP"
+  done
+}
+
+test_doctor_chmod_advice_for_a_hook_has_no_paste_form_for_a_path_with_a_control_byte() {
+  local name
+  for name in $'tab\tb' $'nl\nb' $'esc\033b'; do
+    mkrepo
+    must git config core.hooksPath "$name"
+    doctor_install
+    must chmod 644 "$name/pre-commit"
+    run "$G" doctor
+    assert_eq 1 "$STATUS" "doctor in [$name]: $OUT"
+    assert_contains "$OUT" "pre-commit hook "
+    assert_contains "$OUT" "is not executable: run chmod +x on it"
+    assert_not_contains "$OUT" "chmod +x '"
+    case "$OUT" in *$'\033'*|*$'\t'*) fail "a raw control byte reached the output: $OUT" ;; esac
+    must cd "$TMP"
+    must rm -rf "$TMP/repo"
+  done
+}
+
+test_doctor_chmod_advice_for_a_shared_script_has_no_paste_form_for_a_path_with_a_control_byte() {
+  local name
+  for name in $'tab\tb' $'nl\nb' $'esc\033b'; do
+    mkrepo
+    must mkdir "$name"
+    printf '#!/bin/sh\necho shared\n' > "$name/pre-commit"
+    must chmod 644 "$name/pre-commit"
+    must ln -s pre-commit "$name/pre-push"
+    must git config core.hooksPath "$name"
+    doctor_install
+    run "$G" doctor
+    assert_contains "$OUT" "is not executable: run chmod +x on it"
+    assert_not_contains "$OUT" "chmod +x '"
+    case "$OUT" in *$'\033'*|*$'\t'*) fail "a raw control byte reached the output: $OUT" ;; esac
+    must cd "$TMP"
+    must rm -rf "$TMP/repo"
+  done
+}
+
 test_doctor_fail_lines_name_the_fix() {
   mkrepo
   doctor_install
