@@ -1,0 +1,3 @@
+kind: Added
+body: '`install` writes `.gauntlet/.gitignore` so a root ignore rule cannot hide the runner or the state files, and `doctor` fails when git hides a file gauntlet needs, when the base does not resolve, or when the vendored runner is incomplete.'
+time: 2026-10-24T01:13:13.385950697-06:00
