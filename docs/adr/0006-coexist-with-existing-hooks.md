@@ -16,7 +16,7 @@ Most repositories already run something on commit and push: husky, lefthook, pre
    - a custom `core.hooksPath`: in that directory's hook files;
    - otherwise: in the plain git hooks directory.
 
-   It touches nothing else. When a hook's last line is an `exit`, the line goes before it.
+   It touches nothing else. In an existing hook the line goes first, right after the shebang line. An early `exit`, an `exec` or a failing last command cannot skip it, and the project's own hook then runs unchanged and keeps its own exit status.
 2. gauntlet never sets or changes `core.hooksPath`.
 3. YAML hook managers (lefthook, prek or the `pre-commit` framework) get the exact snippet **printed**, not an edit. `doctor` fails until the snippet is present.
 4. gauntlet installs its own hooks only when the project has none.
