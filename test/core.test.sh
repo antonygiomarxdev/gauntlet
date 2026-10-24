@@ -585,11 +585,10 @@ test_the_run_root_is_not_exported_to_children() {
   assert_eq "" "$(cat "$TMP/env.out")" "GAUNTLET_TMP and GAUNTLET_PARTIAL as the detector saw them"
 }
 
-# M6: when the run root cannot be entered, the root that was made is still removed.
-test_a_root_that_cannot_be_entered_is_still_removed() {
-  [ "$(id -u)" -ne 0 ] || { skip "root enters any directory"; return 77; }
-  # W2b re-review N7: BSD rm (macOS) stops on a directory it cannot enter and leaves it, even an empty
-  # one, so the assertion below cannot hold there. Probe the platform first, and skip with the reason.
+# closed_dir_is_removed: succeed when `rm -rf` removes an empty directory of mode 000, as GNU rm
+# does. BSD rm (macOS) stops on a directory it cannot enter and leaves it, even an empty one. The
+# test of a run root that cannot be entered (below) holds only where rm removes it.
+closed_dir_is_removed() {
   local probe
   probe=$(mktemp -d "$TMP/probe.XXXXXX") || fail "cannot make the probe directory"
   chmod 000 "$probe"
@@ -597,6 +596,50 @@ test_a_root_that_cannot_be_entered_is_still_removed() {
   if [ -e "$probe" ]; then
     chmod 700 "$probe"
     rm -rf "$probe"
+    return 1
+  fi
+}
+
+# closed_dir_rm_shim <stops|removes>: an rm first on PATH that behaves as BSD rm does (stops on a
+# directory it cannot enter, prints the usual message, exits 1) or as GNU rm does (removes it).
+closed_dir_rm_shim() {
+  local real
+  # The real rm, also when a shim of the other kind is already first on PATH.
+  real=$(PATH=${PATH#"$TMP/rmshim:"} command -v rm)
+  must mkdir -p "$TMP/rmshim"
+  # shellcheck disable=SC2016 # the shim's own variables, expanded when it runs
+  case "$1" in
+    stops)
+      printf '#!/bin/sh\nfor d in "$@"; do :; done\nif [ -d "$d" ] && [ ! -x "$d" ]; then echo "rm: $d: Permission denied" >&2; exit 1; fi\nexec "%s" "$@"\n' "$real" > "$TMP/rmshim/rm"
+      ;;
+    removes)
+      printf '#!/bin/sh\nfor d in "$@"; do :; done\nif [ -d "$d" ]; then chmod u+rwx "$d"; fi\nexec "%s" "$@"\n' "$real" > "$TMP/rmshim/rm"
+      ;;
+  esac
+  must chmod +x "$TMP/rmshim/rm"
+  PATH="$TMP/rmshim:$PATH"
+}
+
+# The probe says what rm does, on every platform: its verdict is pinned with an rm of each kind, so
+# a probe that always says "removed" (and so fails on BSD) or never does (and so skips on GNU) is
+# caught here and not only on the platform where it matters.
+test_the_closed_directory_probe_tells_an_rm_that_stops_from_one_that_removes() {
+  closed_dir_rm_shim stops
+  if closed_dir_is_removed; then fail "the probe says rm removes a directory it cannot enter, and this rm stops on it"; fi
+  closed_dir_rm_shim removes
+  closed_dir_is_removed || fail "the probe says rm leaves a directory it cannot enter, and this rm removes it"
+}
+
+# M6: when the run root cannot be entered, the root that was made is still removed.
+test_a_root_that_cannot_be_entered_is_still_removed() {
+  [ "$(id -u)" -ne 0 ] || { skip "root enters any directory"; return 77; }
+  # The directory the shim below makes is mode 000 until the cleanup removes it. If the cleanup
+  # fails, this teardown makes it removable before the harness removes $TMP, so a failed run never
+  # leaves a directory the harness cannot delete.
+  trap 'chmod -R u+rwx "$TMP" 2> /dev/null; rm -rf "$TMP"' EXIT
+  # W2b re-review N7: BSD rm (macOS) stops on a directory it cannot enter and leaves it, even an empty
+  # one, so the assertion below cannot hold there. Probe the platform first, and skip with the reason.
+  if ! closed_dir_is_removed; then
     skip "rm -rf leaves an empty mode-000 directory on this platform (BSD rm): the removal of a root that cannot be entered cannot be tested here"
     return 77
   fi
@@ -612,10 +655,6 @@ printf '%s\n' "\$dir"
 SHIM
   must chmod +x "$TMP/shim/mktemp"
   run env PATH="$TMP/shim:$PATH" TMPDIR="$TMP/priv" "$G" base
-  # The directory the shim made may still be mode 000 if the cleanup failed: make everything under
-  # TMPDIR removable before anything is asserted, so a failed run never leaves a directory the
-  # harness cannot delete.
-  chmod -R u+rwx "$TMP/priv" 2> /dev/null || true
   assert_eq 2 "$STATUS" "status: $OUT"
   assert_contains "$OUT" "cannot enter the temp directory"
   assert_eq "" "$(ls -A "$TMP/priv")" "what the run left in TMPDIR"

@@ -2817,6 +2817,23 @@ test_a_shared_script_is_done_only_when_each_gate_is_under_its_own_guard() {
   assert_not_contains "$OUT" "ACTION NEEDED"
 }
 
+# A script that serves both hooks of an ordinary hooks directory may hold the guarded form of a gate
+# (the form a shared directory needs, which skips a repo without .gauntlet/) for either hook, next to
+# the plain one for the other: all of these are a gate of ours.
+test_a_one_script_pair_may_hold_the_guarded_form_of_either_gate() {
+  one_script_repo symlink
+  printf '#!/bin/sh\n%s\n%s\nfi\n%s\n%s\nfi\n' "$HOOK_TEST_GUARD_STAGED" "$HOOK_TEST_SHARED_STAGED" "$HOOK_TEST_GUARD_CI" "$HOOK_TEST_GATE_CI" > .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "already present in .git/hooks/pre-commit"
+  assert_not_contains "$OUT" "ACTION NEEDED"
+  printf '#!/bin/sh\n%s\n%s\nfi\n%s\n%s\nfi\n' "$HOOK_TEST_GUARD_STAGED" "$HOOK_TEST_GATE_STAGED" "$HOOK_TEST_GUARD_CI" "$HOOK_TEST_SHARED_CI" > .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "already present in .git/hooks/pre-commit"
+  assert_not_contains "$OUT" "ACTION NEEDED"
+}
+
 # In a hooks directory shared with other repositories the gates inside the tests on the hook's name
 # are the guarded forms: a plain gate would fail in a repo that has no .gauntlet/.
 test_a_shared_dir_script_is_done_only_with_the_guarded_gates() {
@@ -2982,11 +2999,12 @@ test_husky_v9_print_only_hook_gets_no_exec_warning() {
   assert_eq "" "$(cat "$TMP/err")" "no warning for a husky v9 hook that is only printed"
 }
 
-# hooks_path_fails: a git first on PATH whose `config --get core.hooksPath` fails with 128, as it does
-# when it cannot read or expand the value; every other call goes to the real git. (With an unknown ~user
-# in the value every git command fails, so the failure has to be simulated to reach this read.)
+# hooks_path_fails [<status>]: a git first on PATH whose `config --get core.hooksPath` fails with 128
+# (or <status>), as it does when it cannot read or expand the value; every other call goes to the real
+# git. (With an unknown ~user in the value every git command fails, so the failure has to be simulated
+# to reach this read.)
 hooks_path_fails() {
-  local real
+  local real code=${1:-128}
   real=$(command -v git) || fail "hooks_path_fails: no git on PATH"
   must mkdir -p "$TMP/shim"
   cat > "$TMP/shim/git" <<SHIM
@@ -2994,7 +3012,7 @@ hooks_path_fails() {
 case " \$* " in
   *" config "*" --get core.hooksPath"*)
     echo "fatal: simulated failure reading core.hooksPath" >&2
-    exit 128
+    exit $code
     ;;
 esac
 exec "$real" "\$@"
@@ -3009,6 +3027,18 @@ test_a_hooks_path_git_cannot_read_stops_install_hooks() {
   hooks_repo "$TMP/repo"
   hooks_vendor
   hooks_path_fails
+  run "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot read core.hooksPath: fatal: simulated failure reading core.hooksPath"
+  if [ -e .git/hooks/pre-commit ]; then fail "a hook was written to the default directory"; fi
+}
+
+# Only status 1 is "unset". git config also exits 2 (an unusable config file, an invalid key): that is an
+# error with git's message too, and no hook is written to the default directory.
+test_a_hooks_path_read_that_exits_2_is_an_error_not_unset() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  hooks_path_fails 2
   run "$G" install-hooks
   assert_eq 2 "$STATUS" "install-hooks: $OUT"
   assert_contains "$OUT" "gauntlet: cannot read core.hooksPath: fatal: simulated failure reading core.hooksPath"

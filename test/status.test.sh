@@ -811,6 +811,18 @@ test_doctor_runner_not_executable_fails() {
   assert_eq 0 "$STATUS" "doctor after chmod +x: $OUT"
 }
 
+# A lib file that is there and not empty but does not load is none of the list's business: only
+# `--version`, which sources every lib, sees it. The generic FAIL says to re-vendor.
+test_doctor_runner_with_a_lib_that_does_not_load_fails() {
+  mkrepo
+  doctor_install
+  { printf 'fi\n'; cat .gauntlet/lib/paths.sh; } > "$TMP/paths.sh"
+  must cp "$TMP/paths.sh" .gauntlet/lib/paths.sh
+  doctor_one_fail "FAIL .gauntlet/bin or .gauntlet/lib is broken or missing"
+  assert_not_contains "$OUT" "lacks files"
+  assert_not_contains "$OUT" "ok runner"
+}
+
 test_doctor_runner_all_fine_is_ok() {
   mkrepo
   doctor_install
