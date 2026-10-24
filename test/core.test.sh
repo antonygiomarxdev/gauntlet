@@ -53,6 +53,105 @@ test_config_outside_repo_exits_2() {
   assert_contains "$OUT" "not inside a git repository"
 }
 
+# repo_root says "not inside a git repository" when git says that and only then. Any other failure
+# is git's own: an unreadable config (here a core.hooksPath with a ~user that does not exist, which
+# every git command trips over) or a bare repository. It is named by git's first error line.
+test_repo_root_names_the_git_error_when_it_is_not_a_missing_repository() {
+  mkrepo
+  must git config core.hooksPath '~gauntlet-no-such-user/hooks'
+  run "$G" status
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot find the repository root: fatal: failed to expand user dir in: '~gauntlet-no-such-user/hooks'"
+  assert_not_contains "$OUT" "not inside a git repository"
+  run bash -c ". '$ROOT/lib/core.sh'; repo_root"
+  assert_eq 2 "$STATUS" "repo_root: $OUT"
+  assert_contains "$OUT" "cannot find the repository root: fatal: failed to expand user dir"
+}
+
+test_repo_root_in_a_bare_repository_names_the_git_error() {
+  must git init -q --bare "$TMP/bare.git"
+  must cd "$TMP/bare.git"
+  run "$G" status
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot find the repository root: fatal: this operation must be run in a work tree"
+  assert_not_contains "$OUT" "not inside a git repository"
+}
+
+# The git line may hold text the project wrote (a config value, a path): a control byte in it is
+# written out, never sent to the terminal. (This git already turns the byte into "?", so a git that
+# does not stands in.)
+test_repo_root_prints_the_git_error_escaped() {
+  local real
+  real=$(command -v git) || fail "no git on PATH"
+  must mkdir "$TMP/shim" "$TMP/plain"
+  cat > "$TMP/shim/git" <<SHIM
+#!/bin/sh
+if [ "\$1" = rev-parse ]; then
+  printf 'fatal: bad config value \033[2J here\nhint: a second line git printed\n' >&2
+  exit 128
+fi
+exec "$real" "\$@"
+SHIM
+  must chmod +x "$TMP/shim/git"
+  must cd "$TMP/plain"
+  run env PATH="$TMP/shim:$PATH" "$G" status
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" 'gauntlet: cannot find the repository root: fatal: bad config value \x1b[2J here'
+  assert_not_contains "$OUT" "a second line git printed"
+  assert_eq 0 "$(printf '%s' "$OUT" | LC_ALL=C tr -d '\011\012\040-\176' | wc -c | tr -d ' ')" "raw control bytes in: $OUT"
+}
+
+# A git that fails without a word still gets a message that says what failed.
+test_repo_root_says_so_when_git_fails_without_a_message() {
+  local real
+  real=$(command -v git) || fail "no git on PATH"
+  must mkdir "$TMP/shim" "$TMP/plain"
+  cat > "$TMP/shim/git" <<SHIM
+#!/bin/sh
+if [ "\$1" = rev-parse ]; then exit 128; fi
+exec "$real" "\$@"
+SHIM
+  must chmod +x "$TMP/shim/git"
+  must cd "$TMP/plain"
+  run env PATH="$TMP/shim:$PATH" "$G" status
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_eq "gauntlet: cannot find the repository root: git failed" "$OUT" "the message"
+}
+
+test_repo_root_outside_a_repository_still_says_so() {
+  must mkdir "$TMP/plain"
+  must cd "$TMP/plain"
+  run "$G" status
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "gauntlet: not inside a git repository"
+}
+
+# git's messages are translated, so "not a git repository" is only recognised in English: the second
+# look at git's error is made in the C locale. A git that answers in German unless LC_ALL is C stands in
+# for a translated git here (none is installed on most machines).
+test_repo_root_asks_git_for_its_error_in_the_c_locale() {
+  local real
+  real=$(command -v git) || fail "no git on PATH"
+  must mkdir "$TMP/shim" "$TMP/plain"
+  cat > "$TMP/shim/git" <<SHIM
+#!/bin/sh
+if [ "\$1" = rev-parse ]; then
+  if [ "\${LC_ALL:-}" = C ]; then
+    echo "fatal: not a git repository (or any of the parent directories): .git" >&2
+  else
+    echo "fatal: kein Git-Repository (oder irgendeines der Elternverzeichnisse): .git" >&2
+  fi
+  exit 128
+fi
+exec "$real" "\$@"
+SHIM
+  must chmod +x "$TMP/shim/git"
+  must cd "$TMP/plain"
+  run env PATH="$TMP/shim:$PATH" LANG=de_DE.UTF-8 "$G" status
+  assert_eq 2 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "gauntlet: not inside a git repository"
+}
+
 # Harness tests: run copies of run.sh/lib.sh over throwaway test dirs so the
 # real suite is never asked to judge its own harness.
 harness_copy() {

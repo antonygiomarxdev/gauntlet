@@ -108,9 +108,19 @@ plural() {
   if [ "$1" = 1 ]; then printf '%s %s\n' "$1" "$2"; else printf '%s %s\n' "$1" "$3"; fi
 }
 
-# repo_root: print the absolute path of the top-level working tree.
+# repo_root: print the absolute path of the top-level working tree. When git fails, only "not a
+# git repository" means we are outside one. Any other failure is git's own (a core.hooksPath it
+# cannot expand, a bare repository, a repository owned by someone else) and is named by its first
+# error line. Git's messages are translated, so the second look is taken in the C locale.
 repo_root() {
-  git rev-parse --show-toplevel 2>/dev/null || die "not inside a git repository"
+  local err
+  git rev-parse --show-toplevel 2> /dev/null && return 0
+  err=$(LC_ALL=C git rev-parse --show-toplevel 2>&1 > /dev/null) || true
+  case "$err" in
+    *'not a git repository'*) die "not inside a git repository" ;;
+    '') die "cannot find the repository root: git failed" ;;
+    *) die "cannot find the repository root: ${err%%$'\n'*}" ;;
+  esac
 }
 
 # config_value <file> <key> [default]: print the last value set for key in the config
