@@ -1413,10 +1413,11 @@ test_a_base_that_selects_the_branch_itself_is_loosening_in_the_local_run_too() {
   run "$G" check --ci
   assert_eq 1 "$STATUS" "local: $OUT"
   assert_contains "$OUT" "  @config  base (unset) → HEAD"
-  local_lines=$(printf '%s\n' "$OUT" | grep '@config')
+  assert_contains "$OUT" 'gauntlet: base= is also judged against main (the base without it); add a row with gauntlet loosen @config "base (unset) → HEAD" "<reason>", or run gauntlet base HEAD on this branch'
+  local_lines=$(printf '%s\n' "$OUT" | grep '^  @config')
   exc_gate
   assert_eq 1 "$STATUS" "CI: $OUT"
-  assert_eq "$local_lines" "$(printf '%s\n' "$OUT" | grep '@config')" "the same @config lines locally and in CI"
+  assert_eq "$local_lines" "$(printf '%s\n' "$OUT" | grep '^  @config')" "the same @config lines locally and in CI"
 }
 
 test_a_row_that_covers_the_base_is_new_since_the_default_base_too() {
@@ -1454,6 +1455,87 @@ test_a_base_the_main_branch_has_too_is_no_loosening() {
   exc_gate
   assert_eq 0 "$STATUS" "CI: $OUT"
   assert_not_contains "$OUT" "@config"
+}
+
+# Gitflow: the default branch is main, base=develop is on develop only, and feat is cut from
+# develop. The run cannot know the target CI will name, so base= is also judged against the
+# default base (R42); the FAIL says how to clear it.
+
+# exc_gitflow [row]: main with the todo rule and a baseline; develop sets base=develop and, with
+# an argument, files a `loosen @config` row for it. Leaves develop checked out.
+exc_gitflow() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  exc_rebase
+  exc_commit main
+  must git checkout -q -b develop
+  printf 'base=develop\n' > .gauntlet/config
+  if [ -n "${1:-}" ]; then
+    run "$G" loosen @config "base" "$1"
+    assert_eq 0 "$STATUS" "loosen: $OUT"
+  fi
+  exc_rebase
+  exc_commit develop
+}
+
+# exc_gitflow_feat: feat, cut from develop, with a commit of its own.
+exc_gitflow_feat() {
+  must git checkout -q -b feat
+  printf 'y\n' > c.txt
+  exc_rebase
+  exc_commit feat
+}
+
+test_a_base_on_develop_only_fails_with_the_way_out() {
+  exc_gitflow
+  exc_gitflow_feat
+  run "$G" check --ci
+  assert_eq 1 "$STATUS" "local: $OUT"
+  assert_contains "$OUT" "  @config  base (unset) → develop"
+  assert_contains "$OUT" 'gauntlet: base= is also judged against main (the base without it); add a row with gauntlet loosen @config "base (unset) → develop" "<reason>", or run gauntlet base develop on this branch'
+  # The hint comes right after the line it explains, not before the FAIL line of another section.
+  assert_eq '  @config  base (unset) → develop' "$(printf '%s\n' "$OUT" | grep -B1 'is also judged against' | head -n 1)" "the hint follows the @config line"
+}
+
+test_a_base_on_develop_only_passes_with_a_row_on_develop() {
+  exc_gitflow "reviewed: develop is the integration branch"
+  exc_gitflow_feat
+  run "$G" check --ci
+  assert_eq 0 "$STATUS" "local: $OUT"
+  assert_contains "$OUT" 'note: loosened @config: base (unset) → develop; covered by "reviewed: develop is the integration branch"'
+  assert_not_contains "$OUT" "is also judged against"
+}
+
+test_a_base_on_develop_only_passes_after_gauntlet_base_develop() {
+  exc_gitflow
+  exc_gitflow_feat
+  run "$G" base develop
+  assert_eq 0 "$STATUS" "base: $OUT"
+  run "$G" check --ci
+  assert_eq 0 "$STATUS" "local: $OUT"
+  assert_not_contains "$OUT" "@config"
+}
+
+# The merge-base comparison already says it: the extra line is for what only the default base
+# adds, so it is not printed twice.
+test_the_merge_base_comparison_alone_gets_no_default_base_hint() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  exc_rebase
+  exc_commit main
+  must git branch develop
+  must git checkout -q -b feat
+  printf 'base=develop\n' > .gauntlet/config
+  exc_rebase
+  exc_commit feat
+  run "$G" check --ci
+  assert_eq 1 "$STATUS" "local: $OUT"
+  assert_contains "$OUT" "  @config  base (unset) → develop"
+  assert_not_contains "$OUT" "is also judged against"
 }
 
 # The base= names the base the run has without it: that is no change of base.

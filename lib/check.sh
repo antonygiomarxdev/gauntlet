@@ -201,12 +201,17 @@ check_run() {
   base_has "$sha" .gauntlet/config || cfg_rc=$?
   if [ "$rc" -gt 1 ] || [ "$cfg_rc" -gt 1 ]; then return 2; fi
   if [ "$rc" -eq 0 ] || [ "$cfg_rc" -eq 0 ]; then
-    cmp_loosened "$sha" "$scratch/loosened.covered" "$dbase" > "$scratch/loosened.rows" || return 2
+    cmp_loosened "$sha" "$scratch/loosened.covered" "$dbase" "$scratch/loosened.hint" > "$scratch/loosened.rows" || return 2
     # Covered loosenings pass; the report names each one with its row's reason, here and in CI.
     awk -F '\t' '{ printf "note: loosened %s: %s; covered by \"%s\"\n", $1, $2, $3 }' "$scratch/loosened.covered" >> "$body" || return 2
     if [ -s "$scratch/loosened.rows" ]; then
       printf '[loosened]\n' >> "$body"
       awk -F '\t' '{ printf "  %s  %s\n", $1, $2 }' "$scratch/loosened.rows" >> "$body"
+    fi
+    # What only the default base adds, and no row covers, gets its way out said once.
+    if [ -s "$scratch/loosened.hint" ]; then
+      printf 'gauntlet: base= is also judged against %s (the base without it); add a row with gauntlet loosen @config "%s" "<reason>", or run gauntlet base %s on this branch\n' \
+        "$(path_spell "$dbase")" "$(path_spell "$(cat "$scratch/loosened.hint")")" "$(path_spell "$base")" >> "$body"
     fi
     loosened_n=$(awk 'END { print NR }' "$scratch/loosened.rows") || return 2
   fi
@@ -703,25 +708,28 @@ cmp_touched_in() {
   cat "$scratch/touched"
 }
 
-# cmp_loosened <merge-base> [<covered-file> [<default-base>]]: the no-loosening check (decision 6,
+# cmp_loosened <merge-base> [<covered-file> [<default-base> [<hint-file>]]]: the no-loosening check (decision 6,
 # EXC-AC5..AC8). Compares each rule file at the merge-base with the working tree and prints
 # a tab row (rule, what changed) for each loosening that no new exceptions.tsv row covers.
 # Prints nothing when nothing was loosened. A loosening that a row covers is not printed;
 # when <covered-file> is given it gets a row (rule, what changed, the row's reason) for
 # each of them, so the report can say what was relaxed and why. <default-base> is the base
 # resolve_base_default names: the base= of the config is judged against it as well as against the
-# merge-base (cmp_loosened_in).
+# merge-base (cmp_loosened_in). <hint-file> gets the change that only the comparison with the
+# default base found and no row covers (the one the report explains how to clear), else nothing.
 cmp_loosened() {
-  local mb=$1 covered=${2:-} dbase=${3:-} scratch status=0
+  local mb=$1 covered=${2:-} dbase=${3:-} hint=${4:-} scratch status=0
   scratch=$(tmp_new -d) || return 2
   cmp_loosened_in "$mb" "$scratch" "$dbase" || status=$?
   if [ "$status" -eq 0 ] && [ -n "$covered" ]; then cp "$scratch/covered" "$covered" || status=2; fi
+  if [ "$status" -eq 0 ] && [ -n "$hint" ]; then cp "$scratch/hint" "$hint" || status=2; fi
   rm -rf "$scratch"
   return "$status"
 }
 
 # cmp_loosened_in <merge-base> <scratch> <default-base>: the work of cmp_loosened, with
-# intermediate files kept in <scratch>; the covered rows are left in <scratch>/covered.
+# intermediate files kept in <scratch>; the covered rows are left in <scratch>/covered, and in
+# <scratch>/hint the first change that only the default base's comparison found and no row covers.
 # Only rules that exist at the base are judged; a rule added on the branch is never
 # loosened.
 cmp_loosened_in() {
@@ -732,6 +740,7 @@ cmp_loosened_in() {
   awk -F "$DETECT_TAB" '$1 == "loosen" { print $2 "\t" $3 }' "$scratch/exc.new" > "$scratch/new.loosen" || return 2
   awk -F "$DETECT_TAB" '$1 == "remove" { print $2 "\t" $3 }' "$scratch/exc.new" > "$scratch/new.remove" || return 2
   : > "$scratch/covered"
+  : > "$scratch/hint"
   git_nul_diff_lines -c core.quotepath=off ls-tree --full-tree -r --name-only -z "$mb" -- .gauntlet/rules > "$scratch/base.rules" || return 2
   # Which files the detectors of those rules name changed, answered for the whole run at once.
   detector_prime "$mb" "$scratch" "$root" || return 2
@@ -780,6 +789,7 @@ cmp_loosened_in() {
       reason=$(awk -F "$DETECT_TAB" 'index($1, "@config:") == 1 { print "x" $2; exit }' "$scratch/new.loosen.d") || return 2
       cp "$scratch/changes.d" "$scratch/changes" || return 2
       loosen_row @config "$reason" "$scratch" || return 2
+      if [ -z "$reason" ]; then awk 'NR == 1' "$scratch/changes.d" > "$scratch/hint" || return 2; fi
     fi
   fi
   cat "$scratch/out"
