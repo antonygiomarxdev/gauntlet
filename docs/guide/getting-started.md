@@ -83,7 +83,7 @@ When the gate blocks you, the output names the file, the line, the rule and the 
 gauntlet waive src/legacy/report.ts "rewrite scheduled in #123; this PR only renames"
 ```
 
-Then commit `.gauntlet/exceptions.tsv` on the same branch. A waiver applies only on its own branch. See [Exceptions](exceptions.md).
+Then commit `.gauntlet/exceptions.tsv` on the same branch. A waiver applies only on its own branch, and it clears the new and touched-file lines of that path only. The rule's total must still not rise, so a waiver cannot let debt grow: see [Exceptions](exceptions.md#the-file). A rule you loosen or delete needs a `gauntlet loosen` or `gauntlet remove` row.
 
 ## 4. Grow the rules
 

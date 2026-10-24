@@ -26,7 +26,7 @@ That order is the order of preference. A custom script detector needs a `script`
 
 ## Fingerprint
 
-A violation's identity is **rule + file + the flagged line's text, with whitespace collapsed**, never its line number. Moving code, inserting lines or reformatting a file leaves fingerprints unchanged. A violation is *new* when its fingerprint appears more often than it did at the base.
+A violation's identity is **rule + file + the flagged line's text, with whitespace collapsed**, never its line number. Inserting lines, moving a line within its file, re-indenting and changing line endings leave fingerprints unchanged. Only runs of spaces and tabs are normalized: a formatter that changes the text of a flagged line (splits it, or changes quotes or punctuation) makes a new fingerprint, and so does moving the line to another file. A violation is *new* when its fingerprint appears more often than it did at the base.
 
 ## Baseline
 

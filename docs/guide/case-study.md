@@ -97,8 +97,8 @@ Every rise in every baseline was inspected, commit by commit:
 |---|---:|---|---|
 | New rule or wider measurement | 7 | A new rule or a newly counted folder entered with its existing debt. Not new debt, but indistinguishable from it in a single total. | A new rule gets its own baseline entries. It is never mixed into an existing rule's total. |
 | Tool bug | 1 | The diff gate overwrote the repo-wide lock with the diff's own count. Main was already 7 above the lock and nobody saw it. | The baseline is derived: only the runner writes it, and CI requires it to equal what the code measures. |
-| New debt with a reason | 2 | +1 colour literal each, one explained in the commit ("a shared constant used by nine tokens, raised on purpose"). | Passes only with a `loosen` row that states the reason. |
-| New debt without a reason | 3 | +7 duplicate definitions in the first week ("raise baseline to 120"), before the diff gate covered that ratchet. | Fails the gate without an exception row. |
+| New debt with a reason | 2 | +1 colour literal each, one explained in the commit ("a shared constant used by nine tokens, raised on purpose"). | Fails the gate whatever rows exist: a `loosen` row covers a rule that is loosened (for example `block` → `shadow`), not a violation added. Shipping the +1 on purpose means loosening the rule, with a row that states the reason. |
+| New debt without a reason | 3 | +7 duplicate definitions in the first week ("raise baseline to 120"), before the diff gate covered that ratchet. | Fails the gate: the total of a `block` rule cannot rise. |
 
 ### 2. The escape hatch became routine
 

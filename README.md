@@ -64,7 +64,7 @@ flowchart LR
 ```
 
 1. **Onboard** (planned). An agent skill will run once per repository, existing or empty, and propose each rule with its rationale, a primary source, the current count, the worst files, a detector and a fix hint, for you to accept, adjust or reject. Today you write the rule files yourself. Write new rules as **shadow** first: they report "would have failed" until you promote them. Nothing enforces this; only `block` rules fail the gate.
-2. **Measure.** Every violation gets a **fingerprint** (rule + file + normalized line text), so moving or reformatting code changes nothing.
+2. **Measure.** Every violation gets a **fingerprint** (rule + file + normalized line text), so inserting lines, moving code within a file and re-indenting change nothing. A formatter that rewrites the text of a flagged line, or a move to another file, makes it new.
 3. **Gate.** In order of what is checked:
    - no new `block` fingerprint;
    - no rule total rises;
