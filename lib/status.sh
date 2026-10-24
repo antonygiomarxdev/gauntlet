@@ -602,9 +602,7 @@ doctor_ignored() {
   git ls-files -z --others --ignored --exclude-standard -- .gauntlet > "$scratch/ignored.all" || return 2
   : > "$scratch/ignored.keep" || return 2
   while IFS= read -r -d '' path; do
-    case "${path#.gauntlet/}" in
-      STATUS.md|.install.lock|.install.lock/*|.DS_Store|*/.DS_Store|*.swp|*.orig) continue ;;
-    esac
+    if gauntlet_junk "${path#.gauntlet/}"; then continue; fi
     printf '%s\0' "$path" >> "$scratch/ignored.keep" || return 2
   done < "$scratch/ignored.all"
   if [ ! -s "$scratch/ignored.keep" ]; then

@@ -2013,3 +2013,29 @@ test_the_names_of_untracked_files_are_spelled() {
   assert_contains "$OUT" '.gauntlet/formats/t\tb.md'
   case "$OUT" in *$'\033'*) fail "a raw escape byte reached the output" ;; esac
 }
+
+# R65: the run never reads the junk an OS or an editor leaves under .gauntlet (a Finder's .DS_Store, a
+# swap file, the .orig of a mergetool), so a clone that lacks it judges the same: it does not
+# refuse. doctor skips the same names in its ignored-files check, from the one helper.
+test_junk_files_under_gauntlet_do_not_refuse() {
+  gate_setup 'ok'
+  must mkdir -p .gauntlet/sub .gauntlet/.install.lock
+  printf 'x\n' > .gauntlet/.DS_Store
+  printf 'x\n' > .gauntlet/sub/.DS_Store
+  printf 'x\n' > .gauntlet/x.swp
+  printf 'x\n' > .gauntlet/baseline.tsv.orig
+  printf 'x\n' > .gauntlet/STATUS.md
+  printf 'x\n' > .gauntlet/.install.lock/pid
+  gate
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_not_contains "$OUT" "untracked"
+}
+
+# Anything else untracked still refuses, and only it is named.
+test_a_file_that_is_not_junk_still_refuses_beside_the_junk() {
+  gate_setup 'ok'
+  printf 'x\n' > .gauntlet/.DS_Store
+  printf 'x\n' > .gauntlet/baseline.tsv.orig
+  printf 'x\n' > .gauntlet/notes.md
+  untracked_refused ".gauntlet/notes.md"
+}

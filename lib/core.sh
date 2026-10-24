@@ -51,6 +51,18 @@ sh_quote() {
   printf "'%s'\n" "$out$rest"
 }
 
+# gauntlet_junk <path under .gauntlet>: succeed for a name the run never reads and an OS, an editor
+# or gauntlet itself leaves there: STATUS.md and the install lock, a Finder's .DS_Store, a swap file
+# (*.swp), a mergetool backup (*.orig). doctor leaves such an ignored file out of its ignored-files
+# check and check --ci leaves such an untracked file out of its refusal (R65); one list, so the two
+# cannot drift.
+gauntlet_junk() {
+  case "$1" in
+    STATUS.md|.install.lock|.install.lock/*|.DS_Store|*/.DS_Store|*.swp|*.orig) return 0 ;;
+  esac
+  return 1
+}
+
 # report_spell: path_spell for the lines of a report that gauntlet builds from names, rule ids
 # and tool output: standard input line by line, and a line that starts with "::" after blanks
 # has its first colon written \x3a, so no line of a report is a workflow command whatever a

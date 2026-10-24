@@ -48,14 +48,15 @@ check_ci() {
 # nor ignores (R64). A clone does not have it, so a run that read it (an exceptions.tsv row, a
 # baseline, a config, a format, the vendored runner) would judge differently from CI. The same
 # sentence as the dirty-tree refusal, then one line with the first five names (path_spell: a name
-# is somebody else's text) and a count of the rest. .gauntlet/.gitignore ignores STATUS.md and the
-# lock, which are not listed.
+# is somebody else's text) and a count of the rest. What git ignores is not listed, and neither is
+# the junk the run never reads (gauntlet_junk, R65).
 untracked_gauntlet_refuse() {
   local tmp name n=0 list='' more='' rc=0
   tmp=$(tmp_new) || return 2
   git -c core.quotepath=off ls-files -o --exclude-standard -z -- .gauntlet > "$tmp" || rc=2
   if [ "$rc" -eq 0 ]; then
     while IFS= read -r -d '' name; do
+      if gauntlet_junk "${name#.gauntlet/}"; then continue; fi
       n=$((n + 1))
       if [ "$n" -le 5 ]; then list=$list${list:+, }$(path_spell "$name"); fi
     done < "$tmp"
