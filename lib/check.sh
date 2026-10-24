@@ -261,7 +261,7 @@ check_run() {
   end=$(now_ms)
   ms=$((end - start))
   printf 'gauntlet  ci · %s · %s.%s s\n' "$(plural "$n_rules" rule rules)" "$((ms / 1000))" "$(((ms % 1000) / 100))"
-  path_spell < "$body" || return 2
+  report_spell < "$body" || return 2
   if [ "$broken" -eq 1 ]; then
     printf 'gauntlet: rule tests could not run\n' >&2
     return 2
@@ -1482,7 +1482,7 @@ check_staged_run() {
   awk -F '\t' '{ printf "  %s  %s ms\n", $1, $2 }' "$scratch/now/time.tsv" >> "$body" || return 2
 
   printf 'gauntlet  commit · %s · %s.%s s\n' "$(plural "$n_commit" rule rules)" "$((ms / 1000))" "$(((ms % 1000) / 100))"
-  path_spell < "$body" || return 2
+  report_spell < "$body" || return 2
   if [ "$problems" -eq 0 ]; then
     printf 'gauntlet: ok\n'
     return 0

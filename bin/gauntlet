@@ -114,7 +114,7 @@ case "${1:-}" in
     scratch=$(tmp_new -d) || exit 2
     status=0
     run_rule_tests > "$scratch/out" || status=$?
-    path_spell < "$scratch/out" || status=2
+    report_spell < "$scratch/out" || status=2
     rm -rf "$scratch"
     exit "$status"
     ;;

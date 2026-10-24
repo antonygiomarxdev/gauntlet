@@ -16,6 +16,11 @@ GAUNTLET_VERSION=0.1.0-dev
 #   with an argument: a name. The tab is written \t, the newline \n, and the result is one line.
 #   without one: filter standard input line by line; a line's own newline and its tabs, which
 #   the diff of the baseline and tool messages print, stay.
+# A name that starts with "::" (after blanks) gets its first colon written \x3a: GitHub's runner
+# trims the blanks of an output line and runs one that starts with "::" as a workflow command
+# (::error::, ::stop-commands::), and a tracked file can be named that. Standard input is left
+# as it is in this form, since it is mostly the output of tools; report_spell is the form for
+# a report that is made of names.
 # The bytes are read in the C locale, where a character is a byte. The two-byte C1 form is not
 # found by an awk that decodes UTF-8 whatever the locale.
 path_spell() {
@@ -26,15 +31,25 @@ path_spell() {
   fi
 }
 
-# spell_awk <name|lines>: the awk program of path_spell. A line with no byte that needs a look
-# is printed as it is. Any other is walked once: the text between two escapes is written in one
-# piece and nothing is accumulated, so the work is linear in the length of the line. Some awks
-# (busybox) copy the whole string on every substr call, so a long line is walked in pieces of
-# CH bytes, none of which ends inside a UTF-8 character: the copies are of one piece.
+# report_spell: path_spell for the lines of a report that gauntlet builds from names, rule ids
+# and tool output: standard input line by line, and a line that starts with "::" after blanks
+# has its first colon written \x3a, so no line of a report is a workflow command whatever a
+# tracked file or a rule is called.
+report_spell() {
+  spell_awk report
+}
+
+# spell_awk <name|lines|report>: the awk program of path_spell and report_spell. A line with no
+# byte that needs a look is printed as it is. Any other is walked once: the text between two
+# escapes is written in one piece and nothing is accumulated, so the work is linear in the
+# length of the line. Some awks (busybox) copy the whole string on every substr call, so a long
+# line is walked in pieces of CH bytes, none of which ends inside a UTF-8 character: the copies
+# are of one piece.
 spell_awk() {
   LC_ALL=C awk -v mode="$1" '
-    function spell(s, name,   n, p, e, e0, k, b) {
+    function spell(s, name,   n, p, e, e0, k, b, at) {
       n = length(s)
+      at = (lead && match(s, LEAD)) ? RLENGTH - 1 : 0
       for (p = 1; p <= n; p = e) {
         e = p + CH
         if (e <= n) {
@@ -49,12 +64,19 @@ spell_awk() {
           b = ord[substr(s, e, 1)]
           if (b >= 128 && b <= 191) e = e0
         }
-        walk(substr(s, p, e - p), name)
+        walk(substr(s, p, e - p), name, at - p + 1)
       }
     }
-    function walk(s, name,   n, i, run, v, need, lo, hi, j, b, w) {
+    # at: where the first colon of a leading "::" sits in s, a number outside 1 to length(s) for none.
+    function walk(s, name, at,   n, i, run, v, need, lo, hi, j, b, w) {
       n = length(s); i = 1; run = 1
       while (i <= n) {
+        if (i == at) {
+          if (i > run) printf "%s", substr(s, run, i - run)
+          printf "%s", "\\x3a"
+          i++; run = i
+          continue
+        }
         v = ord[substr(s, i, 1)]
         if (v >= 32 && v < 127) { i++; continue }
         w = ""; need = 0
@@ -90,9 +112,13 @@ spell_awk() {
       CH = 1024
       # Tab and newline are no reason to look at a line closely: only the rest are.
       unsafe = "[\001-\010\013-\037\177\200-\237]"
+      # What the runner trims before it looks for "::": the blanks and the other white space
+      # of Unicode (NBSP, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F, U+3000).
+      LEAD = "^([ \t]|\302\240|\341\232\200|\342\200[\200-\212\250\251\257]|\342\201\237|\343\200\200)*::"
+      lead = (mode != "lines")
       if (mode == "name") { spell(ENVIRON["GL_SPELL_NAME"], 1); printf "\n"; exit }
     }
-    $0 !~ unsafe { print; next }
+    $0 !~ unsafe && !(lead && $0 ~ LEAD) { print; next }
     { spell($0, 0); printf "\n" }
   '
 }

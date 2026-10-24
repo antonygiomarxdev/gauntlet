@@ -937,3 +937,176 @@ test_gauntlet_base_prints_the_ref_escaped() {
     assert_clean "$OUT" "base $kind"
   done
 }
+
+# --- names that start with "::" ---
+
+# GitHub's runner trims the blanks of an output line and runs one that starts with "::" as a
+# workflow command: ::error:: makes an annotation, ::stop-commands:: switches the commands off.
+# A tracked file or a rule can be called that, so no line of a report may start with it.
+
+test_a_name_that_starts_with_colons_is_written_with_its_first_colon_escaped() {
+  esc_lib
+  assert_eq '\x3a:error::x.ts' "$(path_spell '::error::x.ts')" "a name"
+  assert_eq '  \x3a:x' "$(path_spell '  ::x')" "after blanks"
+  assert_eq "$(printf '\302\240\\x3a:x')" "$(path_spell "$(printf '\302\240::x')")" "after a no-break space"
+  assert_eq "$(printf '\343\200\200\\x3a:x')" "$(path_spell "$(printf '\343\200\200::x')")" "after an ideographic space"
+  assert_eq '\x3a::x' "$(path_spell ':::x')" "three colons"
+  assert_eq 'a::x' "$(path_spell 'a::x')" "colons that are not first"
+  assert_eq ':x' "$(path_spell ':x')" "one colon"
+  assert_eq '\x1b::x' "$(path_spell "$(printf '\033::x')")" "an escaped byte comes first"
+  assert_eq '::error::x' "$(printf '::error::x\n' | path_spell)" "standard input is left as it is"
+}
+
+# The runner trims what .NET calls white space before it looks for "::": besides the blank and the
+# tab, the no-break space, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F and U+3000.
+# Zero-width and other format characters are not white space: a line behind one is no command.
+# shellcheck disable=SC2016 # the expected text holds a literal \x3a
+test_a_name_after_each_kind_of_white_space_is_escaped_and_after_other_characters_is_not() {
+  local ws
+  esc_lib
+  for ws in $'\302\240' $'\341\232\200' $'\342\200\200' $'\342\200\201' $'\342\200\202' $'\342\200\203' \
+    $'\342\200\204' $'\342\200\205' $'\342\200\206' $'\342\200\207' $'\342\200\210' $'\342\200\211' \
+    $'\342\200\212' $'\342\200\250' $'\342\200\251' $'\342\200\257' $'\342\201\237' $'\343\200\200'; do
+    assert_eq "$ws"'\x3a:x' "$(path_spell "$ws::x")" "after white space $(printf '%s' "$ws" | od -An -tx1 | tr -d ' \n')"
+    assert_eq "$ws"'\x3a:x' "$(printf '%s::x\n' "$ws" | report_spell)" "in a report, after white space $(printf '%s' "$ws" | od -An -tx1 | tr -d ' \n')"
+  done
+  for ws in $'\342\200\213' $'\342\200\214' $'\342\200\220' $'\342\200\252' $'\342\201\240' $'\357\273\277' $'\303\251'; do
+    assert_eq "$ws::x" "$(path_spell "$ws::x")" "after $(printf '%s' "$ws" | od -An -tx1 | tr -d ' \n'), which is not white space"
+  done
+}
+
+# The blanks before the colons can fill several pieces of a long line, and a piece never ends inside a
+# no-break space: the colon is found wherever it is.
+test_a_command_after_a_long_run_of_blanks_is_escaped() {
+  local off pad
+  esc_lib
+  for off in 1020 1021 1022 1023 1024 1025 3000; do
+    pad=$(head -c "$off" /dev/zero | tr '\0' ' ')
+    assert_eq "$pad"'\x3a:error::x' "$(printf '%s::error::x\n' "$pad" | report_spell)" "after $off blanks"
+    assert_eq "$pad"$'\302\240''\x3a:x' "$(printf '%s\302\240::x\n' "$pad" | report_spell)" "after $off blanks and a no-break space"
+    assert_eq "$pad"'::x' "$(printf '%s::x\n' "$pad" | path_spell)" "path_spell leaves a line as it is after $off blanks"
+  done
+}
+
+test_report_spell_escapes_a_line_that_starts_with_colons_after_blanks() {
+  esc_lib
+  assert_eq '\x3a:error::a' "$(printf '::error::a\n' | report_spell)" "at the start"
+  assert_eq '  \x3a:warning::b' "$(printf '  ::warning::b\n' | report_spell)" "after blanks"
+  assert_eq "$(printf '\t\\x3a:c')" "$(printf '\t::c\n' | report_spell)" "after a tab"
+  assert_eq 'x  ::d' "$(printf 'x  ::d\n' | report_spell)" "not at the start"
+  assert_eq '\x3a:e\x1b' "$(printf '::e\033\n' | report_spell)" "and the rest is escaped as always"
+  assert_eq "$(printf 'a\n\\x3a:b\n  c')" "$(printf 'a\n::b\n  c\n' | report_spell)" "line by line"
+}
+
+# esc_colon_repo: main with the todo rule over a format that reads a path with colons in it, a
+# baseline and no violation; the branch feat adds the file with the name that is a command.
+esc_colon_repo() {
+  mkrepo
+  must mkdir -p .gauntlet/formats
+  printf -- '---\nmatch: ^(.+):([0-9]+):(.*)$\npath: 1\nline: 2\nmessage: 3\n---\n' > .gauntlet/formats/colon.md
+  rule todo paths='**/*.ts' format=colon
+  cases_of todo 'TODO x'
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  must git add -A
+  must git commit -q -m main
+  must git checkout -q -b feat
+}
+
+# assert_no_command <text> <label>: no line starts, after blanks, with two colons.
+assert_no_command() {
+  local n
+  n=$(printf '%s\n' "$1" | grep -c '^[[:space:]]*::' || true)
+  assert_eq 0 "$n" "lines that start with :: in $2: $1"
+}
+
+test_check_ci_prints_no_line_that_starts_with_colons() {
+  esc_colon_repo
+  printf 'TODO b\n' > '::error::x.ts'
+  must git add -A
+  run "$G" baseline
+  must git add -A
+  must git commit -q -m feat
+  run "$G" check --ci --base main
+  assert_eq 1 "$STATUS" "check --ci: $OUT"
+  assert_contains "$OUT" '  \x3a:error::x.ts:1  todo  TODO b'
+  assert_no_command "$OUT" "check --ci"
+}
+
+test_the_touched_gate_prints_no_line_that_starts_with_colons() {
+  esc_colon_repo
+  must git checkout -q main
+  printf 'TODO a\n' > '::stop-commands::t.ts'
+  printf 'touched=on\n' > .gauntlet/config
+  must git add -A
+  run "$G" baseline
+  must git add -A
+  must git commit -q -m debt
+  must git checkout -q -b touch
+  printf 'TODO a\nok\n' > '::stop-commands::t.ts'
+  must git add -A
+  run "$G" baseline
+  must git add -A
+  must git commit -q -m touch
+  run "$G" check --ci --base main
+  assert_eq 1 "$STATUS" "check --ci: $OUT"
+  assert_contains "$OUT" '[touched]'
+  assert_contains "$OUT" '  \x3a:stop-commands::t.ts  1 → 1  (must go down)'
+  assert_no_command "$OUT" "check --ci"
+}
+
+test_check_staged_prints_no_line_that_starts_with_colons() {
+  esc_colon_repo
+  printf 'TODO b\n' > '::error::x.ts'
+  must git add -A
+  run "$G" check --staged
+  assert_eq 1 "$STATUS" "check --staged: $OUT"
+  assert_contains "$OUT" '  \x3a:error::x.ts:1  todo  TODO b'
+  assert_no_command "$OUT" "check --staged"
+}
+
+# A rule is named by its file, and the [time] section prints every rule.
+test_a_rule_called_like_a_command_prints_no_line_that_starts_with_colons() {
+  mkrepo
+  rule '::warning::r' paths='**/*.ts'
+  printf 'ok\n' > a.ts
+  cases_of '::warning::r' 'TODO x'
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  must git add -A
+  must git commit -q -m main
+  must git checkout -q -b feat
+  printf 'x\n' > b.txt
+  must git add -A
+  must git commit -q -m feat
+  run "$G" check --ci --base main
+  assert_eq 0 "$STATUS" "check --ci: $OUT"
+  assert_contains "$OUT" '  \x3a:warning::r  '
+  assert_no_command "$OUT" "check --ci"
+  must git add -A
+  printf 'ok\n' > .gauntlet/rules/'::warning::r.bad.txt'
+  run "$G" test-rules
+  assert_eq 1 "$STATUS" "test-rules: $OUT"
+  assert_contains "$OUT" '  \x3a:warning::r  '
+  assert_no_command "$OUT" "test-rules"
+}
+
+test_a_failed_check_prints_no_line_that_starts_with_colons() {
+  mkrepo
+  printf "check.noisy=printf '::error::boom\\\\n'; exit 1\n" > .gauntlet/config
+  must git add -A
+  run "$G" baseline
+  must git add -A
+  must git commit -q -m main
+  must git checkout -q -b feat
+  printf 'x\n' > b.txt
+  must git add -A
+  must git commit -q -m feat
+  run "$G" check --ci --base main
+  assert_eq 1 "$STATUS" "check --ci: $OUT"
+  assert_contains "$OUT" '[checks]'
+  assert_contains "$OUT" '    \x3a:error::boom'
+  assert_no_command "$OUT" "check --ci"
+}
