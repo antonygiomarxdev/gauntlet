@@ -320,17 +320,27 @@ test_base_has_and_index_has_treat_glob_characters_literally() {
   done
 }
 
-# I1 (d): the gate's own error for a base it cannot find says how to name the right one. The
-# demo is a repo whose default branch is master and that has no origin/HEAD: the fallback is main.
+# I1 (d), review C m-5 and m-7: the gate's own error for a base it cannot find says how to name the
+# right one: base= in the tracked config is the durable fix, `gauntlet base <ref>` fixes the current
+# branch only. The demo is a repo whose default branch is master and that has no origin/HEAD: the
+# fallback is main. A base given with --base (what CI passes) beats every config, so the hint to
+# change one would mislead there: the message says only which ref did not resolve.
 test_check_ci_on_a_repo_without_main_says_how_to_set_the_base() {
   mkrepo
   must git branch -m main master
   run "$G" check --ci
   assert_eq 2 "$STATUS" "check --ci: $OUT"
-  assert_contains "$OUT" "gauntlet: unknown ref: main; run gauntlet base <ref> or set base= in .gauntlet/config"
+  assert_eq "gauntlet: unknown ref: main; set base=<ref> in .gauntlet/config (all branches), or run gauntlet base <ref> (this branch only)" "$OUT"
   run "$G" check --ci --base nope
   assert_eq 2 "$STATUS" "check --ci --base nope: $OUT"
-  assert_contains "$OUT" "gauntlet: unknown ref: nope; run gauntlet base <ref> or set base= in .gauntlet/config"
+  assert_eq "gauntlet: base nope given with --base does not resolve" "$OUT"
+  printf 'base=nope\n' > .gauntlet/config
+  must git commit -q -am "base=nope"
+  run "$G" check --ci
+  assert_eq 2 "$STATUS" "check --ci with base=nope in the config: $OUT"
+  assert_eq "gauntlet: unknown ref: nope; set base=<ref> in .gauntlet/config (all branches), or run gauntlet base <ref> (this branch only)" "$OUT"
+  run "$G" check --ci --base nope
+  assert_eq "gauntlet: base nope given with --base does not resolve" "$OUT" "--base beats the config"
   run "$G" check --ci --base master
   assert_eq 0 "$STATUS" "check --ci --base master: $OUT"
 }

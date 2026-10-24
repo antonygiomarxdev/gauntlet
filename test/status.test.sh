@@ -2042,7 +2042,7 @@ test_doctor_fails_when_the_base_does_not_resolve() {
   run "$G" doctor
   assert_eq 1 "$STATUS" "doctor on a repo whose only branch is master: $OUT"
   assert_eq 1 "$(doctor_fails)" "one FAIL line: $OUT"
-  assert_contains "$OUT" "FAIL base main does not resolve; run gauntlet base <ref> or set base= in .gauntlet/config"
+  assert_contains "$OUT" "FAIL base main does not resolve; set base=<ref> in .gauntlet/config (all branches), or run gauntlet base <ref> (this branch only)"
   must git config branch.master.gauntletBase master
   run "$G" doctor
   assert_eq 0 "$STATUS" "doctor after gauntlet base master: $OUT"
@@ -2057,7 +2057,8 @@ test_doctor_fails_when_the_base_does_not_resolve() {
 # is origin/master; without it (a remote added by hand, or set-head removed) the fallback main
 # does not exist, and the command that fixes it is named.
 test_doctor_on_a_clone_whose_default_branch_is_master() {
-  must git init -q --bare -b master "$TMP/remote.git"
+  must git init -q --bare "$TMP/remote.git"
+  must git -C "$TMP/remote.git" symbolic-ref HEAD refs/heads/master
   mkrepo
   must git branch -m main master
   must git remote add origin "$TMP/remote.git"
@@ -2077,7 +2078,7 @@ test_doctor_on_a_clone_whose_default_branch_is_master() {
   must git remote set-head origin -d
   run "$G" doctor
   assert_eq 1 "$STATUS" "doctor without origin/HEAD: $OUT"
-  assert_contains "$OUT" "FAIL base main does not resolve; run gauntlet base <ref> or set base= in .gauntlet/config"
+  assert_contains "$OUT" "FAIL base main does not resolve; set base=<ref> in .gauntlet/config (all branches), or run gauntlet base <ref> (this branch only)"
 }
 
 # doctor never touches the network (R49): against a remote that cannot be reached a fetch would
@@ -2127,13 +2128,13 @@ test_doctor_fails_a_missing_base_that_the_gates_would_not_fetch() {
   must git config branch.main.gauntletBase origin/dev
   run "$G" doctor
   assert_eq 1 "$STATUS" "doctor with no remote origin: $OUT"
-  assert_contains "$OUT" "FAIL base origin/dev does not resolve; run gauntlet base <ref> or set base= in .gauntlet/config"
+  assert_contains "$OUT" "FAIL base origin/dev does not resolve; set base=<ref> in .gauntlet/config (all branches), or run gauntlet base <ref> (this branch only)"
   must git remote add origin "file://$TMP/no/such/remote.git"
   must git remote add upstream "file://$TMP/no/such/remote.git"
   must git config branch.main.gauntletBase upstream/dev
   run "$G" doctor
   assert_eq 1 "$STATUS" "doctor with a ref of another remote: $OUT"
-  assert_contains "$OUT" "FAIL base upstream/dev does not resolve; run gauntlet base <ref> or set base= in .gauntlet/config"
+  assert_contains "$OUT" "FAIL base upstream/dev does not resolve; set base=<ref> in .gauntlet/config (all branches), or run gauntlet base <ref> (this branch only)"
 }
 
 # R36: doctor says what install-hooks says about one script serving both hooks, and is satisfied

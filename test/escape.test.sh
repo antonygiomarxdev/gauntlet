@@ -714,11 +714,11 @@ test_the_base_that_does_not_resolve_is_printed_escaped() {
   must git config branch.main.gauntletBase "$ref"
   run "$G" doctor
   assert_eq 1 "$STATUS" "doctor: $OUT"
-  assert_contains "$OUT" 'FAIL base x\x1b[2Jy does not resolve; run gauntlet base <ref>'
+  assert_contains "$OUT" 'FAIL base x\x1b[2Jy does not resolve; set base=<ref> in .gauntlet/config'
   assert_clean "$OUT" "doctor"
   run "$G" check --ci
   assert_eq 2 "$STATUS" "check --ci: $OUT"
-  assert_contains "$OUT" 'gauntlet: unknown ref: x\x1b[2Jy; run gauntlet base <ref>'
+  assert_contains "$OUT" 'gauntlet: unknown ref: x\x1b[2Jy; set base=<ref> in .gauntlet/config'
   assert_clean "$OUT" "check --ci"
   must git config branch.main.gauntletBase "origin/$ref"
   must git remote add origin "$TMP/nowhere"
@@ -952,7 +952,7 @@ test_a_failed_fetch_of_a_base_with_a_control_prints_escaped() {
     assert_eq 2 "$STATUS" "check --ci $kind: $OUT"
     assert_contains "$OUT" "gauntlet: fetch of origin/$spelt failed; using the local ref"
     assert_contains "$OUT" "fatal: "
-    assert_contains "$OUT" "gauntlet: unknown ref: origin/$spelt"
+    assert_contains "$OUT" "gauntlet: base origin/$spelt given with --base does not resolve"
     assert_clean "$OUT" "check --ci $kind"
     cd "$TMP" || fail "cannot cd to $TMP"
     rm -rf "$TMP/repo" "$TMP/origin.git"

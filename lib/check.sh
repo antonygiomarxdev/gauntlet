@@ -97,7 +97,7 @@ check_run() {
   validate_rules || return 2
   base=$(resolve_base "$base_ref") || return 2
   dbase=$(resolve_base_default "$base_ref") || return 2
-  sha=$(merge_base "$base") || return 2
+  sha=$(merge_base "$base" "$base_ref") || return 2
   # Every file the branch changes, deletions included: the scope of declared checks.
   # --no-renames: a rename lists both its old path (deleted) and its new one.
   git_nul_diff_lines -c core.quotepath=off diff --name-only --no-renames -z "$sha" HEAD > "$scratch/changed" || return 2

@@ -56,8 +56,10 @@ base_chain() {
 }
 
 # BASE_HINT: what to do when the base does not resolve. The default branch of a repo is not
-# always main, and a repo without origin/HEAD falls back to it. The gates and doctor say the same.
-BASE_HINT='run gauntlet base <ref> or set base= in .gauntlet/config'
+# always main, and a repo without origin/HEAD falls back to it. base= in the tracked config is the
+# durable fix, for every branch and every clone; `gauntlet base <ref>` writes branch.<b>.gauntletBase
+# and fixes the current branch of this clone only. The gates and doctor say the same.
+BASE_HINT='set base=<ref> in .gauntlet/config (all branches), or run gauntlet base <ref> (this branch only)'
 
 # fetch_base_ref <ref>: bring an origin/ ref up to date, as the gates do before they use it;
 # a ref of another kind is left alone. Returns git's status. An explicit refspec stores the ref
@@ -86,12 +88,14 @@ base_fetchable() {
   esac
 }
 
-# merge_base <ref>: print the sha where HEAD forked from ref. An origin/ ref is
+# merge_base <ref> [given]: print the sha where HEAD forked from ref. An origin/ ref is
 # fetched first; a failed fetch warns and uses the local ref. Exits 2 when ref
 # does not exist or no merge-base is found. A shallow clone is named as the
 # cause; the merge-base is never guessed. Exits via die on every failure. Callers
 # must use a plain x=$(...) or || exit; never local x=$(...), if x=$(...) or a
-# bare "$(...)", which mask the exit.
+# bare "$(...)", which mask the exit. With a second argument the ref was given on the command
+# line (--base), which beats every config: the hint to change a config would be wrong, so the
+# message says only which ref did not resolve.
 merge_base() {
   local ref=$1 sha err rc=0
   # git echoes the ref it was given in its own errors, so its lines go through path_spell too.
@@ -102,7 +106,10 @@ merge_base() {
   if [ "$rc" -ne 0 ]; then
     printf 'gauntlet: fetch of %s failed; using the local ref\n' "$(path_spell "$ref")" >&2
   fi
-  base_resolves "$ref" || die "unknown ref: $ref; $BASE_HINT"
+  if ! base_resolves "$ref"; then
+    if [ -n "${2:-}" ]; then die "base $ref given with --base does not resolve"; fi
+    die "unknown ref: $ref; $BASE_HINT"
+  fi
   if sha=$(git merge-base HEAD "$ref") && [ -n "$sha" ]; then
     printf '%s\n' "$sha"
     return 0
