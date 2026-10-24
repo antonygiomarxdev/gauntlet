@@ -262,7 +262,7 @@ test_check_staged_prints_no_raw_byte_of_a_tracked_name() {
 test_a_detector_message_with_control_bytes_is_escaped() {
   mkrepo
   printf 'x\n' > a.ts
-  printf '#!/bin/sh\nfor f in "$@"; do printf "%%s:1:bad \\033]0;t\\007 \\033[2Jx\\r\\n" "$f"; done\n' > tools.sh
+  printf '#!/bin/sh\nfor f in "$@"; do printf "%%s:1:bad \\033]0;t\\007\\r \\033[2Jx\\r\\n" "$f"; done\n' > tools.sh
   rule todo paths='**/*.ts' engine=script 'detector=sh ./tools.sh {files}'
   script_row todo
   must git add -A
@@ -278,7 +278,10 @@ test_a_detector_message_with_control_bytes_is_escaped() {
   must git commit -q -m feat
   run "$G" check --ci --base main
   assert_eq 1 "$STATUS" "status: $OUT"
-  assert_contains "$OUT" '  b.ts:1  todo  bad \x1b]0;t\x07 \x1b[2Jx\x0d'
+  # The carriage return inside the message is written; the one that ends the line is the line ending
+  # and is not shown (a CRLF source), so the message ends at the x.
+  assert_contains "$OUT" '  b.ts:1  todo  bad \x1b]0;t\x07\x0d \x1b[2Jx'
+  assert_not_contains "$OUT" '\x1b[2Jx\x0d'
   assert_clean "$OUT" "check --ci"
 }
 
@@ -1109,4 +1112,53 @@ test_a_failed_check_prints_no_line_that_starts_with_colons() {
   assert_contains "$OUT" '[checks]'
   assert_contains "$OUT" '    \x3a:error::boom'
   assert_no_command "$OUT" "check --ci"
+}
+
+# --- a source line from a CRLF file ---
+
+# Git on Windows checks out CRLF, and the line a detector prints ends with the carriage return. It is
+# the line ending and not text: one is dropped from the line that is shown, and the rows gauntlet
+# stores keep it, so the baseline of such a file is the one it always was.
+test_a_crlf_source_line_is_shown_without_its_carriage_return() {
+  mkrepo
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  printf 'ok\n' > a.ts
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  must git add -A
+  must git commit -q -m main
+  must git checkout -q -b feat
+  printf 'ok\r\nTODO b\r\nTODO\rc\r\nTODO d\r\r\n' > a.ts
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  must git add -A
+  must git commit -q -m feat
+  run "$G" check --ci --base main
+  assert_eq 1 "$STATUS" "check --ci: $OUT"
+  assert_eq 1 "$(printf '%s\n' "$OUT" | grep -c -x '  a.ts:2  todo  TODO b')" "the end of the line: $OUT"
+  assert_eq 1 "$(printf '%s\n' "$OUT" | grep -c -x '  a.ts:3  todo  TODO\\x0dc')" "a carriage return inside the line: $OUT"
+  assert_eq 1 "$(printf '%s\n' "$OUT" | grep -c -x '  a.ts:4  todo  TODO d\\x0d')" "only one carriage return is the ending: $OUT"
+  assert_not_contains "$OUT" "[baseline]"
+  # The fingerprint never held the carriage return, so the baseline is what it has always been.
+  assert_eq "$(printf 'todo\ta.ts\tTODO b\t1\ntodo\ta.ts\tTODO d\t1\ntodo\ta.ts\tTODOc\t1')" "$(cat .gauntlet/baseline.tsv)" "baseline"
+}
+
+test_a_crlf_source_line_is_shown_without_its_carriage_return_at_commit_too() {
+  mkrepo
+  rule todo paths='**/*.ts'
+  cases_of todo 'TODO x'
+  printf 'ok\n' > a.ts
+  must git add -A
+  run "$G" baseline
+  must git add -A
+  must git commit -q -m main
+  printf 'TODO b\r\nTODO\rc\r\n' > a.ts
+  must git add -A
+  run "$G" check --staged
+  assert_eq 1 "$STATUS" "check --staged: $OUT"
+  assert_eq 1 "$(printf '%s\n' "$OUT" | grep -c -x '  a.ts:1  todo  TODO b')" "the end of the line: $OUT"
+  assert_eq 1 "$(printf '%s\n' "$OUT" | grep -c -x '  a.ts:2  todo  TODO\\x0dc')" "a carriage return inside the line: $OUT"
 }
