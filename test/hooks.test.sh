@@ -2024,9 +2024,137 @@ test_a_stale_lock_ends_in_exit_2_naming_the_lock_and_stays() {
 test_the_lock_wait_must_be_a_whole_number_of_seconds() {
   hooks_repo "$TMP/repo"
   hooks_vendor
-  run env GAUNTLET_LOCK_WAIT=soon "$G" install-hooks
+  local value
+  for value in soon -1 5x ' 3' 1.5 00005 123456; do
+    run env GAUNTLET_LOCK_WAIT="$value" "$G" install-hooks
+    assert_eq 2 "$STATUS" "install-hooks with GAUNTLET_LOCK_WAIT=[$value]: $OUT"
+    assert_eq "gauntlet: GAUNTLET_LOCK_WAIT must be a whole number of seconds, got [$value]" "$OUT" "the message for [$value]"
+  done
+}
+
+# hooks_sleep_shim <accept|reject>: a sleep first on PATH (for env PATH="$TMP/shim:$PATH") that
+# writes its argument to $TMP/sleeps and returns at once, so the wait loop runs without waiting and
+# the number of its polls can be counted. With "reject" it refuses a fraction, as the sleep of some
+# systems does, and the loop falls back to whole seconds.
+hooks_sleep_shim() {
+  must mkdir -p "$TMP/shim"
+  cat > "$TMP/shim/sleep" <<SHIM
+#!/bin/sh
+echo "\$1" >> "$TMP/sleeps"
+if [ "$1" = reject ]; then case "\$1" in *.*) exit 1 ;; esac; fi
+exit 0
+SHIM
+  must chmod +x "$TMP/shim/sleep"
+  : > "$TMP/sleeps"
+}
+
+# sleeps_of <argument>: how many times the shim was asked for that sleep.
+sleeps_of() {
+  grep -Fxc -- "$1" "$TMP/sleeps" || true
+}
+
+# The bound is GAUNTLET_LOCK_WAIT seconds, polled five times a second: the count of polls is the
+# length of the bound. The number is read as decimal, whatever its leading zeros.
+test_the_lock_wait_is_read_as_decimal_and_is_polled_five_times_a_second() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must mkdir .git/gauntlet-install.lock
+  hooks_sleep_shim accept
+  local pair value polls
+  for pair in 3:15 08:40 09:45 010:50 0030:150 0:0 1:5 :150; do
+    value=${pair%%:*}
+    polls=${pair##*:}
+    : > "$TMP/sleeps"
+    run env PATH="$TMP/shim:$PATH" GAUNTLET_LOCK_WAIT="$value" "$G" install-hooks
+    assert_eq 2 "$STATUS" "install-hooks with GAUNTLET_LOCK_WAIT=$value: $OUT"
+    assert_contains "$OUT" "gauntlet: another install holds $TMP/repo/.git/gauntlet-install.lock; if none is running, remove it"
+    assert_not_contains "$OUT" "value too great"
+    assert_eq "$polls" "$(sleeps_of 0.2)" "polls with GAUNTLET_LOCK_WAIT=$value"
+  done
+}
+
+# A sleep that takes no fraction is polled once a second, each poll as five of a fifth.
+test_the_lock_wait_falls_back_to_whole_seconds_where_sleep_takes_no_fraction() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must mkdir .git/gauntlet-install.lock
+  hooks_sleep_shim reject
+  run env PATH="$TMP/shim:$PATH" GAUNTLET_LOCK_WAIT=2 "$G" install-hooks
   assert_eq 2 "$STATUS" "install-hooks: $OUT"
-  assert_contains "$OUT" "gauntlet: GAUNTLET_LOCK_WAIT must be a whole number of seconds, got [soon]"
+  assert_contains "$OUT" "another install holds"
+  assert_eq 2 "$(sleeps_of 1)" "whole-second polls for a bound of 2 seconds"
+}
+
+# The line that says the command waits is printed once, however many polls there are, and nothing
+# else is printed on a poll (mkdir's own "File exists" would be, if it were not silenced).
+test_the_waiting_line_is_printed_once_and_a_poll_prints_nothing() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must mkdir .git/gauntlet-install.lock
+  hooks_sleep_shim accept
+  run env PATH="$TMP/shim:$PATH" GAUNTLET_LOCK_WAIT=2 "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks: $OUT"
+  assert_eq 10 "$(sleeps_of 0.2)" "polls"
+  assert_eq 2 "$(printf '%s\n' "$OUT" | awk 'END { print NR }')" "lines printed: the waiting line and the end of the wait: $OUT"
+  assert_eq 1 "$(printf '%s\n' "$OUT" | grep -c 'waiting for another install')" "waiting lines: $OUT"
+}
+
+# A library user that never defined GAUNTLET_LOCK (bin/gauntlet always does) under set -u: a lock
+# that is held is waited for and reported, not an "unbound variable".
+test_the_lock_code_does_not_need_gauntlet_lock_to_be_defined() {
+  hooks_repo "$TMP/repo"
+  must mkdir .git/gauntlet-install.lock
+  local status=0 out
+  out=$(GAUNTLET_LOCK_WAIT=0 bash -c 'set -u; . "$1/lib/core.sh"; . "$1/lib/hooks.sh"; HOOKS_ROOT=$PWD; HOOKS_COMMON=$PWD/.git; install_lock "dir $PWD/.git/hooks"' _ "$ROOT" 2>&1) || status=$?
+  assert_eq 2 "$status" "install_lock: $out"
+  assert_eq "gauntlet: another install holds $TMP/repo/.git/gauntlet-install.lock; if none is running, remove it" "$out"
+}
+
+# A lock that is freed within the bound lets the command go on, and the only line it printed is the
+# one that said it waited.
+test_a_lock_freed_within_the_bound_lets_the_command_succeed() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must mkdir .git/gauntlet-install.lock
+  env GAUNTLET_LOCK_WAIT=3 "$G" install-hooks > "$TMP/out" 2> "$TMP/err" &
+  local pid=$! status=0
+  hooks_wait_for "$TMP/err" "waiting for another install"
+  sleep 1
+  must rmdir .git/gauntlet-install.lock
+  wait "$pid" || status=$?
+  assert_eq 0 "$status" "install-hooks: $(cat "$TMP/out" "$TMP/err")"
+  assert_eq 1 "$(awk 'END { print NR }' "$TMP/err")" "lines on stderr: $(cat "$TMP/err")"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "the hook was written once the lock was free"
+}
+
+# mkdir can fail with the lock absent because the lock was freed between the two calls: the loop
+# tries again, and gives up on the third failure.
+test_a_lock_that_is_freed_between_the_two_calls_is_taken_on_the_next_try() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must mkdir "$TMP/shim"
+  local real_mkdir
+  real_mkdir=$(command -v mkdir)
+  cat > "$TMP/shim/mkdir" <<SHIM
+#!/bin/sh
+case "\$*" in
+  *gauntlet-install.lock)
+    n=\$(cat "$TMP/tries" 2> /dev/null || echo 0)
+    echo \$((n + 1)) > "$TMP/tries"
+    if [ "\$n" -lt \$SHIM_FAILS ]; then exit 1; fi
+    ;;
+esac
+exec "$real_mkdir" "\$@"
+SHIM
+  must chmod +x "$TMP/shim/mkdir"
+  run env PATH="$TMP/shim:$PATH" SHIM_FAILS=2 "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks after two failed tries: $OUT"
+  assert_not_contains "$OUT" "waiting"
+  assert_eq 1 "$(hooks_lines "$HOOK_TEST_STAGED" .git/hooks/pre-commit)" "the hook was written"
+  rm -f "$TMP/tries"
+  run env PATH="$TMP/shim:$PATH" SHIM_FAILS=3 "$G" install-hooks
+  assert_eq 2 "$STATUS" "install-hooks after three failed tries: $OUT"
+  assert_eq "gauntlet: cannot create $TMP/repo/.git/gauntlet-install.lock" "$OUT"
 }
 
 # A linked worktree shares the common git dir, so the lock must be there and not in the

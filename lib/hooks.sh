@@ -120,8 +120,9 @@ END {
 install_lock() {
   local target=$1 dir lock wait=${GAUNTLET_LOCK_WAIT:-30} limit ticks=0 told=0 absent=0 sig=''
   if [ -n "${GAUNTLET_LOCK:-}" ]; then return 0; fi
+  # Digits only and at most four, read as decimal: a leading zero is not octal ($((08)) is an error).
   case "$wait" in
-    ''|*[!0-9]*) die "GAUNTLET_LOCK_WAIT must be a whole number of seconds, got [$wait]" ;;
+    *[!0-9]*|?????*) die "GAUNTLET_LOCK_WAIT must be a whole number of seconds, got [$wait]" ;;
   esac
   case "${target#dir }/" in
     "$HOOKS_COMMON/"*)
@@ -137,7 +138,7 @@ install_lock() {
       lock="$dir/.install.lock"
       ;;
   esac
-  limit=$((wait * 5))
+  limit=$((10#$wait * 5))
   while :; do
     # A signal that lands while mkdir runs is handled once it returns, before the next
     # statement could record that the lock is ours: the lock would stay. So for these two
@@ -148,7 +149,7 @@ install_lock() {
     if mkdir "$lock" 2> /dev/null; then GAUNTLET_LOCK=$lock; fi
     gauntlet_signal_traps
     if [ -n "$sig" ]; then exit "$sig"; fi
-    if [ -n "$GAUNTLET_LOCK" ]; then return 0; fi
+    if [ -n "${GAUNTLET_LOCK:-}" ]; then return 0; fi
     if [ -d "$lock" ]; then
       absent=0
       if [ "$ticks" -ge "$limit" ]; then die "another install holds $lock; if none is running, remove it"; fi
