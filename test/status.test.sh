@@ -1995,6 +1995,26 @@ test_doctor_counts_gauntlet_lines_in_a_script_that_serves_both_hooks() {
   doctor_one_fail "FAIL .git/hooks/pre-commit has 2 lines ending in \"# gauntlet\" (lines 3, 4); keep one, the current form, and remove the others"
 }
 
+# R62: install-hooks and doctor say the same sentence for a script that serves both hooks, as they
+# do everywhere else: install-hooks puts "gauntlet: " before it and doctor "FAIL ".
+# shellcheck disable=SC2016 # the hook text holds ${0##*/} that must not expand here
+test_install_hooks_and_doctor_say_the_same_for_a_crowded_script_that_serves_both_hooks() {
+  local said failed
+  mkrepo
+  doctor_install
+  printf '#!/bin/sh\nif [ "${0##*/}" = pre-push ]; then\n%s\n%s\nfi\n' "$STATUS_TEST_GATE_CI" "$STATUS_TEST_OLD_CI" > .git/hooks/pre-commit
+  must chmod 755 .git/hooks/pre-commit
+  must rm .git/hooks/pre-push
+  must ln .git/hooks/pre-commit .git/hooks/pre-push
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  said=$(printf '%s\n' "$OUT" | grep '^gauntlet: .* lines ending in ')
+  run "$G" doctor
+  failed=$(printf '%s\n' "$OUT" | grep '^FAIL .* lines ending in ')
+  assert_eq "gauntlet: .git/hooks/pre-commit has 2 lines ending in \"# gauntlet\" (lines 3, 4); keep one, the current form, and remove the others" "$said" "install-hooks"
+  assert_eq "FAIL ${said#gauntlet: }" "$failed" "doctor says what install-hooks says"
+}
+
 # A shared hooks directory is only printed for: the same words, with the file name spelled.
 test_doctor_names_the_several_gauntlet_lines_of_a_shared_hook() {
   mkrepo

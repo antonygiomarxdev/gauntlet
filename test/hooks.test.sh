@@ -3115,20 +3115,48 @@ test_a_shared_script_with_both_guarded_gates_is_already_present() {
   assert_not_contains "$OUT" "ACTION NEEDED"
 }
 
-# Both guarded gates in place do not make it done when a hook has a second line of ours: the
-# advice is the same block, with the way to the one line each.
+# R62: both guarded gates in place do not make it done when a hook has a second line of ours. The
+# words are the ones every other crowded hook gets (R59: how many, which file lines, keep one), one
+# sentence for each gate that is crowded, and then the block with the current form. Nothing in it
+# tells the user to delete every line that ends in the marker.
 test_a_shared_script_with_a_second_gate_line_is_not_done() {
   one_script_repo symlink
   printf '#!/bin/sh\n%s\n%s\nfi\n%s\n%s\n%s\nfi\necho shared\n' "$HOOK_TEST_GUARD_STAGED" "$HOOK_TEST_GATE_STAGED" "$HOOK_TEST_GUARD_CI" "$HOOK_TEST_GATE_CI" "$HOOK_TEST_OLD_CI" > .git/hooks/pre-commit
   run "$G" install-hooks
   assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "gauntlet: .git/hooks/pre-commit has 2 lines ending in \"# gauntlet\" (lines 6, 7); keep one, the current form, and remove the others"
   assert_contains "$OUT" "ACTION NEEDED: .git/hooks/pre-commit and .git/hooks/pre-push are the same file"
-  assert_contains "$OUT" "It has more than one gauntlet line for one of the hooks, so make the first commands of .git/hooks/pre-commit exactly these, and delete every other line ending in \"# gauntlet\":"
+  assert_not_contains "$OUT" "delete every other line"
   assert_contains "$OUT" "$HOOK_TEST_GUARD_STAGED"$'\n'"$HOOK_TEST_GATE_STAGED"$'\nfi\n'"$HOOK_TEST_GUARD_CI"$'\n'"$HOOK_TEST_GATE_CI"$'\nfi'
   assert_not_contains "$OUT" "already present"
   printf '#!/bin/sh\n%s\n%s\n%s\nfi\n%s\n%s\nfi\necho shared\n' "$HOOK_TEST_GUARD_STAGED" "$HOOK_TEST_GATE_STAGED" "$HOOK_TEST_GATE_STAGED" "$HOOK_TEST_GUARD_CI" "$HOOK_TEST_GATE_CI" > .git/hooks/pre-commit
   run "$G" install-hooks
-  assert_contains "$OUT" "It has more than one gauntlet line for one of the hooks"
+  assert_contains "$OUT" "gauntlet: .git/hooks/pre-commit has 2 lines ending in \"# gauntlet\" (lines 3, 4); keep one, the current form, and remove the others"
+  assert_not_contains "$OUT" "lines 6"
+  # Both gates crowded: a sentence for each.
+  printf '#!/bin/sh\n%s\n%s\n%s\nfi\n%s\n%s\n%s\nfi\n' "$HOOK_TEST_GUARD_STAGED" "$HOOK_TEST_GATE_STAGED" "$HOOK_TEST_GATE_STAGED" "$HOOK_TEST_GUARD_CI" "$HOOK_TEST_GATE_CI" "$HOOK_TEST_OLD_CI" > .git/hooks/pre-commit
+  run "$G" install-hooks
+  assert_contains "$OUT" "gauntlet: .git/hooks/pre-commit has 2 lines ending in \"# gauntlet\" (lines 3, 4); keep one, the current form, and remove the others"
+  assert_contains "$OUT" "gauntlet: .git/hooks/pre-commit has 2 lines ending in \"# gauntlet\" (lines 7, 8); keep one, the current form, and remove the others"
+}
+
+# The same in a shared hooks directory (the guarded forms are the gate, the marked plain lines are
+# the ones counted), with the file name spelled and the files left as they are.
+test_a_script_that_serves_both_hooks_in_a_shared_dir_gets_the_same_sentence() {
+  hooks_repo "$TMP/repo"
+  hooks_vendor
+  must mkdir "$TMP/shared"
+  must git config core.hooksPath "$TMP/shared"
+  printf '#!/bin/sh\n%s\n%s\nfi\n%s\n%s\n%s\n%s\nfi\n' "$HOOK_TEST_GUARD_STAGED" "$HOOK_TEST_SHARED_STAGED" "$HOOK_TEST_GUARD_CI" "$HOOK_TEST_SHARED_CI" "$HOOK_TEST_GATE_CI" "$HOOK_TEST_OLD_CI" > "$TMP/shared/pre-commit"
+  chmod 755 "$TMP/shared/pre-commit"
+  must ln -s pre-commit "$TMP/shared/pre-push"
+  local before
+  before=$(hooks_sum "$TMP/shared")
+  run "$G" install-hooks
+  assert_eq 0 "$STATUS" "install-hooks: $OUT"
+  assert_contains "$OUT" "gauntlet: $TMP/shared/pre-commit has 2 lines ending in \"# gauntlet\" (lines 7, 8); keep one, the current form, and remove the others"
+  assert_not_contains "$OUT" "delete every other line"
+  assert_eq "$before" "$(hooks_sum "$TMP/shared")" "the shared directory is not edited"
 }
 
 # The state an older install-hooks made of such a pair: both gates, unguarded, in both hooks.

@@ -611,7 +611,11 @@ hooks_one_script() {
     return 0
   fi
   if [ "$state" = multiple ] || [ "$staged_state" = multiple ]; then
-    printf 'ACTION NEEDED: %s and %s are the same file, so a gate line in it would run in both hooks. It is not edited. It has more than one gauntlet line for one of the hooks, so make the first commands of %s exactly these, and delete every other line ending in "# gauntlet":\n' "$a" "$b" "$shown"
+    # The words of every crowded hook (R59, R62), for each gate that has more than one line, then the
+    # block with the current form of both.
+    if [ "$staged_state" = multiple ]; then printf 'gauntlet: %s\n' "$(hook_crowded_words "$shown" "$1" "$GAUNTLET_CMD_STAGED")"; fi
+    if [ "$state" = multiple ]; then printf 'gauntlet: %s\n' "$(hook_crowded_words "$shown" "$1" "$HOOK_NEEDLE_CI")"; fi
+    printf 'ACTION NEEDED: %s and %s are the same file, so a gate line in it would run in both hooks. It is not edited. The current form, as the first commands of %s:\n' "$a" "$b" "$shown"
     printf '%s\n%s\nfi\n%s\n%s\nfi\n' "$HOOK_GUARD_STAGED" "$staged" "$HOOK_GUARD_CI" "$ci"
     warn_if_not_executable "$1"
     return 0
