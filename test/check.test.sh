@@ -1774,6 +1774,43 @@ test_pre_push_passes_head_pushed_under_another_name() {
   assert_contains "$OUT" "gauntlet: ok"
 }
 
+# Gerrit takes a push to refs/for/<branch> as a change on that branch: what it holds is pushed
+# like a branch tip.
+test_pre_push_refuses_a_gerrit_push_of_a_commit_that_is_not_head() {
+  prepush_setup
+  must git branch other "$PP_MAIN"
+  prepush "refs/heads/other $PP_MAIN refs/for/main $ZERO"$'\n'
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_eq "gauntlet checks the checked-out branch; check out other and push again" "$OUT" "message"
+}
+
+test_pre_push_passes_head_pushed_to_gerrit() {
+  prepush_setup
+  prepush "HEAD $PP_HEAD refs/for/main $ZERO"$'\n'
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "gauntlet: ok"
+}
+
+# A local ref that is not a branch (HEAD~1, a sha) has no branch to check out: the message says
+# the commit is not the checked-out one, whatever the remote ref is called.
+test_pre_push_names_the_commit_when_the_local_ref_is_not_a_branch() {
+  prepush_setup
+  prepush "HEAD~1 $PP_MAIN refs/heads/feat $PP_HEAD"$'\n'
+  assert_eq 1 "$STATUS" "status: $OUT"
+  assert_eq "gauntlet checks the checked-out commit; check out the commit you are pushing and push again" "$OUT" "message"
+  prepush "$PP_MAIN $PP_MAIN refs/for/main $ZERO"$'\n'
+  assert_eq 1 "$STATUS" "a sha to Gerrit: $OUT"
+  assert_eq "gauntlet checks the checked-out commit; check out the commit you are pushing and push again" "$OUT" "message for a sha"
+}
+
+# Every other namespace stays out of it: a pull request ref, a merge request ref, a note.
+test_pre_push_skips_the_other_namespaces() {
+  prepush_setup
+  prepush "refs/heads/other $PP_MAIN refs/pull/7/head $ZERO"$'\n'"refs/heads/other $PP_MAIN refs/merge-requests/7/head $ZERO"$'\n'"refs/heads/other $PP_MAIN refs/changes/07/7/1 $ZERO"$'\n'
+  assert_eq 0 "$STATUS" "status: $OUT"
+  assert_contains "$OUT" "gauntlet: ok"
+}
+
 # A delete has the zero sha (and "(delete)" for a local ref); a tag is not a branch.
 test_pre_push_skips_deletes_and_tags() {
   prepush_setup

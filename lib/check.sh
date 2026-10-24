@@ -44,16 +44,17 @@ check_ci() {
 }
 
 # pre_push_refs: read the lines git gives a pre-push hook on stdin, "<local ref> <local sha>
-# <remote ref> <remote sha>" for each ref it is about to push, and return 1 when a branch
-# (a remote ref under refs/heads/) would be pushed at a commit other than HEAD, the one
-# commit this gate judges. One line per such branch goes to stderr, naming the local branch
-# to check out (the remote one when the local ref is not a branch). A delete (zero local
-# sha) and a ref that is not a branch (a tag, a note) are skipped. Stdin that is a terminal
-# or empty means nobody pushed anything through git: HEAD is judged as always. A line with
-# fewer than four fields is not git's: exit 2, fail closed. A trailing carriage return is
+# <remote ref> <remote sha>" for each ref it is about to push, and return 1 when a branch (a
+# remote ref under refs/heads/) or a Gerrit review ref (refs/for/) would be pushed at a commit
+# other than HEAD, the one commit this gate judges. One line per such push goes to stderr: it
+# names the local branch to check out when the local ref is one (refs/heads/<name>), and says
+# the commit is not the checked-out one when it is not (HEAD~1, a sha). A delete (zero local
+# sha) and a ref in any other namespace (a tag, a note, refs/pull/) are skipped. Stdin that is a
+# terminal or empty means nobody pushed anything through git: HEAD is judged as always. A line
+# with fewer than four fields is not git's: exit 2, fail closed. A trailing carriage return is
 # not part of the line.
 pre_push_refs() {
-  local line lref lsha rref rsha head='' refused=0 name
+  local line lref lsha rref rsha head='' refused=0
   if [ -t 0 ]; then return 0; fi
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line%$'\r'}
@@ -67,15 +68,18 @@ PUSHLINE
       printf 'gauntlet: unexpected pre-push input\n' >&2
       return 2
     fi
-    case "$rref" in refs/heads/*) ;; *) continue ;; esac
+    case "$rref" in refs/heads/*|refs/for/*) ;; *) continue ;; esac
     case "$lsha" in *[!0]*) ;; *) continue ;; esac
     if [ -z "$head" ]; then head=$(git rev-parse HEAD) || return 2; fi
     if [ "$lsha" = "$head" ]; then continue; fi
     case "$lref" in
-      refs/heads/*) name=${lref#refs/heads/} ;;
-      *) name=${rref#refs/heads/} ;;
+      refs/heads/*)
+        printf 'gauntlet checks the checked-out branch; check out %s and push again\n' "$(path_spell "${lref#refs/heads/}")" >&2
+        ;;
+      *)
+        printf 'gauntlet checks the checked-out commit; check out the commit you are pushing and push again\n' >&2
+        ;;
     esac
-    printf 'gauntlet checks the checked-out branch; check out %s and push again\n' "$(path_spell "$name")" >&2
     refused=1
   done
   [ "$refused" -eq 0 ] || return 1
