@@ -53,7 +53,7 @@ Ship the bash runner. It measures rules, keeps the baseline exact, and gates com
 ## Decisions this plan makes (owner may override)
 
 1. **The runner is split into `lib/` files and vendored as a folder.** Design §6 lists only `bin/gauntlet`; split files keep each concern small enough to review.
-2. **`check --ci` refuses a dirty tree.** It exits 2 when tracked files differ from `HEAD`, with the message `gauntlet checks what you push; commit or stash first`. Measuring the working tree while pushing `HEAD` would break parity. Untracked files do not count, except a non-ignored one under `.gauntlet/` (R64).
+2. **`check --ci` refuses a dirty tree.** It exits 2 when tracked files differ from `HEAD`, with the message `gauntlet checks what you push; commit or stash first`. Measuring the working tree while pushing `HEAD` would break parity. Untracked files do not count, except a non-ignored one under `.gauntlet/` that is not editor or OS junk (R64, R65).
 3. **Partial staging** (HOOK-AC3). The `pre-commit` check runs on the working tree. When a staged file also has unstaged changes, auto-tighten is skipped and a notice is printed. Push and CI still verify the exact baseline. The ceiling: a commit check can pass on code that is not what gets committed. The push gate catches it.
 4. **lefthook and prek configs are not edited.** They can be YAML, TOML or JSON. `install-hooks` does not edit the file. For a YAML config it prints the snippet to paste; for TOML or JSON, the two commands to translate. `doctor` fails until the snippet is present. husky, a `core.hooksPath` inside the repo and plain `.git/hooks` get the line added automatically. A shared hooks directory outside the repo is printed only, in a guarded form that does nothing where the repository has no `.gauntlet/` (R25, R53).
 5. **Waivers apply only on their own branch.** A `waive` row applies only when its `branch` column equals the current branch (`GITHUB_HEAD_REF` in CI, `git symbolic-ref --short HEAD` locally). Rows from merged branches are ignored, and `doctor` lists them as stale. Deleting them on merge is left for later.
@@ -803,6 +803,14 @@ Condensed from the controller's `rulings.md` in the same way. R38 and R46 only o
 
 **R62. A script that serves both hooks uses the sentence of R59** for a crowded gate, in `install-hooks` and in `doctor`.
 
-**R63. A path with a control byte gets no command to paste.** `path_spell` would change the path inside the quotes, so the message says `run chmod +x on it`. A hooks path that starts with `-` keeps `chmod +x '<path>'` (accepted limit).
+**R63. A path with a control byte gets no command to paste.** `path_spell` would change the path inside the quotes, so the message says `run chmod +x on it`. A hooks path that starts with `-` got the paste form at first; R68 takes it away too.
 
 **R64. `check --ci` refuses while `.gauntlet/` holds an untracked file that git does not ignore** (`git ls-files --others --exclude-standard -- .gauntlet`): a clone would not have the file, so the run would judge differently from CI. Exit 2, the dirty-tree sentence, then `gauntlet: untracked files under .gauntlet, which a clone does not have: <names>; commit or ignore them` (five names at most, then `and N more`). A file ignored only on one machine (`.git/info/exclude`, a global excludes file) passes; `doctor` fails ignored files under `.gauntlet/`.
+
+**R65. The R64 refusal skips editor and OS junk.** `.DS_Store`, `*.swp`, `*.orig`, `STATUS.md` and the install lock never reach a run and a Finder or a mergetool leaves them behind. One helper (`gauntlet_junk`) holds the list, and `doctor` and the refusal both call it, so the two cannot drift. Any other untracked file under `.gauntlet/` still refuses.
+
+**R66. The R64 check fails closed.** If `git ls-files` or the temporary file for its output fails, `check --ci` exits 2 with `gauntlet: cannot list the untracked files under .gauntlet; check that git works in this repository`. A check that could not run does not pass.
+
+**R67. `doctor` and `install-hooks` give the same advice for a shared hooks directory that holds the guarded gate and a plain marked line.** Both say `<file> already runs the gate with its guarded line; remove the line ending in "# gauntlet" from it, which fails in a repository without .gauntlet/` (prefixed `FAIL` and `ACTION NEEDED`), and nothing is edited. R61 holds when `pre-commit` and `pre-push` are one script: the marked plain line there is the old form too.
+
+**R68. Test gaps closed, and the chmod limit of R63 goes.** `hook_has_line` does not match a substring and strips a CR. The lead-in sentence of the one-script `ACTION NEEDED` block is pinned. A path that starts with `-` gets no paste form either (`run chmod +x on it`), by the same code path as a control byte; no `--` form is built.
