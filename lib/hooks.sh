@@ -42,7 +42,7 @@ HOOK_GATE_STAGED="$GAUNTLET_CMD_STAGED || exit \$?  # gauntlet"
 # test for the runner, the form for a shared hooks directory; the config snippets keep the bare
 # command because the hook manager owns stdin.
 # shellcheck disable=SC2016 # shell text for a hook: $(...) and $_gauntlet_in expand when the hook runs
-HOOK_BODY_CI='_gauntlet_in=$(mktemp) || { echo "gauntlet: cannot create a temp file; check TMPDIR" >&2; exit 2; }; [ -t 0 ] || cat >"$_gauntlet_in" || { rm -f "$_gauntlet_in"; echo "gauntlet: cannot buffer git'"'"'s stdin; check TMPDIR" >&2; exit 2; }; '"$GAUNTLET_CMD_CI"' <"$_gauntlet_in" || { _gauntlet_rc=$?; rm -f "$_gauntlet_in"; exit "$_gauntlet_rc"; }; [ -t 0 ] || exec <"$_gauntlet_in" || { rm -f "$_gauntlet_in"; exit 2; }; rm -f "$_gauntlet_in"'
+HOOK_BODY_CI='_gauntlet_in=$(mktemp "${TMPDIR:-/tmp}/gauntlet.XXXXXX") || { echo "gauntlet: cannot create a temp file; check TMPDIR" >&2; exit 2; }; [ -t 0 ] || cat >"$_gauntlet_in" || { rm -f "$_gauntlet_in"; echo "gauntlet: cannot buffer git'"'"'s stdin; check TMPDIR" >&2; exit 2; }; '"$GAUNTLET_CMD_CI"' <"$_gauntlet_in" || { _gauntlet_rc=$?; rm -f "$_gauntlet_in"; exit "$_gauntlet_rc"; }; [ -t 0 ] || exec <"$_gauntlet_in" || { rm -f "$_gauntlet_in"; exit 2; }; rm -f "$_gauntlet_in"'
 HOOK_LINE_CI="$HOOK_BODY_CI  # gauntlet"
 HOOK_GATE_CI=$HOOK_LINE_CI
 
