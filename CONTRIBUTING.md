@@ -76,6 +76,13 @@ GAUNTLET_TEST_BSD_DATE=1 test/run.sh
 
 CI runs the suite on Ubuntu with the GNU clock and with the BSD double, and on macOS with bash 3.2, whose clock is BSD's.
 
+A green run on one machine is not a green run everywhere. Before a push, run the suite at least with the newest `git` you can get and with bash 3.2, and read the awk you are writing against both gawk and the one-true-awk of macOS. The differences that have broken CI:
+
+- `awk` reads characters in a UTF-8 locale and bytes in `C`. The runner calls every awk through the `awk()` wrapper in `lib/core.sh`, which sets `LC_ALL=C`; do not call `command awk` directly.
+- macOS `awk` also cuts `split(s, a, "/")` at a newline. Split on a regex, `split(s, a, /\//)`.
+- macOS `mktemp` ignores `TMPDIR` when run bare. Give it a template: `mktemp "${TMPDIR:-/tmp}/gauntlet.XXXXXX"`.
+- macOS has no `/bin/true`, its `chmod` stops reading options at the mode, and APFS refuses file names that are not UTF-8. Tests use `/usr/bin/true`, put options before the mode, and build the non-UTF-8 case only where the file system accepts it.
+
 ## Releases
 
 The maintainer tags semver versions (`vX.Y.Z`) and publishes a GitHub Release with checksums. The changelog is generated from the fragments:
