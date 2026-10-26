@@ -1391,7 +1391,7 @@ test_doctor_chmod_advice_for_a_hook_has_no_paste_form_for_a_path_that_starts_wit
   mkrepo
   must git config core.hooksPath -x
   doctor_install
-  must chmod 644 -- -x/pre-commit
+  must chmod 644 ./-x/pre-commit
   run "$G" doctor
   assert_eq 1 "$STATUS" "doctor: $OUT"
   assert_contains "$OUT" "FAIL pre-commit hook -x/pre-commit is not executable: run chmod +x on it"
@@ -1403,7 +1403,7 @@ test_doctor_chmod_advice_for_a_shared_script_has_no_paste_form_for_a_path_that_s
   mkrepo
   must mkdir -- -x
   printf '#!/bin/sh\necho shared\n' > ./-x/pre-commit
-  must chmod 644 -- -x/pre-commit
+  must chmod 644 ./-x/pre-commit
   must ln -s pre-commit ./-x/pre-push
   must git config core.hooksPath -x
   doctor_install

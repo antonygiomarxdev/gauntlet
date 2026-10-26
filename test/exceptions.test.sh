@@ -2558,7 +2558,7 @@ test_a_symlink_detector_with_an_unchanged_target_is_not_loosening() {
 test_a_symlink_to_an_absolute_path_is_judged_by_its_text() {
   mkrepo
   must mkdir -p tools
-  ln -s /bin/true tools/find.sh
+  ln -s /usr/bin/true tools/find.sh
   printf 'ok\n' > a.ts
   rule todo paths='**/*.ts' engine=script detector=tools/find.sh
   script_row todo
@@ -2570,7 +2570,8 @@ test_a_symlink_to_an_absolute_path_is_judged_by_its_text() {
   exc_commit feat
   exc_gate
   assert_eq 0 "$STATUS" "unchanged link: $OUT"
-  must ln -sf /usr/bin/true tools/find.sh
+  # the same program under another text: the link is judged by its text, not by where it leads
+  must ln -sf /usr/bin/./true tools/find.sh
   exc_rebase
   exc_commit relink
   exc_gate
