@@ -107,10 +107,10 @@ Shipping did not slow down: merged PRs per week went *up* after the ratchets lan
 
 > The runner works by hand today. The agent skill and the v0.1 release are planned; follow the [changelog](CHANGELOG.md).
 
-From a checkout of gauntlet that has `bin/gauntlet`, in your repo. Until IS-01 merges, `main` has no runner, so clone the branch that has it. This `--branch` is temporary: drop it once the runner is on `main`.
+From a checkout of gauntlet that has `bin/gauntlet`, in your repo.
 
 ```sh
-git clone --depth 1 --branch feat/is-01-runner-core https://github.com/antonygiomarxdev/gauntlet ~/.gauntlet
+git clone --depth 1 https://github.com/antonygiomarxdev/gauntlet ~/.gauntlet
 cd your-repo
 ~/.gauntlet/bin/gauntlet install     # copies the runner into .gauntlet/ and wires the hooks
 ```
