@@ -36,6 +36,10 @@ You can also link the script onto your `PATH` (`ln -s ~/.gauntlet/bin/gauntlet ~
 
 Commit `.gauntlet/`, so teammates and CI run the same runner. `.gauntlet/.gitignore` already keeps `.gauntlet/STATUS.md` out (a tracked copy makes `check --ci` exit 2 after the next `status`) and brings back every file gauntlet needs, whatever your root `.gitignore` says; `gauntlet doctor` fails if git still hides one. The hooks that `install` writes into `.git/hooks` are not shared by a clone. If teammates need them, add `gauntlet install-hooks` to the setup step your project already has (`prepare`, `make setup`, …). See [hooks](gates.md#hooks-coexist-never-take-over).
 
+### Tools that read `.gauntlet/`
+
+A formatter or a linter that runs on staged files will also see `.gauntlet/`. A formatter rewrites the vendored runner, and `gauntlet doctor` does not notice it. A linter fails on the `.bad.<ext>` case files, which are bad code on purpose. Make both skip `.gauntlet/`: add it to the formatter's ignore file, and to the filter of the staged-file runner when that runner passes file names explicitly, because those bypass ignore files. After the first commit, `diff -r` the checkout's `bin` and `lib` against `.gauntlet/bin` and `.gauntlet/lib`.
+
 ## 2. Onboard
 
 Planned: the **onboard** skill (IS-02) works in seven steps:
