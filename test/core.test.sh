@@ -54,18 +54,19 @@ test_config_outside_repo_exits_2() {
 }
 
 # repo_root says "not inside a git repository" when git says that and only then. Any other failure
-# is git's own: an unreadable config (here a core.hooksPath with a ~user that does not exist, which
-# every git command trips over) or a bare repository. It is named by git's first error line.
+# is git's own: a repository git cannot open (here a repository format version from the future,
+# which every git command trips over at startup, in every git version) or a bare repository. It is
+# named by git's first error line.
 test_repo_root_names_the_git_error_when_it_is_not_a_missing_repository() {
   mkrepo
-  must git config core.hooksPath '~gauntlet-no-such-user/hooks'
+  must git config --file "$PWD/.git/config" core.repositoryformatversion 99
   run "$G" status
   assert_eq 2 "$STATUS" "status: $OUT"
-  assert_contains "$OUT" "gauntlet: cannot find the repository root: fatal: failed to expand user dir in: '~gauntlet-no-such-user/hooks'"
+  assert_contains "$OUT" "gauntlet: cannot find the repository root: fatal: Expected git repo version <= 1, found 99"
   assert_not_contains "$OUT" "not inside a git repository"
   run bash -c ". '$ROOT/lib/core.sh'; repo_root"
   assert_eq 2 "$STATUS" "repo_root: $OUT"
-  assert_contains "$OUT" "cannot find the repository root: fatal: failed to expand user dir"
+  assert_contains "$OUT" "cannot find the repository root: fatal: Expected git repo version <= 1, found 99"
 }
 
 test_repo_root_in_a_bare_repository_names_the_git_error() {

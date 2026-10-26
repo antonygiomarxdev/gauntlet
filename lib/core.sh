@@ -206,8 +206,8 @@ plural() {
 }
 
 # repo_root: print the absolute path of the top-level working tree. When git fails, only "not a
-# git repository" means we are outside one. Any other failure is git's own (a core.hooksPath it
-# cannot expand, a bare repository, a repository owned by someone else) and is named by its first
+# git repository" means we are outside one. Any other failure is git's own (a repository format
+# version it does not know, a bare repository, a repository owned by someone else) and is named by its first
 # error line. Git's messages are translated, so the second look is taken in the C locale.
 repo_root() {
   local err
