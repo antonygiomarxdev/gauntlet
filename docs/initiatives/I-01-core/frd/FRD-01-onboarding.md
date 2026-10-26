@@ -59,6 +59,23 @@ Onboarding studies the repo, researches each technology's own guidance, proposes
 10. **The touched gate starts off.** In an existing repo it stays off until the Owner turns it on.
 11. **Re-runs update in place.** Re-running onboarding updates every artifact in place and never duplicates a rule, a hook line, an `AGENTS.md` block or a CI job.
 12. **Onboarding stays small.** Onboarding never buries the Owner. Proposals come one at a time, ordered by evidence. Forty rules on day one, or a rule activated without asking, is a failure.
+13. **Detect every tool that will read `.gauntlet/`.** Besides rule 1, onboarding detects:
+    - formatters, and linters that run on staged files;
+    - the staged-file runner that feeds them (lint-staged or equivalent);
+    - commit-message and identity hooks;
+    - project gates that ask for files with a change (changesets, coverage of the diff).
+
+    Install makes each formatter and linter skip `.gauntlet/`, with the project's own ignore mechanism. A runner that passes file names explicitly bypasses ignore files, so its own filter is changed too. Left alone, a formatter rewrites the vendored runner and a linter fails on the `bad` cases, which are bad code on purpose.
+14. **Count before proposing.** Every candidate rule is measured in the repo first. A rule the project's own linter or ratchet already counts is not proposed again (see LIFE). A candidate with almost no matches is said to be weak, with its count, and left to the Owner.
+15. **Prove the coexistence before the Owner relies on it.** In a throwaway worktree, onboarding:
+    - commits through the real hooks;
+    - pushes twice to a throwaway local remote, and checks that the project's pre-push still receives the pushed refs;
+    - commits a new violation and sees it refused;
+    - pays one violation down and sees the baseline update in the same commit.
+
+    It removes the throwaway remote afterwards and never uses `--no-verify`.
+16. **Say what the first PR cannot check.** Until the base branch has `baseline.tsv`, CI skips the new, global, shadow and track checks. Onboarding tells the Owner, so a green first PR is not read as a full check.
+17. **The project's own gates apply to the onboarding change.** Commit-message and identity rules, changesets and diff coverage are met, not bypassed. Onboarding does not edit the shared git identity to pass them.
 
 ## 5. Functional flows
 
@@ -71,7 +88,8 @@ Onboarding studies the repo, researches each technology's own guidance, proposes
 5. For each accepted rule, the Agent writes the rule, its detector and its cases, and runs the rule tests.
 6. The runner measures `baseline.tsv`.
 7. The Owner confirms the declared checks and the CI scope.
-8. The Agent installs the hooks, the setup wiring, the CI job and the `AGENTS.md` block. It writes `STATUS.md` and records every answer in `ONBOARDING.md`.
+8. The Agent installs the hooks, the setup wiring, the CI job and the `AGENTS.md` block, and makes the project's formatters and linters skip `.gauntlet/`. It writes `STATUS.md` and records every answer in `ONBOARDING.md`.
+9. The Agent proves the coexistence in a throwaway worktree and reports what the first PR cannot check.
 
 ### Flow B — empty repo
 
@@ -91,6 +109,8 @@ Onboarding studies the repo, researches each technology's own guidance, proposes
 - **The Owner adjusts a detector** so that it no longer catches the evidence. The rule tests fail and the Agent reports it before measuring.
 - **A linter rule already has 0 violations.** It stays in the linter at `error`, and onboarding does not duplicate it (see LIFE).
 - **The project already uses husky, lefthook, prek or custom hooks.** Install adds one line and never takes over (see GATE).
+- **A formatter or linter touches `.gauntlet/`.** `doctor` does not notice a changed vendored file. Onboarding compares `.gauntlet/bin` and `.gauntlet/lib` with the checkout they came from after the first commit, adds the ignore entry if they differ, and re-installs.
+- **A project hook refuses the onboarding commit** (identity, message format, changeset). The Agent fixes the commit to meet it, and reports a rule it cannot meet.
 - **The Owner stops halfway.** Accepted rules stay; the unanswered proposals are listed in `ONBOARDING.md` for the next run.
 
 ## 7. Permissions
@@ -128,6 +148,10 @@ Onboarding studies the repo, researches each technology's own guidance, proposes
 - **ONB-AC11:** Given existing husky hooks, when install runs, then each hook file gains exactly one gauntlet line and every original line is unchanged.
 - **ONB-AC12:** Given a fresh clone by a Contributor, when they run the project's existing setup step, then the gauntlet hooks are active.
 - **ONB-AC13:** Given onboarding already ran, when it runs again, then no rule, hook line, `AGENTS.md` block or CI job is duplicated.
+- **ONB-AC14:** Given a project that formats or lints staged files, when install runs, then committing `.gauntlet/` leaves every vendored file byte-identical and no `bad` case is linted.
+- **ONB-AC15:** Given a candidate rule already counted by the project's linter or ratchet, when onboarding runs, then it is not proposed.
+- **ONB-AC16:** Given a project with a pre-push hook that reads the pushed refs, when the coexistence check runs, then a second push shows the hook still received them.
+- **ONB-AC17:** Given a base branch with no `baseline.tsv`, when onboarding finishes, then the Owner was told which CI checks are skipped on the first PR.
 
 ## 10. Out of scope
 
