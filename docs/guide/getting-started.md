@@ -18,10 +18,10 @@ The agent skill (`skills/gauntlet/SKILL.md`) is planned for IS-02. It does not e
 
 ### By hand
 
-The clone must have `bin/gauntlet`. Until IS-01 merges, `main` has no runner, so clone the branch that has it. This `--branch` is temporary: drop it once the runner is on `main`.
+The clone must have `bin/gauntlet`.
 
 ```sh
-git clone --depth 1 --branch feat/is-01-runner-core https://github.com/antonygiomarxdev/gauntlet ~/.gauntlet
+git clone --depth 1 https://github.com/antonygiomarxdev/gauntlet ~/.gauntlet
 cd your-repo
 ~/.gauntlet/bin/gauntlet install
 ```
