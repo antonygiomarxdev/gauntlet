@@ -354,17 +354,20 @@ utf8_locale() {
 # sed runs in the C locale: in a UTF-8 locale it does not match a byte that is not valid
 # UTF-8, so a Latin-1 file name or a Latin-1 line in a matched file was "an unparsed line".
 test_invalid_utf8_in_names_and_lines_parses_in_a_utf8_locale() {
-  local loc name
+  local loc name want
   loc=$(utf8_locale) || { skip "no UTF-8 locale installed"; return 77; }
   mkrepo
   rule todo
   name=$(printf 'caf\351.ts')
-  printf 'TODO a\n' > "$name"
+  want=
+  # APFS refuses a name that is not valid UTF-8 (Illegal byte sequence): there is no such file
+  # to judge there, and the line below still is.
+  if printf 'TODO a\n' > "$name" 2> /dev/null; then want=$(printf 'todo\tcaf\351.ts\tTODO a\t1')$'\n'; fi
   printf 'TODO b \351\n' > plain.ts
   must git add -A
   run env LC_ALL="$loc" "$G" baseline
   assert_eq 0 "$STATUS" "baseline in $loc: $OUT"
-  assert_eq "$(printf 'todo\tcaf\351.ts\tTODO a\t1\ntodo\tplain.ts\tTODO b \351\t1')" "$(cat .gauntlet/baseline.tsv)" \
+  assert_eq "${want}$(printf 'todo\tplain.ts\tTODO b \351\t1')" "$(cat .gauntlet/baseline.tsv)" \
     "rows in $loc (run: $OUT; files: $(git ls-files -z | od -An -c | tr -s ' \n' ' '); awk: $(awk -W version 2>&1 | head -n 1); rg: $(rg --version | head -n 1); git: $(git --version))"
 }
 
@@ -693,7 +696,7 @@ test_batching_quotes_the_list_in_one_awk_pass() {
   mkrepo
   detect_lib
   mkdir -p "$TMP/bin"
-  real_awk=$(command -v awk)
+  real_awk=$(type -P awk) # not command -v: the awk wrapper in lib/core.sh is a function, it prints just "awk"
   printf '#!/bin/sh\necho x >> "%s/awk.count"\nexec "%s" "$@"\n' "$TMP" "$real_awk" > "$TMP/bin/awk"
   must chmod +x "$TMP/bin/awk"
   PATH="$TMP/bin:$PATH"
@@ -713,6 +716,25 @@ test_batching_quotes_the_list_in_one_awk_pass() {
   printf 'a.ts\nb.ts\n' > "$TMP/files.txt"
   detect_scan "$PWD" "sh -c 'echo run >> \"$TMP/runs\"' ignored {files}" r "$TMP/err" "$TMP/files.txt"
   assert_eq 1 "$(wc -l < "$TMP/awk.count" | tr -d ' ')" "awk processes for 2 paths"
+}
+
+# Every awk gauntlet starts reads bytes: GNU awk in a UTF-8 locale drops a line that is not valid
+# UTF-8. A mawk machine cannot fail on the bytes themselves, so this pins the cause: an awk on
+# PATH records the locale it was started in while a whole baseline runs in a UTF-8 locale.
+test_every_awk_runs_in_the_c_locale() {
+  mkrepo
+  rule todo
+  printf 'TODO a\n' > a.ts
+  must git add -A
+  mkdir -p "$TMP/bin"
+  # shellcheck disable=SC2016 # the shim reads its own $LC_ALL, it is not expanded here
+  printf '#!/bin/sh\necho "$LC_ALL" >> "%s/awk.locale"\nexec "%s" "$@"\n' "$TMP" "$(type -P awk)" > "$TMP/bin/awk"
+  must chmod +x "$TMP/bin/awk"
+  : > "$TMP/awk.locale"
+  run env PATH="$TMP/bin:$PATH" LC_ALL=en_US.UTF-8 "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  assert_eq C "$(sort -u "$TMP/awk.locale")" "locales of the awks a baseline started"
+  if [ ! -s "$TMP/awk.locale" ]; then fail "the baseline started no awk, the test sees nothing"; fi
 }
 
 # sed reads \10 as \1 followed by 0, so a capture group above 9 cannot be named. A format

@@ -5,6 +5,13 @@
 # shellcheck disable=SC2034 # read by bin/gauntlet
 GAUNTLET_VERSION=0.1.0-dev
 
+# awk: every awk gauntlet runs reads bytes. Paths and source lines are bytes, and GNU awk in a
+# UTF-8 locale warns about a line that is not valid UTF-8 (a Latin-1 file name) and drops or garbles
+# it. A function, so a detector or a hook the user runs keeps its own locale.
+awk() {
+  LC_ALL=C command awk "$@"
+}
+
 # path_spell [<name>]: print text that somebody else wrote so that it cannot move the cursor,
 # clear the screen, hide text with a carriage return or set the terminal title. Every byte below
 # 0x20 and 0x7f is written \xNN, and so is each C1 control (U+0080 to U+009F) in its UTF-8 form,
