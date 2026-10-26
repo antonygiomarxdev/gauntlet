@@ -1149,10 +1149,12 @@ abs_path() {
 }
 
 # normalise_path <absolute-path>: collapse repeated slashes, drop "." and trailing
-# slashes, and resolve ".." lexically.
+# slashes, and resolve ".." lexically. The separator is a regular expression, not the string "/":
+# the awk of macOS splits on a newline too when the separator is one character, and a directory
+# name can hold a newline.
 normalise_path() {
   P=$1 awk 'BEGIN {
-    n = split(ENVIRON["P"], a, "/")
+    n = split(ENVIRON["P"], a, /\//)
     k = 0
     for (i = 1; i <= n; i++) {
       if (a[i] == "" || a[i] == ".") continue

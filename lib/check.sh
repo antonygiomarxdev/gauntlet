@@ -1270,10 +1270,11 @@ blob_changed() {
 
 # TREE_FOLD_AWK: the awk function fold(path), a path with its "." and ".." parts folded and
 # empty parts dropped, as a path inside the repository; "" when the result is the root itself
-# or climbs above it. Put in front of an awk program.
+# or climbs above it. Put in front of an awk program. The separator of split is a regular
+# expression: the awk of macOS splits on a newline too when it is the one character "/".
 TREE_FOLD_AWK='
   function fold(p,   n, a, i, k, b, out) {
-    n = split(p, a, "/"); k = 0
+    n = split(p, a, /\//); k = 0
     for (i = 1; i <= n; i++) {
       if (a[i] == "" || a[i] == ".") continue
       if (a[i] == "..") { if (k == 0) return ""; k--; continue }
