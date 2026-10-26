@@ -50,14 +50,14 @@ The commit gate checks staged files in under 5 s, carries a lowered baseline int
 ### Flow B — install hooks
 
 1. `gauntlet install-hooks` detects the hook layout.
-2. It adds its line to each existing hook, creates hooks only where none exist, or prints the snippet for a YAML-configured hook manager.
+2. It adds its line to each existing hook, creates hooks only where none exist, or prints the snippet for a hook manager's config.
 
 ## 6. Edge cases and failure behavior
 
 - **The first commit (no `HEAD`)** has nothing to compare, so the commit gate passes with a note.
 - **A deleted file** loses its baseline rows at commit.
-- **lefthook or prek configs.** Install prints the exact snippet to add instead of editing the YAML, and `doctor` fails until the snippet is present.
-- **A hook file that ends in `exit 0`.** The gauntlet line is inserted before the `exit`.
+- **lefthook or prek configs.** Install prints the snippet to add (YAML for a YAML config, the two commands to translate for TOML or JSON) instead of editing the config, and `doctor` fails until the snippet is present.
+- **A hook file that ends in `exit 0`.** The gauntlet line goes first in an existing hook, right after the shebang line, not before the `exit`. An early `exit`, an `exec` or a failing last command cannot skip it, and the project's own hook then runs unchanged.
 
 ## 7. Permissions
 

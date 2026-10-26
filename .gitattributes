@@ -1,0 +1,7 @@
+* text=auto
+*.sh text eol=lf
+bin/gauntlet text eol=lf
+test/bsd-date/date text eol=lf
+*.md text eol=lf
+*.tsv text eol=lf
+*.yml text eol=lf

@@ -1,0 +1,77 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A new push to a branch cancels the run it replaces, so a PR is not tested twice.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    # One run of the suite takes a quarter of an hour on a loaded machine; each clock gets its own job.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: ubuntu, os: ubuntu-latest, bsd_date: "0" }
+          - { name: ubuntu-bsd-date, os: ubuntu-latest, bsd_date: "1" }
+          - { name: macos, os: macos-latest, bsd_date: "0" }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install tools (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep shellcheck
+          pipx install ast-grep-cli==0.51.0
+
+      - name: Install tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ripgrep ast-grep shellcheck
+
+      - name: Shellcheck
+        run: shellcheck -x bin/gauntlet lib/*.sh test/*.sh
+
+      - name: Test (Ubuntu)
+        if: runner.os == 'Linux' && matrix.bsd_date == '0'
+        run: bash test/run.sh
+
+      # macOS's date has no %N, so now_ms falls back to whole seconds there. This
+      # runs the suite with test/bsd-date first on PATH, so Ubuntu covers that clock.
+      - name: Test (Ubuntu, BSD date clock)
+        if: runner.os == 'Linux' && matrix.bsd_date == '1'
+        run: GAUNTLET_TEST_BSD_DATE=1 bash test/run.sh
+
+      # Homebrew bash 5 sits first on PATH, and bin/gauntlet and the tests use
+      # `env bash`, so the whole suite would run under bash 5. Put a shim that
+      # resolves `bash` to the system 3.2 binary ahead of PATH for later steps.
+      - name: Pin bash to the system 3.2 (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          shim="$RUNNER_TEMP/bash-shim"
+          mkdir -p "$shim"
+          ln -sf /bin/bash "$shim/bash"
+          echo "$shim" >> "$GITHUB_PATH"
+
+      - name: Test (macOS, bash 3.x)
+        if: runner.os == 'macOS'
+        run: |
+          major=$(bash -c 'echo "${BASH_VERSION%%.*}"')
+          if [ "$major" != "3" ]; then
+            echo "expected bash 3.x on PATH, got $(bash -c 'echo "$BASH_VERSION"')" >&2
+            exit 1
+          fi
+          bash test/run.sh

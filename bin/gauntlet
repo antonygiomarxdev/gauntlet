@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# gauntlet: a code-quality ratchet. Entry point; libraries live in lib/.
+set -eu
+
+# Follow a symlinked entry point (ln -s checkout/bin/gauntlet ~/bin/gauntlet) to
+# the real file, so lib/ is found beside it. readlink without -f: BSD and GNU.
+gauntlet_entry=$0
+gauntlet_hops=0
+while [ -L "$gauntlet_entry" ]; do
+  gauntlet_hops=$((gauntlet_hops + 1))
+  if [ "$gauntlet_hops" -gt 40 ]; then
+    echo "gauntlet: too many symbolic links: $0" >&2
+    exit 2
+  fi
+  gauntlet_target=$(readlink "$gauntlet_entry")
+  case "$gauntlet_target" in
+    /*) gauntlet_entry=$gauntlet_target ;;
+    *) gauntlet_entry="$(dirname "$gauntlet_entry")/$gauntlet_target" ;;
+  esac
+done
+GAUNTLET_BIN=$(cd "$(dirname "$gauntlet_entry")" && pwd -P) || exit 2
+
+# A hook inherits the pathspec switches of `git --glob-pathspecs commit` and its
+# siblings. ls-tree rejects pathspec magic and every path gauntlet hands to git is an
+# exact one, so no git call below may see them.
+unset GIT_GLOB_PATHSPECS GIT_ICASE_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_LITERAL_PATHSPECS
+
+# shellcheck source=lib/core.sh
+. "$GAUNTLET_BIN/../lib/core.sh"
+# shellcheck source=lib/rules.sh
+. "$GAUNTLET_BIN/../lib/rules.sh"
+# shellcheck source=lib/paths.sh
+. "$GAUNTLET_BIN/../lib/paths.sh"
+# shellcheck source=lib/detect.sh
+. "$GAUNTLET_BIN/../lib/detect.sh"
+# shellcheck source=lib/measure.sh
+. "$GAUNTLET_BIN/../lib/measure.sh"
+# shellcheck source=lib/cases.sh
+. "$GAUNTLET_BIN/../lib/cases.sh"
+# shellcheck source=lib/base.sh
+. "$GAUNTLET_BIN/../lib/base.sh"
+# shellcheck source=lib/exceptions.sh
+. "$GAUNTLET_BIN/../lib/exceptions.sh"
+# shellcheck source=lib/check.sh
+. "$GAUNTLET_BIN/../lib/check.sh"
+# shellcheck source=lib/hooks.sh
+. "$GAUNTLET_BIN/../lib/hooks.sh"
+# shellcheck source=lib/status.sh
+. "$GAUNTLET_BIN/../lib/status.sh"
+
+# R33: one temp root per run. Every scratch file of a command lives under it (tmp_new),
+# and the traps remove it on a normal exit, on die, and on INT, TERM and HUP, which exit
+# with the status a shell reports for a signal (128 + the number). bash runs a trap once
+# the foreground command ends, so a signal sent to gauntlet alone is handled when the
+# detector returns; a signal to the process group, as Ctrl-C sends, ends the detector
+# too. The variables the cleanup removes are this run's own: whatever the environment
+# held under their names is dropped first (unset also drops the export), or the trap would
+# remove a path somebody else named. GAUNTLET_TMP is not exported: a gauntlet run by a
+# check makes a root of its own. GAUNTLET_LOCK, the install lock this run holds, is under
+# the same rule (install_lock sets it; the cleanup removes it, and only it).
+unset GAUNTLET_TMP GAUNTLET_PARTIAL GAUNTLET_LOCK
+GAUNTLET_TMP=
+GAUNTLET_PARTIAL=
+GAUNTLET_LOCK=
+case "${1:-}" in
+  base|baseline|test-rules|waive|loosen|remove|check|install|install-hooks|status|promote|doctor)
+    # The traps first: from here on, a root that was made is removed whatever fails next.
+    trap gauntlet_cleanup EXIT
+    gauntlet_signal_traps
+    GAUNTLET_TMP=$(mktemp -d "${TMPDIR:-/tmp}/gauntlet.XXXXXX") || die "cannot create a temp directory"
+    # Absolute, before the cd below: a relative TMPDIR would mean another directory there.
+    # Through a variable of its own: if the cd fails, GAUNTLET_TMP keeps the root to remove.
+    gauntlet_abs=$(cd "$GAUNTLET_TMP" && pwd -P) || die "cannot enter the temp directory"
+    GAUNTLET_TMP=$gauntlet_abs
+    ;;
+esac
+
+# R29: every repo command runs from the repo root, so a path given to git is never
+# relative to a subdirectory. --version needs no repo, install and install-hooks
+# resolve the root themselves, and a usage error needs nothing. Outside a repo,
+# repo_root exits 2 with one message before git can print its own usage.
+case "${1:-}" in
+  base|baseline|test-rules|waive|loosen|remove|check|status|promote|doctor)
+    gauntlet_root=$(repo_root) || exit 2
+    cd "$gauntlet_root" || die "cannot enter $gauntlet_root"
+    ;;
+esac
+
+case "${1:-}" in
+  --version) printf 'gauntlet %s\n' "$GAUNTLET_VERSION" ;;
+  base)
+    if [ -n "${2:-}" ]; then
+      branch=$(current_branch)
+      if [ "$branch" = HEAD ]; then die "detached HEAD: check out a branch first"; fi
+      git config "branch.$branch.gauntletBase" "$2"
+    else
+      ref=$(resolve_base "") || exit 2
+      printf '%s\n' "$(path_spell "$ref")"
+    fi
+    ;;
+  baseline)
+    root=$(repo_root) || exit 2
+    validate_rules || exit 2
+    scratch=$(tmp_new -d) || exit 2
+    status=0
+    measure all "$scratch" || status=$?
+    if [ "$status" -eq 0 ]; then
+      cp "$scratch/measure.tsv" "$root/.gauntlet/baseline.tsv" || status=2
+    fi
+    rm -rf "$scratch"
+    exit "$status"
+    ;;
+  test-rules)
+    scratch=$(tmp_new -d) || exit 2
+    status=0
+    run_rule_tests > "$scratch/out" || status=$?
+    report_spell < "$scratch/out" || status=2
+    rm -rf "$scratch"
+    exit "$status"
+    ;;
+  waive)
+    shift
+    status=0
+    exc_waive "$@" || status=$?
+    exit "$status"
+    ;;
+  loosen)
+    shift
+    status=0
+    exc_loosen "$@" || status=$?
+    exit "$status"
+    ;;
+  remove)
+    shift
+    status=0
+    exc_remove "$@" || status=$?
+    exit "$status"
+    ;;
+  check)
+    shift
+    status=0
+    case "${1:-}" in
+      --staged) shift; check_staged "$@" || status=$? ;;
+      *) check_ci "$@" || status=$? ;;
+    esac
+    exit "$status"
+    ;;
+  install)
+    install_runner
+    ;;
+  install-hooks)
+    install_hooks
+    ;;
+  status)
+    shift
+    status=0
+    status_cmd ${1+"$@"} || status=$?
+    exit "$status"
+    ;;
+  promote)
+    shift
+    status=0
+    promote_cmd ${1+"$@"} || status=$?
+    exit "$status"
+    ;;
+  doctor)
+    shift
+    status=0
+    doctor_cmd ${1+"$@"} || status=$?
+    exit "$status"
+    ;;
+  *) die "unknown command: ${1:-}" ;;
+esac

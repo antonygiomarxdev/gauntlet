@@ -1,0 +1,13 @@
+#!/bin/sh
+# Test double for BSD date (macOS): it has no %N, so `date +%s%N` prints a literal N.
+# test/lib.sh puts this directory first on PATH when GAUNTLET_TEST_BSD_DATE=1 and
+# records the real date in GAUNTLET_REAL_DATE. Any other use passes through.
+real=${GAUNTLET_REAL_DATE:-/bin/date}
+case "$real" in
+  *bsd-date/date) real=/bin/date ;; # never exec itself
+esac
+if [ "$#" -eq 1 ] && [ "$1" = +%s%N ]; then
+  printf '%sN\n' "$("$real" +%s)"
+  exit 0
+fi
+exec "$real" "$@"

@@ -1,0 +1,1614 @@
+# shellcheck shell=bash
+# The gates: check --ci compares the branch with its merge-base, and check
+# --staged is the commit gate (the index against HEAD, run from pre-commit).
+# Sourced, never executed. Bash 3.2 compatible; awk, sort, cmp, diff and git only.
+# Needs core.sh, rules.sh, paths.sh, detect.sh, measure.sh, cases.sh, base.sh and
+# exceptions.sh sourced first.
+
+# check_ci [--ci] [--pre-push] [--base <ref>]: the CI gate, against the merge-base of HEAD
+# and the base ref. Prints the report and returns 0 (ok), 1 (problems) or 2 (setup broken,
+# or the tracked files differ from HEAD). Every check runs before the exit; there is no
+# fail-fast. --pre-push is the hook's flag: it reads the ref lines git sends a pre-push hook
+# on stdin and refuses a pushed branch that is not the checked-out one (pre_push_refs). It
+# is the only way this command reads stdin: a manual run and CI never do.
+check_ci() {
+  local ci=0 pre_push=0 base_ref='' dirty scratch status=0 start
+  start=$(now_ms)
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --ci) ci=1 ;;
+      --pre-push) pre_push=1 ;;
+      --base)
+        [ "$#" -ge 2 ] || die "usage: gauntlet check --ci [--pre-push] [--base <ref>]"
+        base_ref=$2
+        shift
+        ;;
+      *) die "usage: gauntlet check --ci [--pre-push] [--base <ref>]" ;;
+    esac
+    shift
+  done
+  [ "$ci" -eq 1 ] || die "usage: gauntlet check --ci [--pre-push] [--base <ref>]"
+  # What is checked is what is pushed (FRD-03 section 4.11): the refs come before the work.
+  if [ "$pre_push" -eq 1 ]; then pre_push_refs || return $?; fi
+
+  # Decision 2: the gate measures the working tree, so it must equal HEAD.
+  dirty=$(git diff --name-only HEAD) || return 2
+  if [ -n "$dirty" ]; then
+    printf 'gauntlet checks what you push; commit or stash first\n' >&2
+    return 2
+  fi
+  untracked_gauntlet_refuse || return $?
+  scratch=$(tmp_new -d) || return 2
+  check_run "$scratch" "$base_ref" "$start" || status=$?
+  rm -rf "$scratch"
+  return "$status"
+}
+
+# untracked_gauntlet_refuse: return 2 when git lists a file under .gauntlet that it neither tracks
+# nor ignores (R64). A clone does not have it, so a run that read it (an exceptions.tsv row, a
+# baseline, a config, a format, the vendored runner) would judge differently from CI. The same
+# sentence as the dirty-tree refusal, then one line with the first five names (path_spell: a name
+# is somebody else's text) and a count of the rest. What git ignores is not listed, and neither is
+# the junk the run never reads (gauntlet_junk, R65).
+untracked_gauntlet_refuse() {
+  local tmp name n=0 list='' more='' rc=0
+  local cannot="gauntlet: cannot list the untracked files under .gauntlet; check that git works in this repository"
+  # Fail closed (R66): a list that could not be made is not an empty list. One line of ours; the
+  # tools' own words (a fatal: from git, a mktemp error) are left out.
+  tmp=$(tmp_new 2> /dev/null) || { printf '%s\n' "$cannot" >&2; return 2; }
+  git -c core.quotepath=off ls-files -o --exclude-standard -z -- .gauntlet > "$tmp" 2> /dev/null || rc=2
+  if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "$cannot" >&2
+  else
+    while IFS= read -r -d '' name; do
+      if gauntlet_junk "${name#.gauntlet/}"; then continue; fi
+      n=$((n + 1))
+      if [ "$n" -le 5 ]; then list=$list${list:+, }$(path_spell "$name"); fi
+    done < "$tmp"
+    if [ "$n" -gt 5 ]; then more=", and $((n - 5)) more"; fi
+    if [ "$n" -gt 0 ]; then
+      printf 'gauntlet checks what you push; commit or stash first\n' >&2
+      printf 'gauntlet: untracked files under .gauntlet, which a clone does not have: %s%s; commit or ignore them\n' "$list" "$more" >&2
+      rc=2
+    fi
+  fi
+  rm -f "$tmp"
+  return "$rc"
+}
+
+# pre_push_refs: read the lines git gives a pre-push hook on stdin, "<local ref> <local sha>
+# <remote ref> <remote sha>" for each ref it is about to push, and return 1 when a branch (a
+# remote ref under refs/heads/) or a Gerrit review ref (refs/for/) would be pushed at a commit
+# other than HEAD, the one commit this gate judges. One line per such push goes to stderr: it
+# names the local branch to check out when the local ref is one (refs/heads/<name>), and says
+# the commit is not the checked-out one when it is not (HEAD~1, a sha). A delete (zero local
+# sha) and a ref in any other namespace (a tag, a note, refs/pull/) are skipped. Stdin that is a
+# terminal or empty means nobody pushed anything through git: HEAD is judged as always. A line
+# with fewer than four fields is not git's: exit 2, fail closed. A trailing carriage return is
+# not part of the line.
+pre_push_refs() {
+  local line lref lsha rref rsha head='' refused=0
+  if [ -t 0 ]; then return 0; fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}
+    if [ -z "$line" ]; then continue; fi
+    lref='' lsha='' rref='' rsha=''
+    # A fifth field, if one ever comes, is dropped into the last variable's remainder.
+    read -r lref lsha rref rsha _ <<PUSHLINE
+$line
+PUSHLINE
+    if [ -z "$rsha" ]; then
+      printf 'gauntlet: unexpected pre-push input\n' >&2
+      return 2
+    fi
+    case "$rref" in refs/heads/*|refs/for/*) ;; *) continue ;; esac
+    case "$lsha" in *[!0]*) ;; *) continue ;; esac
+    if [ -z "$head" ]; then head=$(git rev-parse HEAD) || return 2; fi
+    if [ "$lsha" = "$head" ]; then continue; fi
+    case "$lref" in
+      refs/heads/*)
+        printf 'gauntlet checks the checked-out branch; check out %s and push again\n' "$(path_spell "${lref#refs/heads/}")" >&2
+        ;;
+      *)
+        printf 'gauntlet checks the checked-out commit; check out the commit you are pushing and push again\n' >&2
+        ;;
+    esac
+    refused=1
+  done
+  [ "$refused" -eq 0 ] || return 1
+}
+
+# check_run <scratch> <base-ref> <start-ms>: the work of check_ci, with every
+# intermediate file kept in <scratch>. The report goes to stdout. Sections are
+# collected in a body file so the header can carry the whole-run time.
+check_run() {
+  local scratch=$1 base_ref=$2 start=$3 root base sha id rf sev fix atb
+  local known=0 n_rules ms end n body new_n=0 global_n=0 touched_n=0 baseline_n=0
+  local loosened_n=0 rt_n=0 rt_rc=0 checks_n=0 broken=0 t0 t1 rc cfg_rc dbase
+  root=$(repo_root) || return 2
+  touched_mode > /dev/null || return 2
+  validate_rules || return 2
+  base=$(resolve_base "$base_ref") || return 2
+  dbase=$(resolve_base_default "$base_ref") || return 2
+  sha=$(merge_base "$base" "$base_ref") || return 2
+  # Every file the branch changes, deletions included: the scope of declared checks.
+  # --no-renames: a rename lists both its old path (deleted) and its new one.
+  git_nul_diff_lines -c core.quotepath=off diff --name-only --no-renames -z "$sha" HEAD > "$scratch/changed" || return 2
+  measure all "$scratch/now" || return 2
+  rule_ids > "$scratch/ids" || return 2
+  n_rules=$(awk 'END { print NR }' "$scratch/ids") || return 2
+  # The branch's waived paths, read once; every filter below reads this file.
+  waived_paths > "$scratch/waived" || return 2
+
+  # rules.tsv: id, severity, 1 when the rule file exists at base, fix. Severity
+  # and fix come from the current rule file; only the existence is read at base.
+  : > "$scratch/rules.tsv"
+  while IFS= read -r id; do
+    rf="$root/.gauntlet/rules/$id.md"
+    sev=$(rule_get "$rf" severity) || return 2
+    fix=$(rule_get "$rf" fix) || return 2
+    rc=0
+    base_has "$sha" ".gauntlet/rules/$id.md" || rc=$?
+    case "$rc" in 0) atb=1 ;; 1) atb=0 ;; *) return 2 ;; esac
+    printf '%s\t%s\t%s\t%s\n' "$id" "$sev" "$atb" "$fix" >> "$scratch/rules.tsv"
+  done < "$scratch/ids"
+
+  # The base's baseline, never re-measured. Absent means onboarding: checks
+  # new, global, shadow and track are skipped; exact still runs.
+  : > "$scratch/base.tsv"
+  rc=0
+  base_has "$sha" .gauntlet/baseline.tsv || rc=$?
+  case "$rc" in
+    0)
+      known=1
+      at_base "$sha" .gauntlet/baseline.tsv > "$scratch/base.tsv" || return 2
+      ;;
+    1) ;;
+    *) return 2 ;;
+  esac
+
+  # located.byline: located rows in line order within each fingerprint, so the
+  # last occurrences of a key are the new ones.
+  LC_ALL=C sort -t "$DETECT_TAB" -k3,3n "$scratch/now/located.tsv" > "$scratch/located.byline" || return 2
+
+  body="$scratch/body"
+  : > "$body"
+  # R37: the runner this gate runs is the branch's own. It cannot judge itself, so a change to
+  # it is named for the reviewer. A note, never a failure: the same text locally and in CI.
+  rc=0
+  runner_changed "$sha" || rc=$?
+  case "$rc" in
+    0) printf 'note: the vendored runner changed in this branch (.gauntlet/bin or .gauntlet/lib differ from the base); review it\n' >> "$body" ;;
+    1) ;;
+    *) return 2 ;;
+  esac
+  if [ "$known" -eq 0 ]; then
+    printf 'note: no baseline at base; new, global, shadow and track checks skipped\n' >> "$body"
+  else
+    # One diff per run (R23). The rename map re-keys the base rows before the
+    # new-violation comparison; the touched gate reads the same diff.
+    git_nul_diff_lines -c core.quotepath=off diff -M -z --name-status "$sha" HEAD > "$scratch/name-status" || return 2
+    rename_pairs "$scratch/name-status" > "$scratch/renames.tsv" || return 2
+    rekey_base "$scratch/renames.tsv" "$scratch/base.tsv" > "$scratch/base.rekeyed.tsv" || return 2
+    new_rows block "$scratch" "$scratch/base.rekeyed.tsv" > "$scratch/new.rows" || return 2
+    if [ -s "$scratch/new.rows" ]; then
+      printf '[new]\n' >> "$body"
+      violation_lines "$scratch/new.rows" >> "$body"
+    fi
+    new_n=$(awk 'END { print NR }' "$scratch/new.rows") || return 2
+    global_rows block "$scratch" > "$scratch/global.rows" || return 2
+    if [ -s "$scratch/global.rows" ]; then
+      printf '[global]\n' >> "$body"
+      awk -F '\t' '{ printf "  %s  %s → %s\n", $1, $2, $3 }' "$scratch/global.rows" >> "$body"
+    fi
+    global_n=$(count_global_extra "$scratch/new.rows" "$scratch/global.rows") || return 2
+    cmp_touched "$scratch/name-status" "$scratch/base.tsv" "$scratch/now/measure.tsv" "$scratch/rules.tsv" \
+      "$scratch/waived" > "$scratch/touched.rows" || return 2
+    if [ -s "$scratch/touched.rows" ]; then
+      printf '[touched]\n' >> "$body"
+      awk -F '\t' '{ printf "  %s  %s → %s  (%s)\n", $1, $2, $3, $4 }' "$scratch/touched.rows" >> "$body"
+    fi
+    touched_n=$(touched_uncovered "$scratch/new.rows" "$scratch/touched.rows") || return 2
+  fi
+
+  # Exact: the committed baseline must be byte-equal to what the code measures.
+  if ! cmp -s "$root/.gauntlet/baseline.tsv" "$scratch/now/measure.tsv"; then
+    printf '[baseline]\n' >> "$body"
+    if [ -f "$root/.gauntlet/baseline.tsv" ]; then
+      printf '  baseline differs from the code; run gauntlet baseline and commit it\n' >> "$body"
+      # Labels, not paths: the output must be identical on every run.
+      diff -u -L .gauntlet/baseline.tsv -L measured "$root/.gauntlet/baseline.tsv" \
+        "$scratch/now/measure.tsv" > "$scratch/diff" || true
+      awk 'NR <= 20' "$scratch/diff" >> "$body"
+    else
+      printf '  .gauntlet/baseline.tsv is missing; run gauntlet baseline and commit it\n' >> "$body"
+    fi
+    baseline_n=1
+  fi
+
+  # Loosening runs even on the onboarding branch; it is skipped only when the base has
+  # neither rules nor a config to compare with: nothing was set up there yet.
+  rc=0
+  base_has "$sha" .gauntlet/rules || rc=$?
+  cfg_rc=0
+  base_has "$sha" .gauntlet/config || cfg_rc=$?
+  if [ "$rc" -gt 1 ] || [ "$cfg_rc" -gt 1 ]; then return 2; fi
+  if [ "$rc" -eq 0 ] || [ "$cfg_rc" -eq 0 ]; then
+    # base= is also judged against the default base (cmp_loosened_in), and CI fetches that one too:
+    # a stale local ref would give another verdict.
+    if [ "$dbase" != "$base" ]; then fetch_base_warn "$dbase"; fi
+    cmp_loosened "$sha" "$scratch/loosened.covered" "$dbase" "$scratch/loosened.hint" > "$scratch/loosened.rows" || return 2
+    # Covered loosenings pass; the report names each one with its row's reason, here and in CI.
+    awk -F '\t' '{ printf "note: loosened %s: %s; covered by \"%s\"\n", $1, $2, $3 }' "$scratch/loosened.covered" >> "$body" || return 2
+    if [ -s "$scratch/loosened.rows" ]; then
+      printf '[loosened]\n' >> "$body"
+      awk -F '\t' '{ printf "  %s  %s\n", $1, $2 }' "$scratch/loosened.rows" >> "$body"
+    fi
+    # What only the default base adds, and no row covers, gets its way out said once.
+    if [ -s "$scratch/loosened.hint" ]; then
+      # The two commands are pasted by the user: the base is a ref the repository chose, so its
+      # words are quoted (R60). The ref in the first part is display only.
+      printf 'gauntlet: base= is also judged against %s (the base without it); add a row with gauntlet loosen @config %s "<reason>", or run gauntlet base %s on this branch\n' \
+        "$(path_spell "$dbase")" "$(path_spell "$(sh_quote "$(cat "$scratch/loosened.hint")")")" "$(path_spell "$(sh_quote "$base")")" >> "$body"
+    fi
+    loosened_n=$(awk 'END { print NR }' "$scratch/loosened.rows") || return 2
+  fi
+
+  # Rule tests and declared checks run on the onboarding branch too: only the
+  # baseline comparisons above need a baseline at base.
+  : > "$scratch/check.time"
+  check_table "$root" "$scratch" || return 2
+  if rule_tests_due "$scratch/changed"; then
+    t0=$(now_ms)
+    run_rule_tests tracked > "$scratch/rule-tests.out" && rt_rc=0 || rt_rc=$?
+    t1=$(now_ms)
+    printf 'rule-tests\t%s\n' "$((t1 - t0))" >> "$scratch/check.time"
+    # A setup that cannot run the tests still prints what it found, then exits 2.
+    if [ "$rt_rc" -gt 1 ]; then broken=1; fi
+    # Status 1 is what says a test failed, not the lines it printed: a failing run
+    # with nothing to count is still a problem.
+    if [ "$rt_rc" -eq 1 ] && [ ! -s "$scratch/rule-tests.out" ]; then
+      printf '  rule-tests  failed  no failure was reported\n' > "$scratch/rule-tests.out" || return 2
+    fi
+    rt_n=$(awk 'END { print NR }' "$scratch/rule-tests.out") || return 2
+    if [ -s "$scratch/rule-tests.out" ]; then
+      printf '[rule-tests]\n' >> "$body"
+      cat "$scratch/rule-tests.out" >> "$body" || return 2
+    fi
+  fi
+  run_declared_checks "$scratch" || return 2
+  checks_n=$(awk 'END { print NR }' "$scratch/checks.failed") || return 2
+  if [ -s "$scratch/checks.failed" ]; then
+    printf '[checks]\n' >> "$body"
+    cat "$scratch/checks.body" >> "$body" || return 2
+  fi
+
+  if [ "$known" -eq 1 ]; then
+    new_rows shadow "$scratch" "$scratch/base.rekeyed.tsv" > "$scratch/shadow.rows" || return 2
+    if [ -s "$scratch/shadow.rows" ]; then
+      printf '[shadow] would have failed\n' >> "$body"
+      violation_lines "$scratch/shadow.rows" >> "$body"
+    fi
+    global_rows track "$scratch" > "$scratch/track.rows" || return 2
+    if [ -s "$scratch/track.rows" ]; then
+      printf '[track]\n' >> "$body"
+      awk -F '\t' '{ printf "  %s  %s → %s (+%d); consider promoting\n", $1, $2, $3, $3 - $2 }' \
+        "$scratch/track.rows" >> "$body"
+    fi
+  fi
+
+  printf '[time]\n' >> "$body"
+  awk -F '\t' '{ printf "  %s  %s ms\n", $1, $2 }' "$scratch/now/time.tsv" "$scratch/check.time" >> "$body"
+
+  # R18: one problem per [new] line, one per [global] rule whose rise its [new]
+  # lines do not account for, one per [touched] line, one for [baseline], one
+  # per [loosened] line, one per [rule-tests] line, one per failed check. Shadow
+  # and track count nothing.
+  n=$((new_n + global_n + touched_n + baseline_n + loosened_n + rt_n + checks_n))
+
+  end=$(now_ms)
+  ms=$((end - start))
+  printf 'gauntlet  ci · %s · %s.%s s\n' "$(plural "$n_rules" rule rules)" "$((ms / 1000))" "$(((ms % 1000) / 100))"
+  report_spell < "$body" || return 2
+  if [ "$broken" -eq 1 ]; then
+    printf 'gauntlet: rule tests could not run\n' >&2
+    return 2
+  fi
+  if [ "$n" -eq 0 ]; then
+    printf 'gauntlet: ok\n'
+    return 0
+  fi
+  printf 'gauntlet: FAIL (%s)\n' "$(plural "$n" problem problems)"
+  return 1
+}
+
+# runner_changed <merge-base>: succeed (0) when .gauntlet/bin or .gauntlet/lib differs between
+# the merge-base and HEAD, return 1 when neither does, and also when the base has no vendored
+# runner at all (the first install has nothing to have changed), and 2 when git cannot tell
+# (R32). The trees are compared by id. HEAD is what check --ci runs, as its tree is clean.
+runner_changed() {
+  local dir rc bid hid had=0 differ=0
+  for dir in bin lib; do
+    bid=$(runner_tree "$1" "$dir") || return 2
+    hid=$(runner_tree HEAD "$dir") || return 2
+    if [ -n "$bid" ]; then had=1; fi
+    if [ "$bid" != "$hid" ]; then differ=1; fi
+  done
+  [ "$had" -eq 1 ] && [ "$differ" -eq 1 ]
+}
+
+# runner_tree <rev> <bin|lib>: print the git id of .gauntlet/<dir> at <rev>; nothing when it is
+# absent there. Returns 2 when git cannot tell.
+runner_tree() {
+  local rc=0
+  base_has "$1" ".gauntlet/$2" || rc=$?
+  case "$rc" in
+    0)
+      git rev-parse "$1:.gauntlet/$2" 2> /dev/null || {
+        printf 'gauntlet: cannot read .gauntlet/%s at %s\n' "$2" "$1" >&2
+        return 2
+      }
+      ;;
+    1) ;;
+    *) return 2 ;;
+  esac
+}
+
+# rule_tests_due <changed>: succeed when a file under .gauntlet/rules/ or
+# .gauntlet/formats/ is in the changed list (R5). <changed> is one path per line.
+rule_tests_due() {
+  awk '
+    index($0, ".gauntlet/rules/") == 1 || index($0, ".gauntlet/formats/") == 1 { hit = 1 }
+    END { exit !hit }
+  ' "$1"
+}
+
+# check_key_rows <config>: the one parser of config keys, shared by check and doctor.
+# Prints a "<name>\t<ci>\t<paths>\t<command>" row for each declared check, a
+# "#BAD\t<key>\t<reason>" row for each check key that is not valid, a
+# "#UNKNOWN\t<key>\t<message>" row for each key that is not base, touched or check.*,
+# and a "#MALFORMED\t<n>\t<message>" row for each line that has no key or no "=".
+# Blank lines and # comments are not lines of this kind. A carriage return ending a line
+# (a CRLF file) is not part of the line. The "#" tags cannot be check
+# names, so a check is never mistaken for a row of this kind. Every message names the
+# fix. check_table refuses on a #BAD row and ignores the other "#" rows: check has always
+# ignored lines and keys it does not know.
+check_key_rows() {
+  awk '
+    BEGIN { q = sprintf("%c", 39) }
+    { sub(/\r$/, "") }
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ { next }
+    {
+      eq = index($0, "=")
+      if (eq == 0) {
+        print "#MALFORMED\t" NR "\tconfig line " NR " has no " q "=" q ": write key=value"
+        next
+      }
+      key = substr($0, 1, eq - 1)
+      gsub(/^[ \t]+|[ \t]+$/, "", key)
+      if (key == "") {
+        print "#MALFORMED\t" NR "\tconfig line " NR " has no key: write key=value"
+        next
+      }
+      if (key == "base" || key == "touched") next
+      if (substr(key, 1, 6) != "check.") {
+        print "#UNKNOWN\t" key "\tconfig key " key " is not known; use base, touched or check.<name>\t" NR
+        next
+      }
+      val = substr($0, eq + 1)
+      gsub(/^[ \t]+|[ \t]+$/, "", val)
+      rest = substr(key, 7)
+      if (rest ~ /^[A-Za-z0-9_-]+$/) { cmd[rest] = val; declared[rest] = key }
+      else if (rest ~ /^[A-Za-z0-9_-]+\.(paths|ci)$/) {
+        name = substr(rest, 1, index(rest, ".") - 1)
+        attr_key[name] = key
+        if (rest ~ /\.paths$/) paths[name] = val
+        else ci[name] = val
+      }
+      else {
+        # Neither a check nor its .paths or .ci: the name part holds something a name may
+        # not (a space, a dot, nothing at all).
+        nm = rest
+        sub(/\.(paths|ci)$/, "", nm)
+        bad[key] = (nm == "" ? "name is empty; it must use" : "name [" nm "] must use") " letters, digits, - and _"
+      }
+    }
+    END {
+      for (name in attr_key)
+        if (!(name in declared)) print "#BAD\t" attr_key[name] "\tattribute without a command; add check." name "=<command> or remove the line"
+      for (name in declared) {
+        if (cmd[name] == "") { print "#BAD\t" declared[name] "\tempty command; give check." name " a command or remove the line"; continue }
+        c = (name in ci) ? ci[name] : "off"
+        if (c != "on" && c != "off") {
+          print "#BAD\t" declared[name] ".ci\t.ci must be on or off, got [" c "]; write on or off"
+          continue
+        }
+        printf "%s\t%s\t%s\t%s\n", name, c, paths[name], cmd[name]
+      }
+      for (key in bad) print "#BAD\t" key "\t" bad[key]
+    }
+  ' "$1"
+}
+
+# check_table <root> <scratch>: read the declared checks from .gauntlet/config
+# into <scratch>/checks.raw, sorted by name. A bad key refuses the table: the key
+# is named on stderr (exit 2).
+check_table() {
+  local root=$1 scratch=$2 bad
+  : > "$scratch/checks.all"
+  if [ -f "$root/.gauntlet/config" ]; then
+    check_key_rows "$root/.gauntlet/config" > "$scratch/checks.keys" || return 2
+    awk -F "$DETECT_TAB" '$1 != "#UNKNOWN" && $1 != "#MALFORMED"' "$scratch/checks.keys" > "$scratch/checks.all" || return 2
+  fi
+  LC_ALL=C sort "$scratch/checks.all" > "$scratch/checks.raw" || return 2
+  # Sorted before the first bad row is taken, so the reported key is the same on every run.
+  bad=$(awk -F '\t' '$1 == "#BAD" { print $2 ": " $3; exit }' "$scratch/checks.raw") || return 2
+  if [ -n "$bad" ]; then
+    printf 'gauntlet: bad check key %s\n' "$(path_spell "$bad")" >&2
+    return 2
+  fi
+}
+
+# run_declared_checks <scratch>: run each check of <scratch>/checks.raw that is
+# in scope and, under CI=true, has ci=on. Each runs as bash -c from the working
+# directory, which is the repo root (bin/gauntlet changes to it); output goes to
+# a temp file. A failure appends "  <name>  exit <code>"
+# and the last 20 output lines (indented) to <scratch>/checks.body and a line to
+# <scratch>/checks.failed. Every check that runs adds its time to check.time.
+run_declared_checks() {
+  local scratch=$1 row name ci paths cmd code out kept t0 t1
+  out="$scratch/check.out"
+  kept="$scratch/check.kept"
+  : > "$scratch/checks.body"
+  : > "$scratch/checks.failed"
+  # The table is read on fd 3, so no check can consume its rows through stdin.
+  while IFS= read -r row <&3; do
+    name=${row%%"$DETECT_TAB"*}
+    row=${row#*"$DETECT_TAB"}
+    ci=${row%%"$DETECT_TAB"*}
+    row=${row#*"$DETECT_TAB"}
+    paths=${row%%"$DETECT_TAB"*}
+    cmd=${row#*"$DETECT_TAB"}
+    if [ "${CI:-}" = true ] && [ "$ci" != on ]; then continue; fi
+    if ! check_in_scope "$paths" "$scratch/changed"; then continue; fi
+
+    t0=$(now_ms)
+    bash -c "$cmd" < /dev/null 3<&- > "$out" 2>&1 && code=0 || code=$?
+    t1=$(now_ms)
+    printf 'check:%s\t%s\n' "$name" "$((t1 - t0))" >> "$scratch/check.time"
+    if [ "$code" -ne 0 ]; then
+      printf 'x\n' >> "$scratch/checks.failed"
+      printf '  %s  exit %s\n' "$name" "$code" >> "$scratch/checks.body"
+      tail -n 20 "$out" > "$kept" || return 2
+      awk '{ printf "    %s\n", $0 }' "$kept" >> "$scratch/checks.body" || return 2
+    fi
+    rm -f "$out" "$kept"
+  done 3< "$scratch/checks.raw"
+}
+
+# check_in_scope <paths> <changed>: succeed when the check has no paths (always)
+# or when a changed path starts with one of the space-separated prefixes.
+check_in_scope() {
+  local paths=$1 changed=$2
+  if [ -z "$paths" ]; then return 0; fi
+  GL_PATHS=$paths awk '
+    BEGIN { n = split(ENVIRON["GL_PATHS"], p, " ") }
+    { for (i = 1; i <= n; i++) if (index($0, p[i]) == 1) hit = 1 }
+    END { exit !hit }
+  ' "$changed"
+}
+
+# diff_entries <name-status-file>: one row per entry of a `git diff -M -z
+# --name-status` output (one token per line, as git_nul_diff_lines writes it): status,
+# old path, new path (the old path again when there is no second path). Entries
+# under .gauntlet/ are dropped (R15). The parser the touched gate and the rename
+# map share, so the -z handling lives in one place.
+diff_entries() {
+  awk '
+    {
+      if (need == 0) { st = $0; need = (st ~ /^[RC]/) ? 2 : 1; k = 0; next }
+      p[++k] = $0
+      need--
+      if (need > 0) next
+      old = p[1]
+      nw = (k == 2) ? p[2] : p[1]
+      if (index(old, ".gauntlet/") == 1 || index(nw, ".gauntlet/") == 1) next
+      printf "%s\t%s\t%s\n", st, old, nw
+    }
+  ' "$1"
+}
+
+# rename_pairs <name-status-file>: print old<TAB>new for each rename (R entry) of a
+# `git diff -M -z --name-status` output, pure renames included. A copy (C) and a
+# delete plus an add are not renames, so they are not listed (R23).
+rename_pairs() {
+  local entries status=0
+  entries=$(tmp_new) || return 2
+  diff_entries "$1" > "$entries" || status=2
+  if [ "$status" -eq 0 ]; then
+    awk -F '\t' '$1 ~ /^R/ { printf "%s\t%s\n", $2, $3 }' "$entries" || status=2
+  fi
+  rm -f "$entries"
+  return "$status"
+}
+
+# rekey_base <pairs> <base.tsv>: print the base rows with each renamed file's rows
+# moved to its new path (R23), so the new-violation comparison reads a rename as
+# the same debt. The new path's own base rows are dropped: that file is the
+# renamed one, and its old content is gone. Every other row passes through.
+rekey_base() {
+  GL_PAIRS=$1 awk -F "$DETECT_TAB" '
+    FILENAME == ENVIRON["GL_PAIRS"] { to[$1] = $2; from[$2] = 1; next }
+    ($2 in from) { next }
+    ($2 in to) { printf "%s\t%s\t%s\t%s\n", $1, to[$2], $3, $4; next }
+    { print }
+  ' "$1" "$2"
+}
+
+# carry_renamed <pairs> <rows>: print the baseline rows with each renamed file's rows moved to
+# its new path (R23), for rows the commit gate does not measure (push-stage rules) and so can
+# only carry. Rows already at a new path are dropped when the same rule has a row moved there:
+# that file's old content is gone. A rule with no row moved there keeps its rows, which is a
+# baseline regenerated after the rename. rekey_base cannot do this: it reads HEAD's baseline,
+# where a new path holds only stale rows, and drops them all; the index may already hold the
+# new path's real rows.
+carry_renamed() {
+  GL_PAIRS=$1 awk -F "$DETECT_TAB" '
+    FILENAME == ENVIRON["GL_PAIRS"] { to[$1] = $2; next }
+    {
+      n++; line[n] = $0; rule[n] = $1; path[n] = $2; fp[n] = $3; cnt[n] = $4
+      if ($2 in to) moved[$1 SUBSEP to[$2]] = 1
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        if (path[i] in to) printf "%s\t%s\t%s\t%s\n", rule[i], to[path[i]], fp[i], cnt[i]
+        else if ((rule[i] SUBSEP path[i]) in moved) continue
+        else print line[i]
+      }
+    }
+  ' "$1" "$2"
+}
+
+# new_rows <severity> <scratch> [base.tsv]: print one row per new occurrence of a
+# rule of that severity that exists at base: rule, path, line, fix, message. An
+# occurrence is new when its fingerprint count rose; the last occurrences in
+# line order are the new ones. Waived rows are dropped. The base is
+# <scratch>/base.tsv unless the caller passes the re-keyed one (R23).
+new_rows() {
+  local sev=$1 scratch=$2 base=${3:-}
+  [ -n "$base" ] || base="$scratch/base.tsv"
+  GL_SEV=$sev GL_RULES="$scratch/rules.tsv" GL_BASE="$base" \
+    GL_NOW="$scratch/now/measure.tsv" GL_LOC="$scratch/located.byline" awk -F '\t' '
+    FILENAME == ENVIRON["GL_RULES"] { sev[$1] = $2; atb[$1] = $3; fix[$1] = $4; next }
+    FILENAME == ENVIRON["GL_BASE"] { bc[$1 SUBSEP $2 SUBSEP $3] = $4; next }
+    FILENAME == ENVIRON["GL_NOW"] {
+      k = $1 SUBSEP $2 SUBSEP $3
+      if (sev[$1] == ENVIRON["GL_SEV"] && atb[$1] == "1" && $4 - bc[k] > 0) need[k] = 1
+      next
+    }
+    FILENAME == ENVIRON["GL_LOC"] {
+      k = $1 SUBSEP $2 SUBSEP $4
+      seen[k]++
+      if (k in need && seen[k] > bc[k] + 0) {
+        m = $0
+        for (i = 0; i < 4; i++) sub(/^[^\t]*\t/, "", m)
+        printf "%s\t%s\t%s\t%s\t%s\n", $1, $2, $3, fix[$1], m
+      }
+    }
+  ' "$scratch/rules.tsv" "$base" "$scratch/now/measure.tsv" "$scratch/located.byline" > "$scratch/new.raw" || return 2
+  LC_ALL=C sort -t "$DETECT_TAB" -k1,1 -k2,2 -k3,3n "$scratch/new.raw" > "$scratch/new.sorted" || return 2
+  # A waived path drops its rows; one awk pass over the waived set, not a fork per row.
+  GL_WAIVED="$scratch/waived" awk -F '\t' '
+    FILENAME == ENVIRON["GL_WAIVED"] { waived[$0] = 1; next }
+    !($2 in waived)
+  ' "$scratch/waived" "$scratch/new.sorted" || return 2
+}
+
+# global_rows <severity> <scratch> [now-file]: print rule, base total, current
+# total for each rule of that severity that exists at base whose total rose.
+# The current total is read from [now-file], default <scratch>/now/measure.tsv.
+global_rows() {
+  local sev=$1 scratch=$2 now=${3:-}
+  [ -n "$now" ] || now="$scratch/now/measure.tsv"
+  GL_SEV=$sev GL_RULES="$scratch/rules.tsv" GL_BASE="$scratch/base.tsv" \
+    GL_NOW="$now" awk -F '\t' '
+    FILENAME == ENVIRON["GL_RULES"] { sev[$1] = $2; atb[$1] = $3; next }
+    FILENAME == ENVIRON["GL_BASE"] { bt[$1] += $4; next }
+    FILENAME == ENVIRON["GL_NOW"] { nt[$1] += $4; next }
+    END {
+      for (r in sev)
+        if (sev[r] == ENVIRON["GL_SEV"] && atb[r] == "1" && nt[r] + 0 > bt[r] + 0)
+          printf "%s\t%s\t%s\n", r, bt[r] + 0, nt[r] + 0
+    }
+  ' "$scratch/rules.tsv" "$scratch/base.tsv" "$now" > "$scratch/global.raw" || return 2
+  LC_ALL=C sort "$scratch/global.raw"
+}
+
+# touched_uncovered <new-rows> <touched-rows>: count the touched rows whose file
+# has no [new] line. R20: a file with a [new] line is already explained by it, so
+# it is not counted again; [touched] still prints it.
+touched_uncovered() {
+  GL_NEW=$1 awk -F '\t' '
+    FILENAME == ENVIRON["GL_NEW"] { covered[$2] = 1; next }
+    !($1 in covered) { n++ }
+    END { print n + 0 }
+  ' "$1" "$2"
+}
+
+# count_global_extra <new-rows> <global-rows>: print how many [global] rules rose
+# further than their [new] lines account for (the rise came from waived paths).
+count_global_extra() {
+  GL_NEW=$1 awk -F '\t' '
+    FILENAME == ENVIRON["GL_NEW"] { newc[$1]++; next }
+    $3 - $2 > newc[$1] + 0 { n++ }
+    END { print n + 0 }
+  ' "$1" "$2"
+}
+
+# violation_lines <rows>: print each new_rows row as a violation line and its
+# fix line. The message runs to the end of the row, so it may contain tabs.
+violation_lines() {
+  awk -F '\t' '{
+    m = $0
+    for (i = 0; i < 4; i++) sub(/^[^\t]*\t/, "", m)
+    # The carriage return of a CRLF line is its ending, not text. The row keeps it; the line shown does not.
+    sub(/\r$/, "", m)
+    printf "  %s:%s  %s  %s\n      fix: %s\n", $2, $3, $1, m, $4
+  }' "$1"
+}
+
+# touched_mode: print the touched gate's setting, on or off (config touched=,
+# default off). Any other value is a broken setup: exit 2, so it never turns
+# the gate off silently.
+touched_mode() {
+  local value
+  value=$(config_get touched off) || return 2
+  case "$value" in
+    on|off) printf '%s\n' "$value" ;;
+    *)
+      printf 'gauntlet: touched must be on or off, got [%s]\n' "$(path_spell "$value")" >&2
+      return 2
+      ;;
+  esac
+}
+
+# cmp_touched <diff> <base.tsv> <measure.tsv> <rules.tsv> <waived>: the touched
+# gate (opt-in via config touched=on). <diff> is `git diff -M -z --name-status`
+# output, one token per line (git_nul_diff_lines): the base-to-tree diff the caller
+# judges, the merge-base to HEAD in check --ci, the index against HEAD at commit.
+# Each file it changes must come out with less block debt than it had at base.
+# Prints one tab row per file that breaks that rule (path, base, now, reason) and
+# returns 0; prints nothing when the gate is off. Debt counts only block rules
+# that exist at base; rows of waived paths are skipped.
+cmp_touched() {
+  local diff=$1 base=$2 now=$3 rules=$4 waived=$5 mode scratch status=0
+  mode=$(touched_mode) || return 2
+  [ "$mode" = on ] || return 0
+  scratch=$(tmp_new -d) || return 2
+  cmp_touched_in "$diff" "$base" "$now" "$rules" "$waived" "$scratch" || status=$?
+  rm -rf "$scratch"
+  return "$status"
+}
+
+# cmp_touched_in <diff> <base.tsv> <measure.tsv> <rules.tsv> <waived> <scratch>:
+# the work of cmp_touched, with intermediate files kept in <scratch>.
+cmp_touched_in() {
+  local diff=$1 base=$2 now=$3 rules=$4 waived=$5 scratch=$6
+  # R100 (a pure rename) and D are skipped. A pure rename keeps its content, so its
+  # debt cannot go down and "must go down" would fail it for nothing; a deleted file
+  # has nothing left to judge. diff_entries drops `.gauntlet/` (R15) and parses the
+  # -z tokens.
+  diff_entries "$diff" > "$scratch/entries" || return 2
+  awk -F '\t' '
+    $1 == "A" || $1 == "M" { printf "%s\t%s\t%s\n", $1, $2, $2; next }
+    $1 ~ /^R/ && $1 != "R100" { printf "R\t%s\t%s\n", $2, $3 }
+  ' "$scratch/entries" > "$scratch/changes" || return 2
+
+  # sums: fingerprint rows of block rules that exist at base, for the changed
+  # paths only. B rows are the base's debt at the old paths, N rows the current
+  # debt at the new paths. The base is never re-measured.
+  GL_CH="$scratch/changes" GL_RULES="$rules" GL_BASE="$base" GL_NOW="$now" awk -F '\t' '
+    FILENAME == ENVIRON["GL_CH"] { old[$2] = 1; nw[$3] = 1; next }
+    FILENAME == ENVIRON["GL_RULES"] { if ($2 == "block" && $3 == "1") blk[$1] = 1; next }
+    FILENAME == ENVIRON["GL_BASE"] { if (($2 in old) && ($1 in blk)) print "B\t" $1 "\t" $2 "\t" $4; next }
+    FILENAME == ENVIRON["GL_NOW"] { if (($2 in nw) && ($1 in blk)) print "N\t" $1 "\t" $2 "\t" $4 }
+  ' "$scratch/changes" "$rules" "$base" "$now" > "$scratch/sums" || return 2
+
+  # Waivers drop a path's rows from the totals. Sum rows are B or N, rule, path,
+  # count: the path is field 3.
+  GL_WAIVED="$waived" awk -F '\t' '
+    FILENAME == ENVIRON["GL_WAIVED"] { waived[$0] = 1; next }
+    !($3 in waived)
+  ' "$waived" "$scratch/sums" > "$scratch/kept" || return 2
+
+  GL_CH="$scratch/changes" GL_KEPT="$scratch/kept" awk -F '\t' '
+    FILENAME == ENVIRON["GL_CH"] { st[++n] = $1; old[n] = $2; nw[n] = $3; next }
+    FILENAME == ENVIRON["GL_KEPT"] {
+      if ($1 == "B") base[$3] += $4
+      else now[$3] += $4
+      next
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        p = nw[i]
+        c = now[p] + 0
+        if (st[i] == "A") { b = 0; bad = c > 0; why = "must be 0" }
+        else {
+          b = base[old[i]] + 0
+          if (b > 0) { bad = c >= b; why = "must go down" }
+          else { bad = c > 0; why = "must stay 0" }
+        }
+        if (bad) printf "%s\t%d\t%d\t%s\n", p, b, c, why
+      }
+    }
+  ' "$scratch/changes" "$scratch/kept" > "$scratch/touched" || return 2
+  cat "$scratch/touched"
+}
+
+# cmp_loosened <merge-base> [<covered-file> [<default-base> [<hint-file>]]]: the no-loosening check (decision 6,
+# EXC-AC5..AC8). Compares each rule file at the merge-base with the working tree and prints
+# a tab row (rule, what changed) for each loosening that no new exceptions.tsv row covers.
+# Prints nothing when nothing was loosened. A loosening that a row covers is not printed;
+# when <covered-file> is given it gets a row (rule, what changed, the row's reason) for
+# each of them, so the report can say what was relaxed and why. <default-base> is the base
+# resolve_base_default names: the base= of the config is judged against it as well as against the
+# merge-base (cmp_loosened_in). <hint-file> gets the change that only the comparison with the
+# default base found and no row covers (the one the report explains how to clear), else nothing.
+cmp_loosened() {
+  local mb=$1 covered=${2:-} dbase=${3:-} hint=${4:-} scratch status=0
+  scratch=$(tmp_new -d) || return 2
+  cmp_loosened_in "$mb" "$scratch" "$dbase" || status=$?
+  if [ "$status" -eq 0 ] && [ -n "$covered" ]; then cp "$scratch/covered" "$covered" || status=2; fi
+  if [ "$status" -eq 0 ] && [ -n "$hint" ]; then cp "$scratch/hint" "$hint" || status=2; fi
+  rm -rf "$scratch"
+  return "$status"
+}
+
+# cmp_loosened_in <merge-base> <scratch> <default-base>: the work of cmp_loosened, with
+# intermediate files kept in <scratch>; the covered rows are left in <scratch>/covered, and in
+# <scratch>/hint the first change that only the default base's comparison found and no row covers.
+# Only rules that exist at the base are judged; a rule added on the branch is never
+# loosened.
+cmp_loosened_in() {
+  local mb=$1 scratch=$2 dbase=$3 root name id reason n dmb=''
+  root=$(repo_root) || return 2
+  exc_new_rows "$mb" "$scratch/exc.new" || return 2
+  # The new rows' targets and reasons: "<rule>: <what>" with its reason, and the removed rule.
+  awk -F "$DETECT_TAB" '$1 == "loosen" { print $2 "\t" $3 }' "$scratch/exc.new" > "$scratch/new.loosen" || return 2
+  awk -F "$DETECT_TAB" '$1 == "remove" { print $2 "\t" $3 }' "$scratch/exc.new" > "$scratch/new.remove" || return 2
+  : > "$scratch/covered"
+  : > "$scratch/hint"
+  git_nul_diff_lines -c core.quotepath=off ls-tree --full-tree -r --name-only -z "$mb" -- .gauntlet/rules > "$scratch/base.rules" || return 2
+  # Which files the detectors of those rules name changed, answered for the whole run at once.
+  detector_prime "$mb" "$scratch" "$root" || return 2
+  LOOSEN_FMT_SEEN=
+
+  : > "$scratch/out"
+  n=0
+  while IFS= read -r name; do
+    judged_id "$name" || continue
+    id=$JUDGED_ID
+    n=$((n + 1))
+    at_base "$mb" "$name" > "$scratch/base.md" || return 2
+
+    if [ ! -f "$root/$name" ]; then
+      printf 'rule file removed\n' > "$scratch/changes"
+      reason=$(GL_ID=$id awk -F "$DETECT_TAB" '$1 == ENVIRON["GL_ID"] { print "x" $2; exit }' "$scratch/new.remove") || return 2
+      loosen_row "$id" "$reason" "$scratch" || return 2
+      continue
+    fi
+
+    loosen_changes "$mb" "$scratch" "$scratch/base.md" "$root/$name" "$n" > "$scratch/changes" || return 2
+    reason=$(GL_ID=$id awk -F "$DETECT_TAB" 'index($1, ENVIRON["GL_ID"] ":") == 1 { print "x" $2; exit }' "$scratch/new.loosen") || return 2
+    loosen_row "$id" "$reason" "$scratch" || return 2
+  done < "$scratch/base.rules"
+
+  # .gauntlet/config is judged like a rule file, under the pseudo-rule @config (R34): one
+  # new `loosen @config` row covers every item below, as a rule's row covers its changes.
+  cmp_config "$mb" "$scratch" "$dbase" > "$scratch/changes" || return 2
+  reason=$(awk -F "$DETECT_TAB" 'index($1, "@config:") == 1 { print "x" $2; exit }' "$scratch/new.loosen") || return 2
+  cp "$scratch/changes" "$scratch/changes.mb" || return 2
+  loosen_row @config "$reason" "$scratch" || return 2
+
+  # A base= the branch sets can aim the run at the branch itself (base=HEAD), and then nothing
+  # differs from its merge-base. CI names the target (--base origin/<target>), so the base= is
+  # also judged against the base the run would have without it, and the rows that are new
+  # since that merge-base cover it. Skipped when that base does not resolve: CI judges it.
+  if [ -n "$dbase" ]; then dmb=$(git merge-base HEAD "$dbase" 2> /dev/null) || dmb=; fi
+  if [ -n "$dmb" ]; then
+    at_base "$dmb" .gauntlet/config > "$scratch/cfg.dbase" || return 2
+    cmp_base "$scratch/cfg.dbase" "$scratch/cfg.head" "$dbase" > "$scratch/changes" || return 2
+    # What the comparison with the merge-base already said is not said twice.
+    awk 'FILENAME == ARGV[1] { seen[$0] = 1; next } !($0 in seen)' "$scratch/changes.mb" "$scratch/changes" > "$scratch/changes.d" || return 2
+    if [ -s "$scratch/changes.d" ]; then
+      exc_new_rows "$dmb" "$scratch/exc.new.d" || return 2
+      awk -F "$DETECT_TAB" '$1 == "loosen" { print $2 "\t" $3 }' "$scratch/exc.new.d" > "$scratch/new.loosen.d" || return 2
+      reason=$(awk -F "$DETECT_TAB" 'index($1, "@config:") == 1 { print "x" $2; exit }' "$scratch/new.loosen.d") || return 2
+      cp "$scratch/changes.d" "$scratch/changes" || return 2
+      loosen_row @config "$reason" "$scratch" || return 2
+      if [ -z "$reason" ]; then awk 'NR == 1' "$scratch/changes.d" > "$scratch/hint" || return 2; fi
+    fi
+  fi
+  cat "$scratch/out"
+}
+
+# cmp_config <merge-base> <scratch> <default-base>: print one line per way .gauntlet/config was
+# loosened since the merge-base, read the way the runner reads it (config_value, check_key_rows):
+#   base         the base it selects differs (set, changed or removed; cmp_base, where a file with
+#                no base= selects <default-base>, which may be empty);
+#   touched      the gate went from on to off (the default is off, so deleting the line
+#                of an enabled gate counts);
+#   check <name> removed; its .ci went from on to off (the default is off); its .paths
+#                narrowed; its command changed.
+# Not loosening: a check added, .ci turned on, .paths widened, touched turned on, and
+# comments, blank lines or spacing. The base side is the merge-base's file, the other side
+# is HEAD's (a clean tree is what check --ci judges), and a file absent on a side reads as
+# all defaults: no base, touched off, no checks. A `.paths` value is a list of prefixes
+# (check_in_scope); an empty one means every change. It is narrowed when some prefix of the
+# base list is no longer covered, a prefix being covered when a head prefix starts it, so
+# src/api/ becoming src/ is not narrowing and src/ becoming src/api/ is, and an empty list
+# becoming a prefix is.
+cmp_config() {
+  local mb=$1 scratch=$2 dbase=${3:-} bt ht side
+  at_base "$mb" .gauntlet/config > "$scratch/cfg.base" || return 2
+  at_base HEAD .gauntlet/config > "$scratch/cfg.head" || return 2
+  cmp_base "$scratch/cfg.base" "$scratch/cfg.head" "$dbase" || return 2
+  bt=$(config_value "$scratch/cfg.base" touched off) || return 2
+  ht=$(config_value "$scratch/cfg.head" touched off) || return 2
+  if [ "$bt" = on ] && [ "$ht" != on ]; then printf 'touched on → off\n'; fi
+  # The declared checks of each side: name, ci, paths, command (check_key_rows leaves out
+  # the "#" rows that mark keys it refuses), sorted so the lines come out in one order.
+  # Each step writes a file and is checked on its own: in a pipeline only the last status is seen,
+  # and a base side that failed to parse would read as no checks, so a removed check would pass.
+  for side in base head; do
+    check_key_rows "$scratch/cfg.$side" > "$scratch/cfg.$side.rows" || return 2
+    awk 'substr($0, 1, 1) != "#"' "$scratch/cfg.$side.rows" > "$scratch/cfg.$side.declared" || return 2
+    LC_ALL=C sort "$scratch/cfg.$side.declared" > "$scratch/cfg.$side.checks" || return 2
+  done
+  GL_BASE="$scratch/cfg.base.checks" GL_HEAD="$scratch/cfg.head.checks" awk '
+    # The row is name, ci, paths, command split at the first three tabs, as the runner
+    # splits it (run_declared_checks); the command may hold a tab.
+    function field(line, k,   i) {
+      for (i = 1; i < k; i++) line = substr(line, index(line, "\t") + 1)
+      return k < 4 ? substr(line, 1, index(line, "\t") - 1) : line
+    }
+    FILENAME == ENVIRON["GL_BASE"] {
+      name = field($0, 1)
+      order[++n] = name
+      bci[name] = field($0, 2); bpaths[name] = field($0, 3); bcmd[name] = field($0, 4)
+      next
+    }
+    {
+      name = field($0, 1)
+      has[name] = 1
+      hci[name] = field($0, 2); hpaths[name] = field($0, 3); hcmd[name] = field($0, 4)
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        name = order[i]
+        if (!(name in has)) { print "check " name " removed"; continue }
+        if (bci[name] == "on" && hci[name] != "on") print "check " name " ci on → off"
+        hn = split(hpaths[name], hw, " ")
+        if (bpaths[name] == "") {
+          if (hn > 0) print "check " name " paths narrowed: all files → " hpaths[name]
+        } else if (hn > 0) {
+          bn = split(bpaths[name], bw, " ")
+          for (j = 1; j <= bn; j++) {
+            p = bw[j]
+            if ((name SUBSEP p) in done) continue
+            done[name SUBSEP p] = 1
+            covered = 0
+            for (k = 1; k <= hn; k++) if (index(p, hw[k]) == 1) covered = 1
+            if (!covered) print "check " name " paths narrowed: " p
+          }
+        }
+        if (bcmd[name] != hcmd[name]) print "check " name " command changed"
+      }
+    }
+  ' "$scratch/cfg.base.checks" "$scratch/cfg.head.checks"
+}
+
+# cmp_base <base-config> <head-config> <default-base>: print "base A → B" when the base the
+# runner would use differs between the two config files, A and B being the values as written
+# ("(unset)" for none). Compared as the bases they select: no base= selects <default-base>, so
+# base=main where the default is main changes nothing. Returns 2 when a file cannot be read.
+cmp_base() {
+  local bv hv
+  bv=$(config_value "$1" base "") || return 2
+  hv=$(config_value "$2" base "") || return 2
+  if [ "${bv:-$3}" != "${hv:-$3}" ]; then
+    printf 'base %s → %s\n' "${bv:-(unset)}" "${hv:-(unset)}"
+  fi
+}
+
+# loosen_row <id> <row> <scratch>: file the changes in <scratch>/changes, one per line,
+# under <id>. <row> is empty when no new row covers the rule, else "x" and the first
+# covering row's reason (the "x" keeps a row with an empty reason, which a hand edit can
+# make, from reading as no row). Uncovered changes go to <scratch>/out as (id, what);
+# covered ones to <scratch>/covered as (id, what, reason).
+loosen_row() {
+  if [ ! -s "$3/changes" ]; then return 0; fi
+  if [ -z "$2" ]; then
+    GL_ID=$1 awk '{ printf "%s\t%s\n", ENVIRON["GL_ID"], $0 }' "$3/changes" >> "$3/out" || return 2
+  else
+    GL_ID=$1 GL_REASON=${2#x} awk '{ printf "%s\t%s\t%s\n", ENVIRON["GL_ID"], $0, ENVIRON["GL_REASON"] }' "$3/changes" >> "$3/covered" || return 2
+  fi
+}
+
+# loosen_changes <merge-base> <scratch> <base-rule> <current-rule> <n>: print one line
+# per way the rule was loosened since the merge-base. Raising a severity, widening
+# paths, narrowing exclude and a format that stays the same are not loosening. <n> is the
+# rule's number in the run (detector_prime).
+loosen_changes() {
+  local mb=$1 scratch=$2 brule=$3 crule=$4 n=$5
+  local bsev csev rb rc bp cp be ce beng ceng bdet cdet bfe cfe bfmt cfmt gp has st
+  bsev=$(rule_get "$brule" severity) || return 2
+  csev=$(rule_get "$crule" severity) || return 2
+  rb=$(severity_rank "$bsev") || rb=0
+  rc=$(severity_rank "$csev") || rc=0
+  if [ "$rb" -gt "$rc" ]; then printf 'severity %s → %s\n' "$bsev" "$csev"; fi
+
+  bp=$(rule_get "$brule" paths) || return 2
+  cp=$(rule_get "$crule" paths) || return 2
+  be=$(rule_get "$brule" exclude) || return 2
+  ce=$(rule_get "$crule" exclude) || return 2
+  [ -n "$bp" ] || bp='**'
+  [ -n "$cp" ] || cp='**'
+  list_missing "paths narrowed:" "$bp" "$cp"
+  list_missing "exclude widened:" "$ce" "$be"
+
+  beng=$(rule_get "$brule" engine) || return 2
+  ceng=$(rule_get "$crule" engine) || return 2
+  if [ "$beng" != "$ceng" ]; then printf 'engine %s → %s\n' "$beng" "$ceng"; fi
+  bdet=$(rule_get "$brule" detector) || return 2
+  cdet=$(rule_get "$crule" detector) || return 2
+  if [ "$bdet" != "$cdet" ]; then printf 'detector changed\n'; fi
+  # Each word of an unchanged detector that names a file is judged by that file's content.
+  # detector_prime has read them all: the words are cut the way the shell cuts them
+  # (detector_words), with nothing expanded, so {files}, flags and globs are plain words that
+  # name nothing. A changed string is reported above.
+  if [ "$bdet" = "$cdet" ]; then
+    GL_CHANGED="$scratch/words.changed" awk '
+      FILENAME == ENVIRON["GL_CHANGED"] { c[$0] = 1; next }
+      ($0 in c) { print "detector file " $0 " changed" }
+    ' "$scratch/words.changed" "$scratch/dw/$n" || return 2
+  fi
+
+  # A format decides which output lines count, so it is judged for block rules.
+  bfe=$(rule_get "$brule" format) || return 2
+  cfe=$(rule_get "$crule" format) || return 2
+  bfmt=$(effective_format "$beng" "$bfe") || return 2
+  cfmt=$(effective_format "$ceng" "$cfe") || return 2
+  if [ "$csev" = block ]; then
+    if [ "$bfmt" != "$cfmt" ]; then printf 'format %s → %s\n' "$bfmt" "$cfmt"; fi
+    gp=.gauntlet/formats/$cfmt.md
+    # Most rules share one format: its file is judged once for the run.
+    case "$LOOSEN_FMT_SEEN" in
+      *"|$gp=changed|"*) st=0 ;;
+      *"|$gp=same|"*) st=1 ;;
+      *)
+        st=0
+        blob_changed "$mb" "$gp" || st=$?
+        case "$st" in 0) LOOSEN_FMT_SEEN="$LOOSEN_FMT_SEEN|$gp=changed|" ;; 1) LOOSEN_FMT_SEEN="$LOOSEN_FMT_SEEN|$gp=same|" ;; esac
+        ;;
+    esac
+    case "$st" in
+      0)
+        has=0
+        base_has "$mb" "$gp" || has=$?
+        case "$has" in
+          0)
+            has=0
+            base_has HEAD "$gp" || has=$?
+            case "$has" in
+              0) printf 'format file %s changed\n' "$gp" ;;
+              1) printf 'format file %s removed\n' "$gp" ;;
+              *) return 2 ;;
+            esac
+            ;;
+          1) printf 'format file %s added\n' "$gp" ;;
+          *) return 2 ;;
+        esac
+        ;;
+      1) ;;
+      *) return 2 ;;
+    esac
+  fi
+}
+
+# detector_words <command>: print the words of a detector command that can name a file, one
+# per line, cut the way the shell cuts a command line and with nothing expanded. A space, a
+# tab, a newline or one of the operators ; & | < > ( ) ends a word outside quotes, so a file
+# glued to an operator (tools/find.sh;true, (tools/find.sh)) is a word of its own; the pieces
+# can only add candidate names, and a name that is no file is silent. 'single quotes' keep
+# everything. "Double quotes" keep everything but a backslash before ", \, $ or a backtick,
+# which makes that character literal. Outside quotes a backslash makes the next character
+# literal. Quoted and unquoted parts that touch are one word ("tools"/find.sh is
+# tools/find.sh); the quotes and escaping backslashes are gone; an empty word ("") is
+# dropped; a quote left open takes the rest of the line. A word that starts with "-" and
+# holds "=" (--pre=tools/pre.sh) is printed whole and then as the text after the first "=".
+# A leading "./" is dropped. A word that cannot name a file is not printed: an option (it
+# starts with "-" as written, before the "./" is dropped, and holds no "="; ./-x.sh is a path),
+# and a word with a "{" (the {files} placeholder, a brace expansion, which is not expanded). No
+# $variable, ` command, glob or ~ is interpreted: the command is judged as text.
+detector_words() {
+  GL_CMD=$1 LC_ALL=C awk '
+    function keep(x) {
+      if (substr(x, 1, 1) == "-" && index(x, "=") == 0) return
+      sub(/^\.\//, "", x)
+      if (index(x, "{") > 0) return
+      print x
+    }
+    function emit(   e) {
+      if (inword && w != "") {
+        keep(w)
+        if (substr(w, 1, 1) == "-" && (e = index(w, "=")) > 0 && e < length(w)) keep(substr(w, e + 1))
+      }
+      w = ""; inword = 0
+    }
+    BEGIN {
+      s = ENVIRON["GL_CMD"]; n = length(s); q = ""; w = ""; inword = 0
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (q == "\047") { if (c == "\047") q = ""; else w = w c; continue }
+        if (q == "\"") {
+          if (c == "\"") { q = ""; continue }
+          if (c == "\\" && i < n) {
+            d = substr(s, i + 1, 1)
+            if (d == "\"" || d == "\\" || d == "$" || d == "`") { w = w d; i++; continue }
+          }
+          w = w c
+          continue
+        }
+        if (c == "\047" || c == "\"") { q = c; inword = 1; continue }
+        if (c == "\\" && i < n) { w = w substr(s, i + 1, 1); i++; inword = 1; continue }
+        if (c == " " || c == "\t" || c == "\n" || index(";&|<>()", c) > 0) { emit(); continue }
+        w = w c; inword = 1
+      }
+      emit()
+    }
+  '
+}
+
+# judged_id <name>: succeed when <name>, a path listed under .gauntlet/rules at the merge-base,
+# is a rule the loosening check judges (.gauntlet/rules/<id>.md directly in that directory, not
+# a case file: rule_is_case_file), and set JUDGED_ID to its id.
+judged_id() {
+  local rest
+  case "$1" in .gauntlet/rules/*.md) ;; *) return 1 ;; esac
+  rest=${1#.gauntlet/rules/}
+  case "$rest" in */*) return 1 ;; esac
+  JUDGED_ID=${rest%.md}
+  if rule_is_case_file "$JUDGED_ID"; then return 1; fi
+  return 0
+}
+
+# detector_prime <merge-base> <scratch> <root>: find out, for the whole run and in a fixed
+# number of git calls, which files the detectors name that differ between the merge-base and
+# HEAD. For each rule of <scratch>/base.rules that judged_id accepts and that still exists, the
+# words of its current detector go to <scratch>/dw/<n>, n being the rule's number in that
+# order (cmp_loosened_in counts the same way); the ast-grep rule field is the one word. Every
+# distinct word that can name a file of the tree (no absolute path, no tab, nothing that folds
+# to the root or climbs out of it) is folded (TREE_FOLD_AWK) and listed once per side, as a
+# literal path, in batches that stay under the argument limit. A file is the same on both sides, or it
+# is not (a blob id; mode is ignored); a symlink goes through blob_changed, which follows it.
+# <scratch>/words.changed gets the words, as written in the detector, whose file differs.
+# Returns 2 when git cannot tell (R32).
+detector_prime() {
+  local mb=$1 scratch=$2 root=$3 name n=0 eng det p st
+  mkdir -p "$scratch/dw" || return 2
+  : > "$scratch/words.changed" || return 2
+  : > "$scratch/folded" || return 2
+  while IFS= read -r name; do
+    judged_id "$name" || continue
+    n=$((n + 1))
+    : > "$scratch/dw/$n" || return 2
+    if [ -f "$root/$name" ]; then
+      eng=$(rule_get "$root/$name" engine) || return 2
+      det=$(rule_get "$root/$name" detector) || return 2
+      if [ "$eng" = ast-grep ]; then
+        printf '%s\n' "${det#./}" > "$scratch/dw/$n" || return 2
+      else
+        detector_words "$det" > "$scratch/dw/$n" || return 2
+      fi
+    fi
+  done < "$scratch/base.rules"
+  if [ "$n" -eq 0 ]; then return 0; fi
+  cat "$scratch"/dw/* > "$scratch/words.all" || return 2
+  # word, a tab, its folded path: one row per distinct word that can name a file; and the
+  # distinct folded paths.
+  GL_FOLDED="$scratch/folded" awk "$TREE_FOLD_AWK"'
+    {
+      w = $0
+      if (w == "" || (w in seen)) next
+      seen[w] = 1
+      if (index(w, "\t") > 0) next
+      if (substr(w, 1, 1) == "/" || substr(w, length(w)) == "/") next
+      f = fold(w)
+      if (f == "") next
+      print w "\t" f
+      if (!(f in done)) { done[f] = 1; print f > ENVIRON["GL_FOLDED"] }
+    }
+  ' "$scratch/words.all" > "$scratch/words.map" || return 2
+  if [ ! -s "$scratch/words.map" ]; then return 0; fi
+  ls_tree_batch "$mb" "$scratch/folded" "$scratch/tree.base" || return 2
+  ls_tree_batch HEAD "$scratch/folded" "$scratch/tree.head" || return 2
+  : > "$scratch/folded.changed" || return 2
+  : > "$scratch/folded.links" || return 2
+  GL_BASE="$scratch/tree.base" GL_HEAD="$scratch/tree.head" GL_OUT="$scratch/folded.changed" GL_LINKS="$scratch/folded.links" awk '
+    FILENAME == ENVIRON["GL_BASE"] || FILENAME == ENVIRON["GL_HEAD"] {
+      t = index($0, "\t")
+      if (t == 0) next
+      split(substr($0, 1, t - 1), m, " ")
+      v = (m[2] != "blob") ? "" : (m[1] == "120000") ? "link" : "blob " m[3]
+      if (FILENAME == ENVIRON["GL_BASE"]) a[substr($0, t + 1)] = v
+      else b[substr($0, t + 1)] = v
+      next
+    }
+    {
+      if (a[$0] == "link" || b[$0] == "link") print $0 > ENVIRON["GL_LINKS"]
+      else if (a[$0] != b[$0]) print $0 > ENVIRON["GL_OUT"]
+    }
+  ' "$scratch/tree.base" "$scratch/tree.head" "$scratch/folded" || return 2
+  while IFS= read -r p; do
+    st=0
+    blob_changed "$mb" "$p" || st=$?
+    case "$st" in
+      0) printf '%s\n' "$p" >> "$scratch/folded.changed" || return 2 ;;
+      1) ;;
+      *) return 2 ;;
+    esac
+  done < "$scratch/folded.links"
+  GL_CHANGED="$scratch/folded.changed" awk -F '\t' '
+    FILENAME == ENVIRON["GL_CHANGED"] { c[$0] = 1; next }
+    ($2 in c) { print $1 }
+  ' "$scratch/folded.changed" "$scratch/words.map" > "$scratch/words.changed" || return 2
+}
+
+# ls_tree_batch <rev> <list> <out>: write to <out> the ls-tree entries ("<mode> <type> <id>", a
+# tab, the name; one per line) of the paths in the file <list>, one path per line, at <rev>.
+# The paths are literal and go to git in batches of at most 50000 characters, so the argument
+# limit is never reached whatever the number of rules.
+ls_tree_batch() {
+  local rev=$1 list=$2 out=$3 p size=0 count=0
+  local batch=()
+  : > "$out" || return 2
+  while IFS= read -r p; do
+    if [ "$count" -gt 0 ] && [ $((size + ${#p})) -gt 50000 ]; then
+      ls_tree_run "$rev" "$out" "${batch[@]}" || return 2
+      batch=()
+      size=0
+      count=0
+    fi
+    batch[count]=$p
+    count=$((count + 1))
+    size=$((size + ${#p} + 1))
+  done < "$list"
+  if [ "$count" -gt 0 ]; then ls_tree_run "$rev" "$out" "${batch[@]}" || return 2; fi
+}
+
+# ls_tree_run <rev> <out> <path>...: append the ls-tree entries of the paths to <out>. A path
+# that is a directory lists what is under it too; nobody asks for those names.
+ls_tree_run() {
+  local rev=$1 out=$2 tmp rc=0
+  shift 2
+  tmp=$(tmp_new) || return 2
+  git_read "files named by detectors at $rev" "$tmp" --literal-pathspecs ls-tree --full-tree -z "$rev" -- "$@" || rc=$?
+  if [ "$rc" -le 1 ]; then
+    LC_ALL=C tr '\0' '\n' < "$tmp" >> "$out" || rc=2
+  fi
+  rm -f "$tmp"
+  [ "$rc" -le 1 ]
+}
+
+# tree_entry <rev> <path>: print the ls-tree entry of <path> at <rev> ("<mode> <type> <id>",
+# a tab, the name), nothing when the path is absent, and return 2 after a message when git
+# cannot tell (R32). The listing is the one base_has makes (git_read), with its content kept.
+tree_entry() {
+  local out rc=0 entry=
+  out=$(tmp_new) || return 2
+  git_read "$2 at $1" "$out" --literal-pathspecs ls-tree --full-tree -z "$1" -- "$2" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    IFS= read -r -d '' entry < "$out" || true
+    printf '%s\n' "$entry"
+  fi
+  rm -f "$out"
+  [ "$rc" -le 1 ]
+}
+
+# path_identity <rev> <path> [hops]: print what <path> is at <rev> as far as a command that
+# runs it can tell: the blob id of a file; for a symlink its text and then the identity of the
+# file it leads to in the same tree, links followed up to ten deep. Prints nothing when the
+# path is absent, is a directory (a tree id is never read as a blob), a link leads out of the
+# tree or nowhere, or the word is no path of the tree: an empty or absolute one, one with a
+# trailing slash (a directory), and one that folds to the root or climbs above it ("." and
+# ".."). The path is literal: ":(glob)x" is a file of that name or nothing. Returns 2 when git
+# cannot tell (R32).
+path_identity() {
+  local rev=$1 path=$2 hops=${3:-0} entry mode rest type oid text dir
+  case "$path" in /* | */) return 0 ;; esac
+  path=$(tree_join "" "$path")
+  if [ -z "$path" ]; then return 0; fi
+  entry=$(tree_entry "$rev" "$path") || return 2
+  mode=${entry%% *}
+  rest=${entry#* }
+  type=${rest%% *}
+  rest=${rest#* }
+  oid=${rest%%$'\t'*}
+  if [ "$type" != blob ]; then return 0; fi
+  if [ "$mode" != 120000 ]; then
+    printf 'blob %s\n' "$oid"
+    return 0
+  fi
+  text=$(git cat-file blob "$oid" 2> /dev/null) || {
+    printf 'gauntlet: cannot read %s at %s\n' "$(path_spell "$path")" "$rev" >&2
+    return 2
+  }
+  printf 'link %s\n' "$text"
+  case "$text" in /*) return 0 ;; esac
+  if [ "$hops" -ge 10 ]; then
+    printf 'too many links\n'
+    return 0
+  fi
+  dir=${path%/*}
+  if [ "$dir" = "$path" ]; then dir=; fi
+  path_identity "$rev" "${dir:+$dir/}$text" "$((hops + 1))"
+}
+
+# blob_changed <merge-base> <path>: succeed (0) when <path> is a different file at the
+# merge-base than at HEAD (path_identity: a blob, or a link and what it leads to), a path
+# absent on one side being a different file; return 1 when it is the same on both sides, and 2
+# when git cannot tell for either side (R32): an unreadable side is neither "absent" nor
+# "unchanged". HEAD is clean (check --ci refuses a dirty tree), so HEAD is what CI runs.
+blob_changed() {
+  local a b
+  a=$(path_identity "$1" "$2") || return 2
+  b=$(path_identity HEAD "$2") || return 2
+  [ "$a" != "$b" ]
+}
+
+# TREE_FOLD_AWK: the awk function fold(path), a path with its "." and ".." parts folded and
+# empty parts dropped, as a path inside the repository; "" when the result is the root itself
+# or climbs above it. Put in front of an awk program. The separator of split is a regular
+# expression: the awk of macOS splits on a newline too when it is the one character "/".
+TREE_FOLD_AWK='
+  function fold(p,   n, a, i, k, b, out) {
+    n = split(p, a, /\//); k = 0
+    for (i = 1; i <= n; i++) {
+      if (a[i] == "" || a[i] == ".") continue
+      if (a[i] == "..") { if (k == 0) return ""; k--; continue }
+      b[++k] = a[i]
+    }
+    out = ""
+    for (i = 1; i <= k; i++) out = out (i > 1 ? "/" : "") b[i]
+    return out
+  }
+'
+
+# tree_join <dir> <relative>: print "<dir>/<relative>" with "." and ".." folded, as a path
+# inside the repository. Prints nothing when the result is the root itself or climbs above it.
+tree_join() {
+  GL_P="$1/$2" awk "$TREE_FOLD_AWK"'BEGIN { out = fold(ENVIRON["GL_P"]); if (out != "") print out }'
+}
+
+# list_missing <label> <list> <other>: print "<label> <glob>" for each word of
+# <list> that <other> lacks. Words are space-separated globs.
+list_missing() {
+  GL_LABEL=$1 GL_LIST=$2 GL_OTHER=$3 awk 'BEGIN {
+    n = split(ENVIRON["GL_OTHER"], o, " ")
+    for (i = 1; i <= n; i++) have[o[i]] = 1
+    m = split(ENVIRON["GL_LIST"], l, " ")
+    for (i = 1; i <= m; i++) if (!(l[i] in have)) print ENVIRON["GL_LABEL"], l[i]
+  }'
+}
+
+# check_staged [--staged]: the commit gate, run from pre-commit (ADR-0007). It
+# judges the working-tree content of the staged files against HEAD's baseline:
+# new block violations and touched files block; shadow and track are reported.
+# Only stage=commit rules run here; push owns the rest. On a pass it rewrites
+# the index's .gauntlet/baseline.tsv and stages it into this commit, so the
+# commit carries the baseline it measures. Prints the report and returns 0 (ok),
+# 1 (problems) or 2 (setup broken).
+check_staged() {
+  local start status=0 scratch
+  start=$(now_ms)
+  [ "$#" -eq 0 ] || die "usage: gauntlet check --staged"
+  scratch=$(tmp_new -d) || return 2
+  check_staged_run "$scratch" "$start" || status=$?
+  rm -rf "$scratch"
+  return "$status"
+}
+
+# commit_budget: print the commit-stage budget in milliseconds, from
+# GAUNTLET_COMMIT_BUDGET_MS (default 5000). Returns 2 with a message on stderr
+# when it is not a whole number.
+commit_budget() {
+  local budget=${GAUNTLET_COMMIT_BUDGET_MS:-5000}
+  case "$budget" in
+    ''|*[!0-9]*)
+      printf 'gauntlet: GAUNTLET_COMMIT_BUDGET_MS must be a whole number of milliseconds, got [%s]\n' "$(path_spell "$budget")" >&2
+      return 2
+      ;;
+  esac
+  printf '%s\n' "$budget"
+}
+
+# budget_label <ms>: print the commit budget as the [slow] line names it: "5 s" for
+# the default 5000 ms, else "<n> ms".
+budget_label() {
+  case "$1" in
+    5000) printf '5 s\n' ;;
+    *) printf '%s ms\n' "$1" ;;
+  esac
+}
+
+# commit_times_path <root>: print the absolute path of the file the commit gate keeps
+# its per-rule times in: gauntlet-time.tsv in the git dir of this worktree, so it is
+# never in the work tree and never committed. status reads the same path.
+commit_times_path() {
+  local p
+  p=$(git rev-parse --git-path gauntlet-time.tsv) || return 1
+  case "$p" in
+    /*) printf '%s\n' "$p" ;;
+    *) printf '%s/%s\n' "$1" "$p" ;;
+  esac
+}
+
+# record_commit_times <root> <time-file>: copy the rule<TAB>ms rows that measure wrote for
+# this commit-gate run to commit_times_path, through a temp file and a rename. Every
+# error is ignored: the gate's result never depends on this file. The temp file is next
+# to the destination so the rename is atomic; partial_begin names it, so the run's trap
+# removes it if a signal ends the run first.
+record_commit_times() {
+  local dest tmp
+  dest=$(commit_times_path "$1") || return 0
+  tmp=$dest.$$.tmp
+  partial_begin "$tmp"
+  if cp "$2" "$tmp" 2> /dev/null && mv -f "$tmp" "$dest" 2> /dev/null; then
+    partial_end
+    return 0
+  fi
+  rm -f "$tmp"
+  partial_end
+  return 0
+}
+
+# check_staged_run <scratch> <start-ms>: the work of check_staged, with every
+# intermediate file kept in <scratch>. The checks compare with HEAD's baseline.
+# Auto-tighten starts from the baseline as the index holds it (the one this
+# commit would carry), so a regenerated baseline is never reverted by the hook.
+check_staged_run() {
+  local scratch=$1 start=$2 root branch id stage sev fix atb rf budget base_name rc
+  local known=0 partial=0 by_path=0 has_index=0 unstaged_base=0
+  local new_n=0 touched_n=0 problems=0 n_commit ms end body
+  local -a ids
+  body="$scratch/body"
+  budget=$(commit_budget) || return 2
+  root=$(repo_root) || return 2
+  # Validation needs no HEAD, and the first commit is the one that brings .gauntlet/
+  # in: a broken rule stops it like any other commit (R27).
+  validate_rules || return 2
+  # The first commit has no HEAD to compare with: it passes with a note. A ref file that
+  # is corrupt reads as "no HEAD yet" here too, because git has no primitive that
+  # separates an unborn branch from a broken one. Nothing slips through: `git commit`
+  # itself aborts on that ref after this hook, so no commit lands unchecked.
+  if ! git rev-parse -q --verify HEAD > /dev/null 2>&1; then
+    printf 'note: no HEAD yet; the commit gate has nothing to compare and passes\n'
+    return 0
+  fi
+  branch=$(current_branch) || return 2
+  # A detached HEAD has no branch to waive on: no waiver applies, and nothing fails on it.
+  if [ "$branch" = HEAD ]; then
+    : > "$scratch/waived"
+  else
+    waived_paths > "$scratch/waived" || return 2
+  fi
+
+  # commit.ids: the stage=commit rules (stage defaults to commit). rules.tsv:
+  # id, severity, 1 when the rule file exists at HEAD, fix.
+  : > "$scratch/commit.ids"
+  : > "$scratch/rules.tsv"
+  rule_ids > "$scratch/ids" || return 2
+  while IFS= read -r id; do
+    rf="$root/.gauntlet/rules/$id.md"
+    stage=$(rule_get "$rf" stage) || return 2
+    [ -n "$stage" ] || stage=commit
+    if [ "$stage" = push ]; then continue; fi
+    sev=$(rule_get "$rf" severity) || return 2
+    fix=$(rule_get "$rf" fix) || return 2
+    rc=0
+    base_has HEAD ".gauntlet/rules/$id.md" || rc=$?
+    case "$rc" in 0) atb=1 ;; 1) atb=0 ;; *) return 2 ;; esac
+    printf '%s\n' "$id" >> "$scratch/commit.ids"
+    printf '%s\t%s\t%s\t%s\n' "$id" "$sev" "$atb" "$fix" >> "$scratch/rules.tsv"
+  done < "$scratch/ids"
+  n_commit=$(awk 'END { print NR }' "$scratch/commit.ids") || return 2
+
+  # Measure the staged paths' working-tree content, commit-stage rules only.
+  # measure with no rule ids would measure every rule, so no ids means empty files.
+  if [ -s "$scratch/commit.ids" ]; then
+    ids=()
+    while IFS= read -r id; do ids[${#ids[@]}]=$id; done < "$scratch/commit.ids"
+    measure staged "$scratch/now" "${ids[@]}" || return 2
+  else
+    mkdir -p "$scratch/now" || return 2
+    : > "$scratch/now/measure.tsv" || return 2
+    : > "$scratch/now/located.tsv" || return 2
+    : > "$scratch/now/time.tsv" || return 2
+  fi
+
+  # The per-rule times of this run are kept for status; record_commit_times returns
+  # 0 whatever happens, so a failure to keep them never changes the gate's result.
+  record_commit_times "$root" "$scratch/now/time.tsv"
+
+  # staged.diff: HEAD against the index, renames followed. staged.paths: every
+  # path it names, both sides of a rename and deletions included.
+  git_nul_diff_lines -c core.quotepath=off diff --cached -M -z --name-status > "$scratch/staged.diff" || return 2
+  awk '
+    BEGIN { need = 0 }
+    need == 0 { need = ($0 ~ /^[RC]/) ? 2 : 1; next }
+    { print; need-- }
+  ' "$scratch/staged.diff" > "$scratch/staged.paths" || return 2
+
+  # Partial staging (decision 3): a staged path that also has unstaged changes.
+  # The baseline is left out: this hook is the one that writes it.
+  git_nul_diff_lines -c core.quotepath=off diff --name-only --no-renames -z > "$scratch/unstaged" || return 2
+  partial=$(GL_STAGED="$scratch/staged.paths" GL_BASELINE=.gauntlet/baseline.tsv awk '
+    FILENAME == ENVIRON["GL_STAGED"] { if ($0 != ENVIRON["GL_BASELINE"]) staged[$0] = 1; next }
+    $0 in staged { hit = 1 }
+    END { print hit + 0 }
+  ' "$scratch/staged.paths" "$scratch/unstaged") || return 2
+
+  # `git commit <path>` runs the hook on a next-index-<pid> file: its add never
+  # reaches the index the commit keeps, so auto-tighten cannot land (see ADR-0007).
+  base_name=${GIT_INDEX_FILE:-}
+  base_name=${base_name##*/}
+  case "$base_name" in next-index-*) by_path=1 ;; esac
+
+  # HEAD's baseline is the reference for the new, touched, shadow and track checks.
+  : > "$scratch/base.tsv"
+  rc=0
+  base_has HEAD .gauntlet/baseline.tsv || rc=$?
+  case "$rc" in
+    0)
+      known=1
+      at_base HEAD .gauntlet/baseline.tsv > "$scratch/base.tsv" || return 2
+      ;;
+    1) ;;
+    *) return 2 ;;
+  esac
+  # The index's baseline is what auto-tighten starts from.
+  : > "$scratch/index.tsv"
+  rc=0
+  index_has .gauntlet/baseline.tsv || rc=$?
+  case "$rc" in
+    0)
+      has_index=1
+      git show ":.gauntlet/baseline.tsv" > "$scratch/index.tsv" || return 2
+      ;;
+    1) ;;
+    *) return 2 ;;
+  esac
+  # Unstaged work in the baseline: tighten never overwrites it.
+  if [ "$known" -eq 1 ] && [ "$has_index" -eq 1 ]; then
+    if [ ! -f "$root/.gauntlet/baseline.tsv" ] || ! cmp -s "$root/.gauntlet/baseline.tsv" "$scratch/index.tsv"; then
+      unstaged_base=1
+    fi
+  fi
+  LC_ALL=C sort -t "$DETECT_TAB" -k3,3n "$scratch/now/located.tsv" > "$scratch/located.byline" || return 2
+
+  # tight.tsv is the baseline this commit carries (ADR-0003): the index's rows,
+  # minus the commit-stage rows of every staged path, plus the rows just measured.
+  # Rows of push-stage rules, of unstaged paths and of rules no longer on disk
+  # stay as the index has them, a renamed file's following it to its new path.
+  rename_pairs "$scratch/staged.diff" > "$scratch/renames.tsv" || return 2
+  GL_IDS="$scratch/commit.ids" GL_STAGED="$scratch/staged.paths" awk -F "$DETECT_TAB" '
+    FILENAME == ENVIRON["GL_IDS"] { commit[$0] = 1; next }
+    FILENAME == ENVIRON["GL_STAGED"] { staged[$0] = 1; next }
+    !(($1 in commit) && ($2 in staged))
+  ' "$scratch/commit.ids" "$scratch/staged.paths" "$scratch/index.tsv" > "$scratch/kept.raw" || return 2
+  carry_renamed "$scratch/renames.tsv" "$scratch/kept.raw" > "$scratch/kept.tsv" || return 2
+  cat "$scratch/kept.tsv" "$scratch/now/measure.tsv" > "$scratch/tight.raw" || return 2
+  LC_ALL=C sort "$scratch/tight.raw" > "$scratch/tight.tsv" || return 2
+
+  : > "$body"
+  if [ "$known" -eq 0 ]; then
+    printf 'note: no baseline at HEAD; new, touched, shadow and track checks skipped\n' >> "$body"
+  else
+    rekey_base "$scratch/renames.tsv" "$scratch/base.tsv" > "$scratch/base.rekeyed.tsv" || return 2
+    new_rows block "$scratch" "$scratch/base.rekeyed.tsv" > "$scratch/new.rows" || return 2
+    new_n=$(awk 'END { print NR }' "$scratch/new.rows") || return 2
+    if [ -s "$scratch/new.rows" ]; then
+      printf '[new]\n' >> "$body"
+      violation_lines "$scratch/new.rows" >> "$body"
+    fi
+    cmp_touched "$scratch/staged.diff" "$scratch/base.tsv" "$scratch/now/measure.tsv" "$scratch/rules.tsv" \
+      "$scratch/waived" > "$scratch/touched.rows" || return 2
+    if [ -s "$scratch/touched.rows" ]; then
+      printf '[touched]\n' >> "$body"
+      awk -F '\t' '{ printf "  %s  %s → %s  (%s)\n", $1, $2, $3, $4 }' "$scratch/touched.rows" >> "$body"
+    fi
+    touched_n=$(touched_uncovered "$scratch/new.rows" "$scratch/touched.rows") || return 2
+    new_rows shadow "$scratch" "$scratch/base.rekeyed.tsv" > "$scratch/shadow.rows" || return 2
+    if [ -s "$scratch/shadow.rows" ]; then
+      printf '[shadow] would have failed\n' >> "$body"
+      violation_lines "$scratch/shadow.rows" >> "$body"
+    fi
+    global_rows track "$scratch" "$scratch/tight.tsv" > "$scratch/track.rows" || return 2
+    if [ -s "$scratch/track.rows" ]; then
+      printf '[track]\n' >> "$body"
+      awk -F '\t' '{ printf "  %s  %s → %s (+%d); consider promoting\n", $1, $2, $3, $3 - $2 }' \
+        "$scratch/track.rows" >> "$body"
+    fi
+  fi
+
+  # R18: one problem per [new] line and one per [touched] line not explained by a
+  # [new] line. Shadow and track count nothing.
+  problems=$((new_n + touched_n))
+  # Each reason that keeps auto-tighten from running is printed, pass or fail.
+  if [ "$known" -eq 1 ]; then
+    if [ "$by_path" -eq 1 ]; then
+      printf 'note: partial commit by path; run gauntlet baseline before pushing\n' >> "$body"
+    fi
+    if [ "$partial" -eq 1 ]; then
+      printf 'note: partially staged; run gauntlet baseline before pushing\n' >> "$body"
+    fi
+    if [ "$has_index" -eq 0 ]; then
+      printf 'note: baseline.tsv is not in the index; nothing tightened\n' >> "$body"
+    elif [ "$unstaged_base" -eq 1 ]; then
+      printf 'note: baseline.tsv has unstaged changes; run gauntlet baseline before pushing\n' >> "$body"
+    fi
+    # Auto-tighten runs only on a pass, and only when nothing above skipped it.
+    if [ "$problems" -eq 0 ] && [ "$by_path" -eq 0 ] && [ "$partial" -eq 0 ] \
+      && [ "$has_index" -eq 1 ] && [ "$unstaged_base" -eq 0 ]; then
+      tighten_baseline "$root" "$scratch" >> "$body" || return 2
+    fi
+  fi
+
+  end=$(now_ms)
+  ms=$((end - start))
+  if GL_MS=$ms GL_BUDGET=$budget awk 'BEGIN { exit !(ENVIRON["GL_MS"] + 0 > ENVIRON["GL_BUDGET"] + 0) }'; then
+    printf '[slow] over the %s commit budget\n' "$(budget_label "$budget")" >> "$body"
+  fi
+  printf '[time]\n' >> "$body"
+  awk -F '\t' '{ printf "  %s  %s ms\n", $1, $2 }' "$scratch/now/time.tsv" >> "$body" || return 2
+
+  printf 'gauntlet  commit · %s · %s.%s s\n' "$(plural "$n_commit" rule rules)" "$((ms / 1000))" "$(((ms % 1000) / 100))"
+  report_spell < "$body" || return 2
+  if [ "$problems" -eq 0 ]; then
+    printf 'gauntlet: ok\n'
+    return 0
+  fi
+  printf 'gauntlet: FAIL (%s)\n' "$(plural "$problems" problem problems)"
+  return 1
+}
+
+# tighten_baseline <root> <scratch>: when tight.tsv differs from the index's
+# baseline, write it to the working-tree .gauntlet/baseline.tsv and git add it, so
+# it lands in the commit being made (ADR-0007: the add must run in pre-commit).
+# The caller has checked that the working tree equals the index copy. Prints one
+# line per commit-stage rule whose total changed, or one line when only rows
+# moved. Prints nothing when nothing needed writing.
+tighten_baseline() {
+  local root=$1 scratch=$2
+  if cmp -s "$scratch/tight.tsv" "$scratch/index.tsv"; then return 0; fi
+  GL_IDS="$scratch/commit.ids" GL_OLD="$scratch/index.tsv" awk -F "$DETECT_TAB" '
+    FILENAME == ENVIRON["GL_IDS"] { want[$0] = 1; next }
+    FILENAME == ENVIRON["GL_OLD"] { old[$1] += $4; next }
+    { new[$1] += $4 }
+    END {
+      for (r in want)
+        if (old[r] + 0 != new[r] + 0) printf "%s\t%d\t%d\n", r, old[r] + 0, new[r] + 0
+    }
+  ' "$scratch/commit.ids" "$scratch/index.tsv" "$scratch/tight.tsv" > "$scratch/tighten.raw" || return 2
+  LC_ALL=C sort "$scratch/tighten.raw" > "$scratch/tighten.tsv" || return 2
+  cp "$scratch/tight.tsv" "$root/.gauntlet/baseline.tsv" || return 2
+  git add .gauntlet/baseline.tsv || return 2
+  if [ -s "$scratch/tighten.tsv" ]; then
+    awk -F '\t' '{ printf "  %s  %s → %s   baseline updated and staged into this commit\n", $1, $2, $3 }' \
+      "$scratch/tighten.tsv" || return 2
+  else
+    printf '  baseline updated and staged into this commit\n'
+  fi
+}

@@ -11,7 +11,7 @@ gauntlet borrows freely from the tools below. This page says what each does well
 
 | | Language | Rules | Baseline | New-violation check | Touched-file check | Auto-tighten | Exceptions | Agent integration | Runtime |
 |---|---|---|---|---|---|---|---|---|---|
-| **gauntlet** | any | owner-approved; linter / ast-grep / rg | fingerprints with multiplicity | ✅ by fingerprint | ✅ optional | ✅ same commit | human-only file | onboarding skill, adapters, runner-enforced | bash + awk |
+| **gauntlet** | any | owner-approved; linter / ast-grep / rg | fingerprints with multiplicity | ✅ by fingerprint | ✅ optional | ✅ same commit | exception file; loosening needs a row | onboarding skill and adapters planned | bash + awk |
 | [pawl](https://github.com/tiangong-dev/pawl) | any | any command, regex-parsed | counts per file / key | ✅ added lines | — | manual `record` | `Pawl-Accept` trailer + `guard` | writes an `AGENTS.md` block | Go binary |
 | [cleat](https://github.com/svetdev/cleat) | 9 languages | built-in gates + regex conventions | findings keyed by file + line text | partial | — | `--tighten`; `--strict` in CI | none; only a human raises it | Stop hook, policy-edit block | Python |
 | [betterer](https://github.com/phenomnomnominal/betterer) | JS/TS | tests in `.betterer.ts` | results file, per issue hash | — | — | ✅ | — | — | Node |
@@ -25,10 +25,10 @@ gauntlet borrows freely from the tools below. This page says what each does well
 
 - **A touched-file check.** A file you change must come out better than you found it. Teams can opt into this to pay debt down steadily.
 - **Rules as files**, each with a rationale, a primary source, a fix hint and test cases, rather than lines in a config.
-- **Onboarding that researches and proposes.** The agent studies your stack and the technology's own guidance, then asks rule by rule.
-- **Rules learned from mistakes.** A repeated correction becomes a rule proposal.
-- **Human-only exceptions in a file**, with path waivers that expire with their branch.
-- **Coexistence.** gauntlet adds one line to your existing hooks instead of owning them.
+- **Onboarding that researches and proposes** (planned). The agent studies your stack and the technology's own guidance, then asks rule by rule.
+- **Rules learned from mistakes** (planned). A repeated correction becomes a rule proposal.
+- **Exceptions in a file**, written by command, with path waivers that apply only on their own branch.
+- **Coexistence.** gauntlet adds one line to the hooks it may edit instead of owning them. For a hook manager's config, a shared hooks directory, or a hook it must not edit, it prints what to add.
 
 ## When to use something else
 

@@ -31,8 +31,9 @@ Rules only matter if they bite, and if the bite cannot be argued with:
 ## 4. Business rules
 
 1. **One command at push and in CI.**
-   - **`pre-push`** runs `gauntlet check --ci` plus every declared check.
-   - **CI** runs `gauntlet check --ci`, plus the declared checks the Owner enabled for CI.
+   - **`pre-push`** runs `gauntlet check --ci --pre-push` plus every declared check. The flag makes it read the refs git is pushing (rule 11).
+   - **CI** runs `gauntlet check --ci --base origin/<target>`, plus the declared checks the Owner enabled for CI.
+   - Both run the branch's own vendored runner, so local and CI judge the same way. That runner is part of the branch it judges and cannot protect against its own author. `check --ci` prints `note: the vendored runner changed in this branch (.gauntlet/bin or .gauntlet/lib differ from the base); review it` when the runner differs from the base. It is a note, never a failure. CODEOWNERS on `.gauntlet/` routes a change to a reviewer. A project may instead have CI run the base's runner against the PR tree, at the cost that a PR that upgrades gauntlet is judged by the old runner and can fail only in CI.
 2. **What `check --ci` verifies:**
    1. **No new violations.** A `block` fingerprint absent from the base baseline fails, unless its path is waived.
    2. **Global.** A `block` rule's total must not rise.
@@ -66,7 +67,9 @@ Rules only matter if they bite, and if the bite cannot be argued with:
 
    The gate compares against the merge-base with that target, so a stacked PR is never charged with the whole stack.
 10. **A new rule is not judged by checks 1–3 on its introduction branch.** A rule that does not exist at the base is exempt. When the base has no baseline at all (the onboarding branch), checks 1–3 are skipped with a note.
-11. **A dirty tree is refused.** `check --ci` refuses to run when tracked files differ from `HEAD`, with `gauntlet checks what you push; commit or stash first`. Untracked files do not count. What is checked must be exactly what is pushed.
+11. **A dirty tree is refused.** `check --ci` refuses to run when tracked files differ from `HEAD`, with `gauntlet checks what you push; commit or stash first`. It also refuses while `.gauntlet/` holds an untracked file that git does not ignore: a clone would not have it, so the run would judge differently from CI. Other untracked files do not count. What is checked must be exactly what is pushed.
+    - **The pushed refs.** `pre-push` reads the ref lines git sends. When a pushed branch tip (`refs/heads/*`, or a Gerrit `refs/for/*`) is not the checked-out `HEAD`, it refuses with exit 1 and `gauntlet checks the checked-out branch; check out <branch> and push again`. Deletes and refs in any other namespace (tags, notes) are skipped.
+    - **Limit.** A hook manager that does not pass git's stdin to the command hides the refs: prek does not pass it, and lefthook passes it only with `use_stdin: true`. The gate then judges the checked-out branch, and `doctor` fails a lefthook config without `use_stdin: true`.
 12. **Declared checks** live in `config`, one per name, with an optional path-prefix scope and a CI opt-in (default off).
     - Pre-push runs every declared check whose scope matches the changed files.
     - CI runs only those opted in.

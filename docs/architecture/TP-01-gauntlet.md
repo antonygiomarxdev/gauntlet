@@ -18,11 +18,11 @@ One tool has to:
 
 ## 2. Goals and constraints
 
-- **Parity.** Push and CI run the same vendored runner against the same base ([ADR-0008](../adr/0008-base-is-the-branch-target.md)).
+- **Parity.** Push and CI run the same vendored runner against the same base ([ADR-0008](../adr/0008-base-is-the-branch-target.md)). That runner is part of the branch it judges, so it cannot protect against its own author: `check --ci` names a changed runner for review, CODEOWNERS on `.gauntlet/` routes it to a reviewer, and a project may have CI run the base's runner instead, at the cost that a PR that upgrades gauntlet is judged by the old one.
 - **Commit-time check under 5 s.** Whole-program detectors run at push only.
 - **No runtime dependency beyond bash, awk and git** ([ADR-0001](../adr/0001-runner-is-bash-awk-git.md)). Detector tools (`rg`, `ast-grep`, the project's linter) are needed only by the rules that use them.
 - **Fail closed. Never skip silently.**
-- **Agent-proof by construction.** The runner is the enforcer. Harness adapters only make it bite earlier.
+- **Agent-proof, except for the runner itself.** The runner is the enforcer: it judges the baseline, loosening and exceptions whoever wrote the change. Harness adapters only make it bite earlier. A branch that edits the vendored runner is named for review, not stopped (see Parity).
 
 ## 3. Current state
 
@@ -122,7 +122,7 @@ flowchart LR
 | CC-REL | Required | Fail closed on broken detectors and missing tools | IS-01, Task 4 |
 | CC-COMPAT | Required | bash 3.2, BWK awk, macOS and Linux CI; Git Bash best effort | IS-01, Task 1 (CI matrix) |
 | CC-COEXIST | Required | Existing hooks keep working | IS-01, Task 13 |
-| CC-TAMPER | Required | Checks for an exact baseline, no loosening, and human-only exceptions | IS-01, Tasks 8 and 10; IS-02 (adapter denials) |
+| CC-TAMPER | Required | Checks for an exact baseline, no loosening, and human-only exceptions. The vendored runner is not defended against its own branch: a change to it is named for review. | IS-01, Tasks 8 and 10; IS-02 (adapter denials) |
 | CC-SEC | Required | Rules execute shell commands from repo files. Path quoting is tested; SECURITY.md tells adopters to review `.gauntlet/` like code. | IS-01, Task 4 |
 | CC-OBS | Required | Every finding shows `path:line rule message`, then its fix line and the time taken | IS-01, Task 8 |
 | CC-MIG | Deferred | Formats are pre-1.0. A format change before v1 ships with a migration note. | Changelog |

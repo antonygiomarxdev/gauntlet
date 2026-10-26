@@ -1,0 +1,365 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2153 # ROOT, G and STATUS are set by test/lib.sh
+# Tests for lib/measure.sh: fingerprints survive line shifts, reformatting and
+# CRLF, duplicates are counted, and gauntlet baseline writes the measured TSV.
+# Rules use paths **/*.ts so a rule file never matches its own detector text.
+
+# measure_lib: source the libraries under test into the current test subshell.
+measure_lib() {
+  # shellcheck source=lib/core.sh
+  . "$ROOT/lib/core.sh"
+  # shellcheck source=lib/rules.sh
+  . "$ROOT/lib/rules.sh"
+  # shellcheck source=lib/paths.sh
+  . "$ROOT/lib/paths.sh"
+  # shellcheck source=lib/detect.sh
+  . "$ROOT/lib/detect.sh"
+  # shellcheck source=lib/measure.sh
+  . "$ROOT/lib/measure.sh"
+}
+
+test_fingerprint_ignores_line_shift() {
+  mkrepo
+  measure_lib
+  printf 'ok\nTODO here\n' > a.ts
+  rule todo paths='**/*.ts'
+  must git add -A
+  must measure all "$TMP/m1" todo
+  printf '\n\n\n' | cat - a.ts > "$TMP/shifted.ts"
+  must mv "$TMP/shifted.ts" a.ts
+  must git add -A
+  must measure all "$TMP/m2" todo
+  must cmp "$TMP/m1/measure.tsv" "$TMP/m2/measure.tsv"
+  assert_eq "$(printf 'todo\ta.ts\tTODO here\t1')" "$(cat "$TMP/m2/measure.tsv")" "rows"
+}
+
+test_reformat_whole_file_same_fingerprints() {
+  mkrepo
+  measure_lib
+  printf '  TODO  a\n    TODO b\n' > a.ts
+  rule todo paths='**/*.ts'
+  must git add -A
+  must measure all "$TMP/m1" todo
+  printf '\tTODO\ta\n\t\tTODO\tb\n' > a.ts
+  must git add -A
+  must measure all "$TMP/m2" todo
+  must cmp "$TMP/m1/measure.tsv" "$TMP/m2/measure.tsv"
+  assert_eq "$(printf 'todo\ta.ts\tTODO a\t1\ntodo\ta.ts\tTODO b\t1')" "$(cat "$TMP/m1/measure.tsv")" "rows"
+}
+
+test_crlf_equals_lf() {
+  mkrepo
+  measure_lib
+  printf 'ok\nTODO here\n' > a.ts
+  rule todo paths='**/*.ts'
+  must git add -A
+  must measure all "$TMP/m1" todo
+  printf 'ok\r\nTODO here\r\n' > a.ts
+  must git add -A
+  must measure all "$TMP/m2" todo
+  must cmp "$TMP/m1/measure.tsv" "$TMP/m2/measure.tsv"
+}
+
+test_count_duplicates() {
+  mkrepo
+  measure_lib
+  printf 'TODO x\nTODO x\n' > a.ts
+  rule todo paths='**/*.ts'
+  must git add -A
+  must measure all "$TMP/m1" todo
+  assert_eq "$(printf 'todo\ta.ts\tTODO x\t2')" "$(cat "$TMP/m1/measure.tsv")" "rows"
+}
+
+test_baseline_command_writes_file() {
+  mkrepo
+  mkdir -p "my dir"
+  printf 'TODO\n' > "my dir/ä b.ts"
+  rule todo paths='**/*.ts'
+  rule nothing paths='**/*.ts' "detector=rg --with-filename --line-number --no-heading 'NOPE_NEVER' {files}"
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "status"
+  assert_eq "$(printf 'todo\tmy dir/ä b.ts\tTODO\t1')" "$(cat .gauntlet/baseline.tsv)" "baseline"
+}
+
+test_baseline_rule_without_matches() {
+  mkrepo
+  printf 'ok\n' > a.ts
+  rule nothing paths='**/*.ts' "detector=rg --with-filename --line-number --no-heading 'NOPE_NEVER' {files}"
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "status"
+  assert_eq "" "$(cat .gauntlet/baseline.tsv)" "baseline"
+}
+
+test_gauntlet_files_never_measured() {
+  mkrepo
+  measure_lib
+  printf 'TODO here\n' > a.ts
+  rule todo
+  must git add -A
+  must measure all "$TMP/m1" todo
+  assert_eq "$(printf 'todo\ta.ts\tTODO here\t1')" "$(cat "$TMP/m1/measure.tsv")" "rows"
+}
+
+test_baseline_twice_is_identical() {
+  mkrepo
+  printf 'TODO here\n' > a.ts
+  rule todo
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "first status"
+  cp .gauntlet/baseline.tsv "$TMP/first.tsv"
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "second status"
+  must cmp "$TMP/first.tsv" .gauntlet/baseline.tsv
+  assert_eq "$(printf 'todo\ta.ts\tTODO here\t1')" "$(cat .gauntlet/baseline.tsv)" "rows"
+}
+
+test_whole_program_gauntlet_rows_dropped() {
+  mkrepo
+  measure_lib
+  printf 'TODO here\n' > a.ts
+  rule todo engine=linter paths='**' "detector=printf '.gauntlet/rules/todo.md:1:TODO\na.ts:1:TODO\n'"
+  must git add -A
+  must measure all "$TMP/m1" todo
+  assert_eq "$(printf 'todo\ta.ts\tTODO here\t1')" "$(cat "$TMP/m1/measure.tsv")" "rows"
+}
+
+test_staged_mode_measures_staged_only() {
+  mkrepo
+  measure_lib
+  printf 'TODO staged\n' > a.ts
+  printf 'TODO unstaged\n' > b.ts
+  must git add a.ts
+  rule todo paths='**/*.ts'
+  must measure staged "$TMP/m1" todo
+  assert_eq "$(printf 'todo\ta.ts\tTODO staged\t1')" "$(cat "$TMP/m1/measure.tsv")" "rows"
+}
+
+test_bad_mode_exits_2() {
+  mkrepo
+  measure_lib
+  rule todo
+  run measure sideways "$TMP/m1" todo
+  assert_eq 2 "$STATUS" "status"
+  assert_contains "$OUT" "measure mode must be all or staged"
+}
+
+test_unknown_rule_exits_2() {
+  mkrepo
+  measure_lib
+  run measure all "$TMP/m1" nosuch
+  assert_eq 2 "$STATUS" "status"
+  assert_contains "$OUT" "unknown rule nosuch"
+}
+
+test_located_columns_message_to_eol() {
+  mkrepo
+  measure_lib
+  printf 'x\nTODO\tx\n' > a.ts
+  rule todo paths='**/*.ts'
+  must git add -A
+  must measure all "$TMP/m1" todo
+  assert_eq "$(printf 'todo\ta.ts\t2\tTODO x\tTODO\tx')" "$(cat "$TMP/m1/located.tsv")" "located"
+}
+
+test_baseline_skips_deleted_tracked_file() {
+  mkrepo
+  printf 'TODO here\n' > a.ts
+  printf 'TODO gone\n' > b.ts
+  must git add b.ts
+  must git commit -q -m "add b"
+  must rm b.ts
+  rule todo paths='**/*.ts'
+  must git add a.ts
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "status"
+  assert_eq "$(printf 'todo\ta.ts\tTODO here\t1')" "$(cat .gauntlet/baseline.tsv)" "baseline"
+}
+
+test_measure_writes_time_per_rule() {
+  mkrepo
+  measure_lib
+  printf 'TODO here\n' > a.ts
+  rule todo paths='**/*.ts'
+  rule nothing paths='**/*.ts' "detector=rg --with-filename --line-number --no-heading 'NOPE_NEVER' {files}"
+  must git add -A
+  must measure all "$TMP/m1" todo nothing
+  assert_eq 2 "$(awk 'END { print NR }' "$TMP/m1/time.tsv")" "one row per rule"
+  assert_eq "todo" "$(awk -F '\t' 'NR == 1 { print $1 }' "$TMP/m1/time.tsv")" "first rule"
+  assert_eq "nothing" "$(awk -F '\t' 'NR == 2 { print $1 }' "$TMP/m1/time.tsv")" "second rule"
+  awk -F '\t' '$2 !~ /^[0-9]+$/ { bad = 1 } END { exit bad }' "$TMP/m1/time.tsv" || fail "time is not a whole number of ms"
+}
+
+# R30: a detector with no {files} walks the whole repo, so it is not run when the rule's
+# paths select nothing: the rule would only measure files it does not look at, and an
+# expensive tool would run for nothing. The marker file is what proves it ran.
+scope_rule() {
+  rule prog paths='src/**' "detector=touch $TMP/ran.marker"
+}
+
+test_whole_program_detector_does_not_run_without_files_in_scope() {
+  mkrepo
+  scope_rule
+  printf 'ok\n' > a.ts
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  if [ -e "$TMP/ran.marker" ]; then fail "baseline ran the detector with no file in src/**"; fi
+  assert_eq "" "$(cat .gauntlet/baseline.tsv)" "no rows"
+  # The other side: one file in scope and the detector runs.
+  must mkdir src
+  printf 'ok\n' > src/b.ts
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline with src/b.ts: $OUT"
+  [ -e "$TMP/ran.marker" ] || fail "baseline did not run the detector with a file in src/**"
+}
+
+test_ci_gate_does_not_run_a_whole_program_detector_without_files_in_scope() {
+  mkrepo
+  scope_rule
+  printf 'ok\n' > a.ts
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  must git add -A
+  must git commit -q -m main
+  must git checkout -q -b feat
+  printf 'fine\n' > b.ts
+  must git add -A
+  must git commit -q -m feat
+  run "$G" check --ci --base main
+  assert_eq 0 "$STATUS" "check --ci: $OUT"
+  if [ -e "$TMP/ran.marker" ]; then fail "check --ci ran the detector with no file in src/**"; fi
+}
+
+test_commit_gate_does_not_run_a_whole_program_detector_without_staged_files_in_scope() {
+  mkrepo
+  scope_rule
+  printf 'ok\n' > a.ts
+  must mkdir src
+  printf 'ok\n' > src/b.ts
+  must git add -A
+  must git commit -q -m main
+  printf 'changed\n' > a.ts
+  must git add a.ts
+  run "$G" check --staged
+  assert_eq 0 "$STATUS" "check --staged, a.ts staged: $OUT"
+  if [ -e "$TMP/ran.marker" ]; then fail "check --staged ran the detector with nothing staged in src/**"; fi
+  printf 'changed\n' > src/b.ts
+  must git add src/b.ts
+  run "$G" check --staged
+  assert_eq 0 "$STATUS" "check --staged, src/b.ts staged: $OUT"
+  [ -e "$TMP/ran.marker" ] || fail "check --staged did not run the detector with src/b.ts staged"
+}
+
+# The three kinds of entry a detector cannot read as a file, through the gates. The
+# linter here is grep, which exits 2 for a directory and for a path that is not there.
+edge_rule() {
+  rule g engine=linter paths='**' "detector=grep -Hn TODO {files}"
+}
+
+test_baseline_skips_a_submodule_path() {
+  mkrepo
+  edge_rule
+  printf 'TODO a\n' > a.ts
+  must mkdir "$TMP/upstream"
+  (cd "$TMP/upstream" && git init -q . && git config user.name t && git config user.email t@t && printf 'TODO s\n' > s.ts && git add -A && git commit -q -m s) || fail "cannot make the submodule's repo"
+  must git -c protocol.file.allow=always submodule add -q "$TMP/upstream" vendor/sub
+  must git -C vendor/sub config user.name t
+  must git -C vendor/sub config user.email t@t
+  must git add -A
+  assert_contains "$(git ls-files -s)" "160000"
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  assert_eq "$(printf 'g\ta.ts\tTODO a\t1')" "$(cat .gauntlet/baseline.tsv)" "rows"
+  must git commit -q -m "with a submodule"
+  must git -C vendor/sub commit -q --allow-empty -m bump
+  must git add vendor/sub
+  assert_contains "$(git diff --cached --name-only)" "vendor/sub"
+  run "$G" check --staged
+  assert_eq 0 "$STATUS" "check --staged with a bumped submodule: $OUT"
+}
+
+test_baseline_skips_a_sparse_checkout_entry_and_an_unstaged_delete() {
+  mkrepo
+  edge_rule
+  must mkdir out
+  printf 'TODO k\n' > keep.ts
+  printf 'TODO o\n' > out/b.ts
+  printf 'TODO d\n' > deleted.ts
+  must git add -A
+  must git commit -q -m "three files"
+  must git update-index --skip-worktree out/b.ts
+  must rm out/b.ts deleted.ts
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  assert_eq "$(printf 'g\tkeep.ts\tTODO k\t1')" "$(cat .gauntlet/baseline.tsv)" "rows"
+}
+
+test_commit_gate_measures_a_staged_typechange() {
+  mkrepo
+  rule todo paths='**'
+  printf 'fine\n' > target.txt
+  must ln -s target.txt link.ts
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  must git add -A
+  must git commit -q -m "a symlink"
+  must rm link.ts
+  printf 'TODO now a file\n' > link.ts
+  must git add link.ts
+  run "$G" check --staged
+  assert_eq 1 "$STATUS" "check --staged: $OUT"
+  assert_contains "$OUT" "link.ts:1  todo  TODO now a file"
+}
+
+# A matched file the fingerprint reader cannot open is an error that names the file, not a
+# row with an empty fingerprint (getline returns -1, which is not "no more lines"). The
+# detector here prints rows without reading the files, so only the reader meets it.
+test_unreadable_matched_file_is_exit_2_naming_the_file() {
+  if [ "$(id -u)" = 0 ]; then skip "root can read a mode 000 file"; return 77; fi
+  mkrepo
+  rule r engine=linter paths='**/*.ts' "detector=printf 'a.ts:1:x\\nb.ts:1:y\\n'"
+  printf 'TODO a\n' > a.ts
+  printf 'TODO b\n' > b.ts
+  must git add -A
+  must chmod 000 a.ts
+  run "$G" baseline
+  must chmod 644 a.ts
+  assert_eq 2 "$STATUS" "baseline: $OUT"
+  assert_contains "$OUT" "gauntlet: cannot read a.ts"
+  assert_eq "" "$(cat .gauntlet/baseline.tsv)" "no baseline is written"
+}
+
+# The fingerprint is the matched line, so a NUL byte in it must not change the baseline from one
+# awk to another: mawk keeps it, busybox cuts the line there. It is dropped, so the line has the
+# fingerprint of the same line without it. Needs an awk that holds a NUL in a string (mawk, gawk);
+# the others cut the line at the NUL on their own, and there is nothing left to drop.
+test_a_nul_byte_in_a_matched_line_is_not_part_of_its_fingerprint() {
+  [ "$(awk 'BEGIN { print length(sprintf("%c", 0)) }')" = 1 ] || { skip "this awk cannot hold a NUL in a string"; return 77; }
+  mkrepo
+  rule r engine=linter paths='**/*.dat' "detector=printf 'with.dat:1:x\\nwithout.dat:1:x\\n'"
+  printf 'TODO a\000 b\n' > with.dat
+  printf 'TODO a b\n' > without.dat
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  assert_eq "$(printf 'r\twithout.dat\tTODO a b\t1\nr\twith.dat\tTODO a b\t1' | LC_ALL=C sort)" "$(cat .gauntlet/baseline.tsv)" "rows"
+  assert_eq 0 "$(LC_ALL=C tr -cd '\000' < .gauntlet/baseline.tsv | wc -c | tr -d ' ')" "NUL bytes in the baseline"
+}
+
+test_readable_matched_files_still_get_their_fingerprints() {
+  mkrepo
+  rule r engine=linter paths='**/*.ts' "detector=printf 'a.ts:1:x\\nb.ts:1:y\\n'"
+  printf 'TODO a\n' > a.ts
+  printf 'TODO b\n' > b.ts
+  must git add -A
+  run "$G" baseline
+  assert_eq 0 "$STATUS" "baseline: $OUT"
+  assert_eq "$(printf 'r\ta.ts\tTODO a\t1\nr\tb.ts\tTODO b\t1')" "$(cat .gauntlet/baseline.tsv)" "rows"
+}

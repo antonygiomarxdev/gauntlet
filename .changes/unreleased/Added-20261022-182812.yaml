@@ -1,0 +1,3 @@
+kind: Added
+body: 'Declarative output formats: a new linter is one format file in `.gauntlet/formats/`.'
+time: 2026-10-22T18:28:12.419511858-06:00

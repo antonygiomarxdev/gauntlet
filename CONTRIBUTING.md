@@ -39,12 +39,49 @@ The fragment lands in `.changes/unreleased/`; commit it with the PR. Never edit 
 
 Fragment files are named by kind and timestamp, so two `changie new` runs in the same second overwrite each other. Run them a second apart when scripting.
 
+## Prerequisites
+
+- `git`. The suite builds real repositories and runs the runner against them.
+- `rg` (ripgrep). The rules use it, and the suite's rule tests call it.
+- `ast-grep`. CI installs 0.51.0. Most of the suite runs a stub; the two tests that run the real tool skip when it is missing.
+- `shellcheck`. `shellcheck -x bin/gauntlet lib/*.sh test/*.sh` must print nothing.
+- `bash` 3.2 or later. macOS ships 3.2, and the runner and the suite must run on it.
+- A POSIX `awk`. BWK awk (macOS), mawk and gawk all work.
+- `busybox`, `zsh` and util-linux `script`, optional. The tests of the hook lines run them under every shell found, and give a hook a terminal, and skip what is missing.
+- `changie`, optional: only for the changelog fragments below.
+
 ## Running the tests
 
 ```sh
-test/run.sh            # all fixture tests
-test/run.sh fingerprint  # one group
+test/run.sh              # the whole suite: over a thousand tests; a run takes about a quarter of an hour
+test/run.sh check        # one group: test/check.test.sh, the quick way to work
 ```
+
+The groups are the files `test/*.test.sh`: `base`, `cases`, `check`, `core`, `detect`, `e2e`, `escape`, `exceptions`, `harness`, `hooks`, `measure`, `paths`, `rules`, `staged` and `status`.
+
+On macOS, Homebrew's bash often comes first on `PATH`. The runner and the tests start with `env bash`, so put the system bash (3.2) first:
+
+```sh
+shim=$(mktemp -d)
+ln -s /bin/bash "$shim/bash"
+PATH="$shim:$PATH" test/run.sh
+rm -rf "$shim"
+```
+
+macOS's `date` has no `%N`, so the runner's clock falls back to whole seconds there. To run the suite with that clock on any machine, set `GAUNTLET_TEST_BSD_DATE=1`; the suite then puts `test/bsd-date` first on `PATH`, a `date` that behaves like macOS's:
+
+```sh
+GAUNTLET_TEST_BSD_DATE=1 test/run.sh
+```
+
+CI runs the suite on Ubuntu with the GNU clock and with the BSD double, and on macOS with bash 3.2, whose clock is BSD's.
+
+A green run on one machine is not a green run everywhere. Before a push, run the suite at least with the newest `git` you can get and with bash 3.2, and read the awk you are writing against both gawk and the one-true-awk of macOS. The differences that have broken CI:
+
+- `awk` reads characters in a UTF-8 locale and bytes in `C`. The runner calls every awk through the `awk()` wrapper in `lib/core.sh`, which sets `LC_ALL=C`; do not call `command awk` directly.
+- macOS `awk` also cuts `split(s, a, "/")` at a newline. Split on a regex, `split(s, a, /\//)`.
+- macOS `mktemp` ignores `TMPDIR` when run bare. Give it a template: `mktemp "${TMPDIR:-/tmp}/gauntlet.XXXXXX"`.
+- macOS has no `/bin/true`, its `chmod` stops reading options at the mode, and APFS refuses file names that are not UTF-8. Tests use `/usr/bin/true`, put options before the mode, and build the non-UTF-8 case only where the file system accepts it.
 
 ## Releases
 
