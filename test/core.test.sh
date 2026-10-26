@@ -604,9 +604,16 @@ closed_dir_is_removed() {
 # closed_dir_rm_shim <stops|removes>: an rm first on PATH that behaves as BSD rm does (stops on a
 # directory it cannot enter, prints the usual message, exits 1) or as GNU rm does (removes it).
 closed_dir_rm_shim() {
-  local real
-  # The real rm, also when a shim of the other kind is already first on PATH.
-  real=$(PATH=${PATH#"$TMP/rmshim:"} command -v rm)
+  local real dir
+  # The real rm, also when a shim of the other kind is already first on PATH. Walk PATH: bash 3.2
+  # answers `command -v rm` with the shim it hashed on an earlier call, and the shim then runs itself.
+  real=
+  while IFS= read -r dir; do
+    if [ "$dir" != "$TMP/rmshim" ] && [ -x "$dir/rm" ]; then real=$dir/rm; break; fi
+  done <<PATHS
+$(printf '%s\n' "$PATH" | tr ':' '\n')
+PATHS
+  [ -n "$real" ] || fail "no rm on PATH"
   must mkdir -p "$TMP/rmshim"
   # shellcheck disable=SC2016 # the shim's own variables, expanded when it runs
   case "$1" in
