@@ -364,7 +364,8 @@ test_invalid_utf8_in_names_and_lines_parses_in_a_utf8_locale() {
   must git add -A
   run env LC_ALL="$loc" "$G" baseline
   assert_eq 0 "$STATUS" "baseline in $loc: $OUT"
-  assert_eq "$(printf 'todo\tcaf\351.ts\tTODO a\t1\ntodo\tplain.ts\tTODO b \351\t1')" "$(cat .gauntlet/baseline.tsv)" "rows"
+  assert_eq "$(printf 'todo\tcaf\351.ts\tTODO a\t1\ntodo\tplain.ts\tTODO b \351\t1')" "$(cat .gauntlet/baseline.tsv)" \
+    "rows in $loc (run: $OUT; files: $(git ls-files -z | od -An -c | tr -s ' \n' ' '); awk: $(awk -W version 2>&1 | head -n 1); rg: $(rg --version | head -n 1); git: $(git --version))"
 }
 
 # A tracked name that starts with - is a file, not an option.
