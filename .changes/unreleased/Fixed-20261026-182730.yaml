@@ -1,0 +1,3 @@
+kind: Fixed
+body: 'The docs said the `path-line` format covers `eslint --format unix`. ESLint 9 removed that formatter from core, so the docs now say it needs `eslint-formatter-unix`.'
+time: 2026-10-26T18:27:30.149954721-06:00

@@ -5,7 +5,7 @@ line: 2
 message: 5
 ignore: ^[^:]+: binary file matches \(found
 ---
-Built-in format for `path:line[:col][: message]` output: `eslint --format unix`, `ruff --output-format concise`, `golangci-lint` and most compilers. The line `rg` prints for a binary file it matched (`<path>: binary file matches (found "\0" byte around offset N)`) is ignored.
+Built-in format for `path:line[:col][: message]` output: ESLint's `unix` formatter (built into ESLint 8; ESLint 9 removed it from core, so install `eslint-formatter-unix`), `ruff --output-format concise`, `golangci-lint` and most compilers. The line `rg` prints for a binary file it matched (`<path>: binary file matches (found "\0" byte around offset N)`) is ignored.
 
 ```sample
 src/a.ts:7:3: bad thing
