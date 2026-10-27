@@ -133,6 +133,8 @@ The `path`, `line` and `message` values are group numbers, each one digit; `mess
 
 gauntlet ships three formats:
 - `path-line` (`path:line[:col][: message]`), the default for `linter`, `rg` and `script` rules. It reads any linter that prints one such line per finding. A path that contains `:` is not readable by it: the run fails closed with `broken detector: <id>: unparsed line: …`, so rename the file or write a format for the tool.
+  - ESLint 9 no longer ships the `unix` formatter (`--format unix` exits 2). Install `eslint-formatter-unix` in the project, or write a format for the formatter you use.
+  - A linter that prints a code frame (several lines per finding) is not readable by this format.
 - `github` (GitHub annotation lines), the default for `ast-grep`.
 - `tsc`.
 
