@@ -64,6 +64,7 @@ Use this for structural rules in any language `ast-grep` supports. The detector 
 # .gauntlet/rules/silent-catch.yml
 id: silent-catch
 severity: error
+message: The catch neither rethrows nor logs the error.
 language: typescript
 rule:
   kind: catch_clause
@@ -72,10 +73,15 @@ rule:
       stopBy: end
       any:
         - kind: throw_statement
-        - pattern: logger.$M($$$)
+        - pattern: logger.error($$$)
+        - pattern: logger.warn($$$)
 ```
 
 gauntlet runs `ast-grep scan --rule <file> --format github --error`, so a match counts whatever severity the YAML rule sets, or none (checked with ast-grep 0.51.0, the version CI installs). `severity: error` is still the clearest to read. Severity in this file does not decide whether the gate fails: that is the `severity` of the gauntlet rule.
+
+- **Write `message:`.** It is the text a `[new]` row shows. Without it the row says `(the detector gave no message)`.
+- **Name the calls that count as handling.** `logger.$M($$$)` would accept `logger.debug(e)`, which handles nothing.
+- **`constraints:` do not reach inside `not:` or `has:`.** A constraint on a metavariable that only appears there is ignored, so the rule matches more than it says. Write the allowed calls as patterns, as above.
 
 ### 3. An `rg` pattern
 
@@ -85,6 +91,8 @@ Use this for rules that really are textual.
 engine: rg
 detector: rg --with-filename --line-number --no-heading 'console\.log\(' {files}
 ```
+
+`rg` matches one line at a time. A pattern that spans lines needs `-U` (`--multiline`); without it the pattern finds nothing across a line break and no error is printed. When you port a JavaScript `/…/g` regex, compare the counts.
 
 ### Custom scripts
 

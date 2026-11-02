@@ -52,6 +52,16 @@ test_new_violation_fails() {
   assert_contains "$OUT" "fix: remove it"
 }
 
+test_new_violation_without_message_says_so() {
+  gate_setup 'ok' detector="rg --with-filename --line-number --no-heading --replace '' 'TODO' {files}"
+  printf 'TODO\n' > a.ts
+  rebaseline
+  commit_all feat
+  gate
+  assert_eq 1 "$STATUS" "status"
+  assert_contains "$OUT" "a.ts:1  todo  (the detector gave no message)"
+}
+
 test_new_violation_path_with_space() {
   gate_setup 'ok'
   mkdir -p "my dir"

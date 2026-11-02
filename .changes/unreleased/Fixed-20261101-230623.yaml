@@ -1,0 +1,3 @@
+kind: Fixed
+body: 'A `[new]` or `[shadow]` row whose detector gave no message now says `(the detector gave no message)` instead of ending empty. The `silent-catch` example in the rules guide names the calls that count as handling and sets `message:`.'
+time: 2026-11-01T23:06:23.371482089-06:00
