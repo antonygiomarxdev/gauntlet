@@ -278,11 +278,16 @@ install_gitignore() {
   printf 'updated %s: added %s\n' "$file" "$added"
 }
 
-# install: vendor the runner, create the state files that are missing, then
-# install the hooks. The source is the checkout that holds the running script. The
-# whole of it runs under the install lock (install_lock).
+# install [--no-hooks]: vendor the runner, create the state files that are missing,
+# then install the hooks, unless --no-hooks. The source is the checkout that holds the
+# running script. The whole of it runs under the install lock (install_lock).
 install_runner() {
-  local src root target
+  local src root target hooks=1
+  case "$#:${1:-}" in
+    0:) ;;
+    1:--no-hooks) hooks=0 ;;
+    *) die "usage: gauntlet install [--no-hooks]" ;;
+  esac
   src=$(install_source) || die "cannot find the runner source"
   if [ ! -f "$src/bin/gauntlet" ] || [ ! -d "$src/lib" ]; then
     die "no runner at $src: expected bin/gauntlet and lib/"
@@ -300,6 +305,10 @@ install_runner() {
   if [ ! -d .gauntlet/rules ]; then
     mkdir -p .gauntlet/rules || die "cannot create .gauntlet/rules"
     printf 'created .gauntlet/rules/\n'
+  fi
+  if [ "$hooks" -eq 0 ]; then
+    printf 'hooks not wired; run gauntlet install-hooks\n'
+    return 0
   fi
   install_hooks
 }
