@@ -627,6 +627,28 @@ test_install_vendors_runner() {
   assert_contains "$OUT" "gauntlet "
 }
 
+test_install_no_hooks_writes_no_hook() {
+  hooks_repo "$TMP/repo"
+  must mkdir -p tools/hooks
+  must git config core.hooksPath tools/hooks
+  run "$G" install --no-hooks
+  assert_eq 0 "$STATUS" "install --no-hooks"
+  must cmp "$ROOT/bin/gauntlet" .gauntlet/bin/gauntlet
+  if [ -e .gauntlet/config ] && [ -d .gauntlet/rules ]; then :; else fail "state files were not created"; fi
+  if [ -n "$(ls -A tools/hooks .git/hooks | command grep -v '\.sample$' | command grep -v ':$' | command grep -v '^$')" ]; then
+    fail "a hook was written: $(ls -A tools/hooks .git/hooks)"
+  fi
+  assert_contains "$OUT" "hooks not wired; run gauntlet install-hooks"
+}
+
+test_install_refuses_an_unknown_option() {
+  hooks_repo "$TMP/repo"
+  run "$G" install --dry-run
+  assert_eq 2 "$STATUS" "install --dry-run"
+  assert_contains "$OUT" "usage: gauntlet install [--no-hooks]"
+  if [ -e .gauntlet ]; then fail "install wrote .gauntlet/ on a usage error"; fi
+}
+
 test_install_twice_leaves_tree_identical() {
   hooks_repo "$TMP/repo"
   printf '#!/bin/sh\necho plain\n' > .git/hooks/pre-commit

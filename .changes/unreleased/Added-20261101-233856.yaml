@@ -1,0 +1,3 @@
+kind: Added
+body: '`gauntlet install --no-hooks` vendors the runner and creates the state files without touching any hook, so a trial in a linked worktree, whose hooks every worktree shares, wires nothing. Any other argument to `install` is now a usage error (exit 2).'
+time: 2026-11-01T23:38:56.010222692-06:00

@@ -6,7 +6,7 @@ Commands work from any directory inside the repository: they change to the repos
 
 | Command | What it does |
 |---|---|
-| `gauntlet install` | Copies the runner into `.gauntlet/bin/` and `.gauntlet/lib/`, replacing both, creates the missing state files and `.gauntlet/.gitignore`, then runs `install-hooks`. Run it from a gauntlet checkout, or through a symlink to one. Run from the vendored copy, it does not copy the runner (it gives back a missing exec bit) and goes on with the rest. Safe to run again. See [what it creates](#install-and-what-it-creates). |
+| `gauntlet install` | Copies the runner into `.gauntlet/bin/` and `.gauntlet/lib/`, replacing both, creates the missing state files and `.gauntlet/.gitignore`, then runs `install-hooks`. `install --no-hooks` does everything but that last step and touches no hook, for a trial in a linked worktree, whose hooks are shared with every worktree of the repo; run `install-hooks` later. Run it from a gauntlet checkout, or through a symlink to one. Run from the vendored copy, it does not copy the runner (it gives back a missing exec bit) and goes on with the rest. Safe to run again. See [what it creates](#install-and-what-it-creates). |
 | `gauntlet install-hooks` | Adds the gate to your hooks, or prints it. Writes no hook without an executable runner. See [hooks](gates.md#hooks-coexist-never-take-over). |
 | `gauntlet baseline` | Measures the tracked files and writes `.gauntlet/baseline.tsv`. Untracked files are not measured: `git add` a new file first. |
 | `gauntlet test-rules` | Runs each rule's `bad` and `good` cases and each output format's sample. |

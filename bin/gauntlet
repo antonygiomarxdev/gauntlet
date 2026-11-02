@@ -146,7 +146,8 @@ case "${1:-}" in
     exit "$status"
     ;;
   install)
-    install_runner
+    shift
+    install_runner "$@"
     ;;
   install-hooks)
     install_hooks
