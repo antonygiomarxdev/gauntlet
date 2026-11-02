@@ -654,6 +654,7 @@ violation_lines() {
     for (i = 0; i < 4; i++) sub(/^[^\t]*\t/, "", m)
     # The carriage return of a CRLF line is its ending, not text. The row keeps it; the line shown does not.
     sub(/\r$/, "", m)
+    if (m == "") m = "(the detector gave no message)"
     printf "  %s:%s  %s  %s\n      fix: %s\n", $2, $3, $1, m, $4
   }' "$1"
 }
